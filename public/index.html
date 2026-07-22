@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f3efe5" />
+    <title>Tinta ES · Traducción local de cómics</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="app-header">
+      <a class="brand" href="#" aria-label="Tinta ES, inicio">
+        <span class="brand-mark">T</span>
+        <span class="brand-copy">
+          <strong>TINTA<span>/ES</span></strong>
+          <small>ROTULACIÓN LOCAL</small>
+        </span>
+      </a>
+
+      <div class="local-badge">
+        <span class="status-dot" id="statusDot"></span>
+        <span id="statusText">Conectando con Ollama…</span>
+      </div>
+
+      <div class="model-control">
+        <label for="modelSelect">Modelo local</label>
+        <select id="modelSelect" aria-label="Modelo local de Ollama">
+          <option>Buscando…</option>
+        </select>
+        <button class="icon-button" id="refreshModels" title="Actualizar modelos" aria-label="Actualizar modelos">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6v5h-5M4 18v-5h5M18.5 9A7 7 0 0 0 6.2 6.2L4 8m16 8-2.2 2.2A7 7 0 0 1 5.5 15" /></svg>
+        </button>
+      </div>
+    </header>
+
+    <main>
+      <section class="welcome" id="welcomeView">
+        <div class="welcome-copy">
+          <p class="eyebrow">TU CÓMIC, CON VOZ NATURAL</p>
+          <h1>Traduce la historia.<br /><em>Conserva su trazo.</em></h1>
+          <p class="lead">
+            Detecta, traduce y vuelve a rotular cada bocadillo sin enviar la página fuera de tu equipo.
+          </p>
+
+          <label class="primary-button upload-button" for="fileInput">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0L7 9m5-5 5 5M5 20h14" /></svg>
+            Elegir una página
+          </label>
+          <input id="fileInput" type="file" accept="image/png,image/jpeg,image/webp" hidden />
+
+          <div class="privacy-note">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 5 6v5c0 4.8 2.8 8.2 7 10 4.2-1.8 7-5.2 7-10V6l-7-3Z" /><path d="m9 12 2 2 4-4" /></svg>
+            <span><strong>100 % local.</strong> Imagen y texto permanecen en este ordenador.</span>
+          </div>
+        </div>
+
+        <label class="drop-stage" id="dropStage" for="fileInput">
+          <div class="comic-preview" aria-hidden="true">
+            <div class="halftone"></div>
+            <div class="panel panel-a"><span class="bubble bubble-a">HELLO!</span></div>
+            <div class="panel panel-b"><span class="burst">BAM!</span></div>
+            <div class="panel panel-c"><span class="bubble bubble-b">READY?</span></div>
+            <div class="translation-stamp">ES</div>
+          </div>
+          <div class="drop-caption">
+            <strong>Suelta aquí una página</strong>
+            <span>PNG, JPG o WEBP · hasta 27 MB</span>
+          </div>
+        </label>
+      </section>
+
+      <section class="editor-view" id="editorView" hidden>
+        <nav class="editor-toolbar" aria-label="Herramientas de edición">
+          <div class="toolbar-group">
+            <label class="secondary-button compact" for="replaceInput">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 16l4-4 4 4 4-6 4 6M5 20h14V4H5v16Z" /></svg>
+              Otra página
+            </label>
+            <input id="replaceInput" type="file" accept="image/png,image/jpeg,image/webp" hidden />
+            <button class="primary-button compact" id="analyzeButton">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 1.2 3.8L17 8l-3.8 1.2L12 13l-1.2-3.8L7 8l3.8-1.2L12 3ZM6 14l.8 2.2L9 17l-2.2.8L6 20l-.8-2.2L3 17l2.2-.8L6 14Zm12-1 .8 2.2L21 16l-2.2.8L18 19l-.8-2.2L15 16l2.2-.8L18 13Z" /></svg>
+              Analizar y traducir
+            </button>
+          </div>
+
+          <div class="compare-control" title="Desliza para comparar con el original">
+            <span>Resultado</span>
+            <input id="compareRange" type="range" min="0" max="100" value="0" />
+            <span>Original</span>
+          </div>
+
+          <div class="toolbar-group align-right">
+            <button class="secondary-button compact" id="addRegionButton">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+              Añadir zona
+            </button>
+            <button class="dark-button compact" id="downloadButton" disabled>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v12m0 0 5-5m-5 5-5-5M5 20h14" /></svg>
+              Exportar PNG
+            </button>
+          </div>
+        </nav>
+
+        <div class="editor-grid">
+          <section class="canvas-panel">
+            <div class="page-meta">
+              <div>
+                <strong id="pageName">Página</strong>
+                <span id="pageDimensions"></span>
+              </div>
+              <span class="region-count" id="regionCount">Sin analizar</span>
+            </div>
+
+            <div class="canvas-viewport" id="canvasViewport">
+              <div class="canvas-stack" id="canvasStack">
+                <canvas id="resultCanvas"></canvas>
+                <canvas id="originalCanvas" class="original-layer"></canvas>
+                <canvas id="overlayCanvas" class="overlay-layer"></canvas>
+              </div>
+
+              <div class="processing-overlay" id="processingOverlay" hidden>
+                <div class="ink-spinner"><span></span><span></span><span></span></div>
+                <strong>Leyendo la página con Ollama</strong>
+                <p>Está detectando texto, traduciendo y estudiando el estilo…</p>
+                <small>La primera ejecución puede tardar un poco mientras carga el modelo.</small>
+              </div>
+            </div>
+
+            <div class="canvas-help">
+              <span><i class="help-swatch selected"></i> Zona seleccionada</span>
+              <span><i class="help-swatch detected"></i> Texto detectado</span>
+              <span>Arrastra una zona para mover el rótulo · esquina inferior para ajustar</span>
+            </div>
+          </section>
+
+          <aside class="inspector">
+            <div class="inspector-heading">
+              <div>
+                <p class="eyebrow">MESA DE ROTULACIÓN</p>
+                <h2>Textos</h2>
+              </div>
+              <span id="sourceLanguage" class="language-chip">— → ES</span>
+            </div>
+
+            <div class="empty-inspector" id="emptyInspector">
+              <div class="empty-icon">Aa</div>
+              <strong>Aún no hay textos</strong>
+              <p>Analiza la página para detectar y traducir sus bocadillos.</p>
+            </div>
+
+            <div id="inspectorContent" hidden>
+              <div class="region-list" id="regionList"></div>
+
+              <form class="region-editor" id="regionEditor">
+                <div class="form-heading">
+                  <strong id="selectedRegionTitle">Zona 1</strong>
+                  <label class="switch-label">
+                    <input id="regionEnabled" type="checkbox" checked />
+                    <span class="switch"></span>
+                    Visible
+                  </label>
+                </div>
+
+                <label class="field-label" for="originalText">Texto original</label>
+                <textarea id="originalText" rows="2" spellcheck="false"></textarea>
+
+                <label class="field-label" for="translationText">Traducción</label>
+                <textarea id="translationText" class="translation-field" rows="3"></textarea>
+
+                <div class="field-grid two">
+                  <label>
+                    <span class="field-label">Tipo</span>
+                    <select id="regionType">
+                      <option value="dialogue">Diálogo</option>
+                      <option value="thought">Pensamiento</option>
+                      <option value="narration">Narración</option>
+                      <option value="caption">Cartucho</option>
+                      <option value="sfx">Onomatopeya</option>
+                      <option value="sign">Letrero</option>
+                      <option value="other">Otro</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span class="field-label">Limpieza</span>
+                    <select id="cleanupMode">
+                      <option value="auto">Automática</option>
+                      <option value="solid">Color uniforme</option>
+                      <option value="texture">Reconstruir textura</option>
+                      <option value="none">No borrar</option>
+                    </select>
+                  </label>
+                </div>
+
+                <div class="section-rule"><span>TIPOGRAFÍA</span></div>
+
+                <div class="field-grid two">
+                  <label>
+                    <span class="field-label">Estilo</span>
+                    <select id="fontCategory">
+                      <option value="comic">Cómic</option>
+                      <option value="handwritten">Manual</option>
+                      <option value="sans">Palo seco</option>
+                      <option value="condensed">Condensada</option>
+                      <option value="serif">Serifa</option>
+                      <option value="display">Impacto</option>
+                      <option value="monospace">Monoespaciada</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span class="field-label">Alineación</span>
+                    <select id="textAlignment">
+                      <option value="left">Izquierda</option>
+                      <option value="center">Centro</option>
+                      <option value="right">Derecha</option>
+                    </select>
+                  </label>
+                </div>
+
+                <label class="range-field">
+                  <span><span class="field-label">Escala del texto</span><output id="fontScaleOutput">100 %</output></span>
+                  <input id="fontScale" type="range" min="60" max="150" value="100" />
+                </label>
+
+                <div class="style-row">
+                  <label class="color-field">Texto <input id="textColor" type="color" value="#111111" /></label>
+                  <label class="color-field">Contorno <input id="outlineColor" type="color" value="#FFFFFF" /></label>
+                  <label class="mini-check"><input id="hasOutline" type="checkbox" /><span>Contorno</span></label>
+                </div>
+
+                <div class="toggle-row">
+                  <label class="mini-check"><input id="fontBold" type="checkbox" /><span>Negrita</span></label>
+                  <label class="mini-check"><input id="fontItalic" type="checkbox" /><span>Cursiva</span></label>
+                  <label class="mini-check"><input id="fontUppercase" type="checkbox" /><span>Mayúsculas</span></label>
+                  <label class="mini-check"><input id="verticalLayout" type="checkbox" /><span>Vertical</span></label>
+                </div>
+
+                <label class="font-upload" for="fontInput">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19 11 5h2l6 14M7 15h10M19 5v5m-2-2h4" /></svg>
+                  <span><strong id="fontUploadLabel">Usar una fuente propia</strong><small>TTF, OTF o WOFF</small></span>
+                </label>
+                <input id="fontInput" type="file" accept=".ttf,.otf,.woff,.woff2,font/ttf,font/otf" hidden />
+
+                <button type="button" class="danger-link" id="deleteRegionButton">Eliminar esta zona</button>
+              </form>
+            </div>
+          </aside>
+        </div>
+      </section>
+    </main>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

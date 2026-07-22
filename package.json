@@ -1,0 +1,17 @@
+{
+  "name": "tinta-es",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Traductor local de comics con Ollama",
+  "scripts": {
+    "start": "node src/server.js",
+    "open": "node src/server.js --open",
+    "test": "node --test",
+    "check": "node --check src/server.js && node --check src/ollama.js && node --check src/regions.js && node --check public/app.js",
+    "smoke:ollama": "node scripts/smoke-ollama.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

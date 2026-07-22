@@ -1,0 +1,353 @@
+<Window x:Class="TintaES.Wpf.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d"
+        Title="Tinta ES · Traductor local de cómics"
+        Width="1440" Height="900" MinWidth="1120" MinHeight="700"
+        WindowStartupLocation="CenterScreen"
+        Background="{StaticResource WindowBrush}"
+        Foreground="{StaticResource InkBrush}"
+        FontFamily="Segoe UI"
+        AllowDrop="True"
+        PreviewDragOver="Window_PreviewDragOver"
+        Drop="Window_Drop">
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="66" />
+            <RowDefinition Height="58" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="42" />
+        </Grid.RowDefinitions>
+
+        <Border Grid.Row="0" Background="#151719" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,0,0,1">
+            <Grid Margin="22,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                    <Border Width="42" Height="44" Background="#F2EEE5" CornerRadius="3">
+                        <Grid>
+                            <Border Width="42" Height="44" Background="{StaticResource AccentBrush}" Margin="5,-5,-5,5" CornerRadius="3" />
+                            <Border Width="42" Height="44" Background="#17191B" CornerRadius="3">
+                                <TextBlock Text="T" Foreground="#F2EEE5" FontFamily="Georgia" FontWeight="Black"
+                                           FontSize="25" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                            </Border>
+                        </Grid>
+                    </Border>
+                    <StackPanel Margin="13,0,0,0" VerticalAlignment="Center">
+                        <TextBlock FontSize="21" FontWeight="Black">
+                            <Run Text="TINTA" /><Run Text="/ES" Foreground="{StaticResource AccentBrush}" />
+                        </TextBlock>
+                        <TextBlock Text="ROTULACIÓN LOCAL · WPF" Foreground="{StaticResource MutedBrush}"
+                                   FontSize="9" FontWeight="Bold" />
+                    </StackPanel>
+                </StackPanel>
+
+                <Border Grid.Column="1" Padding="12,7" Margin="0,0,18,0" CornerRadius="18"
+                        BorderBrush="{StaticResource LineBrush}" BorderThickness="1" VerticalAlignment="Center">
+                    <StackPanel Orientation="Horizontal">
+                        <Ellipse x:Name="OllamaStatusDot" Width="9" Height="9" Fill="#C99A35" Margin="0,0,8,0" />
+                        <TextBlock x:Name="OllamaStatusText" Text="Conectando con Ollama…" FontSize="12"
+                                   Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" />
+                    </StackPanel>
+                </Border>
+
+                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                    <TextBlock Text="MODELO" Style="{StaticResource LabelText}" VerticalAlignment="Center" Margin="0,0,9,0" />
+                    <ComboBox x:Name="ModelComboBox" Width="178" Height="34" />
+                    <Button x:Name="RefreshModelsButton" Content="↻" Width="36" Height="34" Padding="0"
+                            Margin="7,0,0,0" Style="{StaticResource ToolbarButton}" Click="RefreshModelsButton_Click"
+                            ToolTip="Actualizar modelos de Ollama" />
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <Border Grid.Row="1" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,0,0,1">
+            <Grid Margin="18,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                    <Button x:Name="OpenImageButton" Content="Abrir página" Style="{StaticResource ToolbarButton}" Click="OpenImageButton_Click" />
+                    <Button x:Name="AnalyzeButton" Content="✦  Analizar y traducir" Style="{StaticResource AccentButton}"
+                            Click="AnalyzeButton_Click" IsEnabled="False" />
+                    <Button x:Name="CancelButton" Content="Cancelar" Style="{StaticResource ToolbarButton}"
+                            Click="CancelButton_Click" Visibility="Collapsed" />
+                </StackPanel>
+
+                <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
+                    <TextBlock Text="ZOOM" Style="{StaticResource LabelText}" VerticalAlignment="Center" Margin="0,0,10,0" />
+                    <Slider x:Name="ZoomSlider" Width="170" Minimum="8" Maximum="150" Value="25"
+                            ValueChanged="ZoomSlider_ValueChanged" />
+                    <TextBlock x:Name="ZoomText" Text="25 %" Width="52" TextAlignment="Right"
+                               Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" />
+                </StackPanel>
+
+                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Button x:Name="AddRegionButton" Content="＋ Añadir zona" Style="{StaticResource ToolbarButton}"
+                            Click="AddRegionButton_Click" IsEnabled="False" />
+                    <Button x:Name="ExportButton" Content="Exportar PNG" Style="{StaticResource ToolbarButton}"
+                            Click="ExportButton_Click" IsEnabled="False" Margin="0" />
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <Grid Grid.Row="2">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="390" />
+            </Grid.ColumnDefinitions>
+
+            <Border Grid.Column="0" Margin="16" Background="#0D0F11" BorderBrush="{StaticResource LineBrush}"
+                    BorderThickness="1" CornerRadius="9">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="48" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+                    <Border BorderBrush="{StaticResource LineBrush}" BorderThickness="0,0,0,1">
+                        <Grid Margin="15,0">
+                            <StackPanel VerticalAlignment="Center">
+                                <TextBlock x:Name="PageNameText" Text="Ninguna página abierta" FontFamily="Georgia"
+                                           FontWeight="Bold" FontSize="14" />
+                                <TextBlock x:Name="PageInfoText" Text="Arrastra una imagen aquí o pulsa Abrir página"
+                                           Foreground="{StaticResource MutedBrush}" FontSize="10" />
+                            </StackPanel>
+                            <StackPanel HorizontalAlignment="Right" VerticalAlignment="Center" Orientation="Horizontal">
+                                <Button x:Name="OriginalPreviewButton" Content="Original" Tag="original"
+                                        Click="PreviewModeButton_Click" Padding="8,3" Margin="0,0,4,0"
+                                        Style="{StaticResource ToolbarButton}" IsEnabled="False" />
+                                <Button x:Name="MaskPreviewButton" Content="Máscara" Tag="mask"
+                                        Click="PreviewModeButton_Click" Padding="8,3" Margin="0,0,4,0"
+                                        Style="{StaticResource ToolbarButton}" IsEnabled="False" />
+                                <Button x:Name="CleanPreviewButton" Content="Fondo limpio" Tag="clean"
+                                        Click="PreviewModeButton_Click" Padding="8,3" Margin="0,0,4,0"
+                                        Style="{StaticResource ToolbarButton}" IsEnabled="False" />
+                                <Button x:Name="ResultPreviewButton" Content="Resultado" Tag="result"
+                                        Click="PreviewModeButton_Click" Padding="8,3" Margin="0,0,8,0"
+                                        Style="{StaticResource ToolbarButton}" IsEnabled="False" />
+                                <Border Padding="9,4" CornerRadius="12" Background="#24282C">
+                                    <TextBlock x:Name="RegionCountText" Text="0 zonas" FontSize="10" FontWeight="Bold" />
+                                </Border>
+                            </StackPanel>
+                        </Grid>
+                    </Border>
+
+                    <Grid Grid.Row="1">
+                        <Grid x:Name="EmptyState" HorizontalAlignment="Center" VerticalAlignment="Center">
+                            <StackPanel HorizontalAlignment="Center">
+                                <Border Width="76" Height="76" BorderBrush="#4A5055" BorderThickness="1"
+                                        CornerRadius="38" Margin="0,0,0,18">
+                                    <TextBlock Text="Aa" Foreground="{StaticResource AccentBrush}" FontFamily="Georgia"
+                                               FontSize="28" FontStyle="Italic" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                </Border>
+                                <TextBlock Text="Abre una página de cómic" FontFamily="Georgia" FontWeight="Bold"
+                                           FontSize="20" HorizontalAlignment="Center" />
+                                <TextBlock Text="PNG, JPG o WEBP · todo se procesa en este equipo"
+                                           Foreground="{StaticResource MutedBrush}" Margin="0,8,0,0" />
+                            </StackPanel>
+                        </Grid>
+
+                        <ScrollViewer x:Name="ImageScrollViewer" Visibility="Collapsed"
+                                      HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
+                                      Background="#292D30" Padding="24">
+                            <Grid x:Name="ImageStage" HorizontalAlignment="Left" VerticalAlignment="Top"
+                                  Background="White">
+                                <Image x:Name="PageImage" Stretch="Fill" />
+                                <Canvas x:Name="OverlayCanvas" Background="Transparent" />
+                            </Grid>
+                        </ScrollViewer>
+
+                        <Border x:Name="BusyOverlay" Visibility="Collapsed" Background="#DC111315">
+                            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Width="420">
+                                <TextBlock Text="LEYENDO LA PÁGINA" Foreground="{StaticResource AccentBrush}"
+                                           FontSize="10" FontWeight="Bold" HorizontalAlignment="Center" />
+                                <TextBlock x:Name="BusyTitleText" Text="Localizando y reconstruyendo el texto…" FontFamily="Georgia"
+                                           FontSize="23" FontWeight="Bold" Margin="0,12,0,6" HorizontalAlignment="Center" />
+                                <TextBlock Text="CTD encuentra las letras, LaMa reconstruye el fondo y Ollama traduce toda la escena."
+                                           TextAlignment="Center" TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" />
+                                <ProgressBar x:Name="BusyProgressBar" Height="7" Margin="0,22,0,0" Minimum="0" Maximum="100"
+                                             Foreground="{StaticResource AccentBrush}" Background="#30353A" />
+                            </StackPanel>
+                        </Border>
+                    </Grid>
+                </Grid>
+            </Border>
+
+            <Border Grid.Column="1" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource LineBrush}"
+                    BorderThickness="1,0,0,0">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="82" />
+                        <RowDefinition Height="190" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+                    <Border BorderBrush="{StaticResource LineBrush}" BorderThickness="0,0,0,1" Padding="20,13">
+                        <Grid>
+                            <StackPanel VerticalAlignment="Center">
+                                <TextBlock Text="MESA DE ROTULACIÓN" Foreground="{StaticResource AccentBrush}"
+                                           FontSize="9" FontWeight="Bold" />
+                                <TextBlock Text="Textos" FontFamily="Georgia" FontSize="25" FontWeight="Bold" Margin="0,4,0,0" />
+                            </StackPanel>
+                            <Border HorizontalAlignment="Right" VerticalAlignment="Center" Padding="9,5"
+                                    CornerRadius="14" BorderBrush="{StaticResource LineBrush}" BorderThickness="1">
+                                <TextBlock x:Name="LanguageText" Text="— → ES" Foreground="{StaticResource MutedBrush}"
+                                           FontSize="10" FontWeight="Bold" />
+                            </Border>
+                        </Grid>
+                    </Border>
+
+                    <ListBox x:Name="RegionListBox" Grid.Row="1" Background="Transparent" BorderThickness="0"
+                             Padding="10" SelectionChanged="RegionListBox_SelectionChanged"
+                             ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                        <ListBox.ItemContainerStyle>
+                            <Style TargetType="ListBoxItem">
+                                <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                                <Setter Property="Margin" Value="0,0,0,7" />
+                                <Setter Property="Padding" Value="0" />
+                                <Setter Property="Background" Value="Transparent" />
+                                <Setter Property="BorderThickness" Value="0" />
+                            </Style>
+                        </ListBox.ItemContainerStyle>
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <Border x:Name="Card" Padding="11,9" Background="#202428" BorderBrush="#383E43"
+                                        BorderThickness="1" CornerRadius="6">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="35" />
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <Border Width="25" Height="25" Background="#30363B" CornerRadius="13">
+                                            <TextBlock Text="{Binding Order}" HorizontalAlignment="Center" VerticalAlignment="Center"
+                                                       FontSize="10" FontWeight="Bold" />
+                                        </Border>
+                                        <StackPanel Grid.Column="1">
+                                            <TextBlock Text="{Binding DisplayText}" FontWeight="Bold" TextTrimming="CharacterEllipsis" />
+                                            <TextBlock Text="{Binding Original}" Foreground="{StaticResource MutedBrush}" FontSize="10"
+                                                       TextTrimming="CharacterEllipsis" Margin="0,3,0,0" />
+                                        </StackPanel>
+                                        <TextBlock Grid.Column="2" Text="{Binding Type}" Foreground="{StaticResource TealBrush}"
+                                                   FontSize="9" FontWeight="Bold" VerticalAlignment="Top" />
+                                    </Grid>
+                                </Border>
+                                <DataTemplate.Triggers>
+                                    <DataTrigger Binding="{Binding RelativeSource={RelativeSource AncestorType=ListBoxItem}, Path=IsSelected}" Value="True">
+                                        <Setter TargetName="Card" Property="BorderBrush" Value="{StaticResource AccentBrush}" />
+                                        <Setter TargetName="Card" Property="Background" Value="#292428" />
+                                    </DataTrigger>
+                                </DataTemplate.Triggers>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+
+                    <Grid Grid.Row="2">
+                        <StackPanel x:Name="NoSelectionPanel" HorizontalAlignment="Center" VerticalAlignment="Center">
+                            <TextBlock Text="Selecciona un texto" FontFamily="Georgia" FontSize="17" FontWeight="Bold"
+                                       HorizontalAlignment="Center" />
+                            <TextBlock Text="Aquí podrás corregir la traducción y el estilo."
+                                       Foreground="{StaticResource MutedBrush}" Margin="0,6,0,0" />
+                        </StackPanel>
+
+                        <ScrollViewer x:Name="RegionEditorScroll" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
+                            <StackPanel Margin="20,15,20,28">
+                                <Grid Margin="0,0,0,10">
+                                    <TextBlock x:Name="SelectedRegionTitle" Text="Zona 1" FontFamily="Georgia"
+                                               FontWeight="Bold" FontSize="18" />
+                                    <CheckBox x:Name="RegionVisibleCheckBox" Content="Visible" HorizontalAlignment="Right"
+                                              IsChecked="True" Checked="RegionVisualControl_Changed" Unchecked="RegionVisualControl_Changed" />
+                                </Grid>
+
+                                <TextBlock Text="TEXTO ORIGINAL" Style="{StaticResource LabelText}" Margin="0,6,0,5" />
+                                <TextBox x:Name="OriginalTextBox" Height="58" IsReadOnly="True" TextWrapping="Wrap"
+                                         VerticalScrollBarVisibility="Auto" />
+                                <TextBlock Text="TRADUCCIÓN" Style="{StaticResource LabelText}" Margin="0,12,0,5" />
+                                <TextBox x:Name="TranslationTextBox" Height="72" AcceptsReturn="True" TextWrapping="Wrap"
+                                         TextChanged="TranslationTextBox_TextChanged" VerticalScrollBarVisibility="Auto" />
+
+                                <Grid Margin="0,12,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="12" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel>
+                                        <TextBlock Text="TIPO" Style="{StaticResource LabelText}" Margin="0,0,0,5" />
+                                        <ComboBox x:Name="TypeComboBox" SelectionChanged="RegionVisualControl_Changed" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="2">
+                                        <TextBlock Text="LIMPIEZA" Style="{StaticResource LabelText}" Margin="0,0,0,5" />
+                                        <ComboBox x:Name="CleanupComboBox" SelectionChanged="CleanupComboBox_SelectionChanged" />
+                                    </StackPanel>
+                                </Grid>
+
+                                <Border Height="1" Background="{StaticResource LineBrush}" Margin="0,18,0,15" />
+                                <TextBlock Text="TIPOGRAFÍA" Style="{StaticResource LabelText}" Margin="0,0,0,7" />
+                                <ComboBox x:Name="FontCategoryComboBox" SelectionChanged="RegionVisualControl_Changed" />
+
+                                <Grid Margin="0,13,0,0">
+                                    <TextBlock Text="ESCALA" Style="{StaticResource LabelText}" />
+                                    <TextBlock x:Name="FontScaleText" Text="100 %" HorizontalAlignment="Right"
+                                               Foreground="{StaticResource MutedBrush}" FontSize="10" />
+                                </Grid>
+                                <Slider x:Name="FontScaleSlider" Minimum="50" Maximum="160" Value="100"
+                                        ValueChanged="FontScaleSlider_ValueChanged" />
+
+                                <WrapPanel Margin="0,12,0,0">
+                                    <CheckBox x:Name="BoldCheckBox" Content="Negrita" Margin="0,0,14,8"
+                                              Checked="RegionVisualControl_Changed" Unchecked="RegionVisualControl_Changed" />
+                                    <CheckBox x:Name="ItalicCheckBox" Content="Cursiva" Margin="0,0,14,8"
+                                              Checked="RegionVisualControl_Changed" Unchecked="RegionVisualControl_Changed" />
+                                    <CheckBox x:Name="UppercaseCheckBox" Content="Mayúsculas" Margin="0,0,14,8"
+                                              Checked="RegionVisualControl_Changed" Unchecked="RegionVisualControl_Changed" />
+                                </WrapPanel>
+
+                                <Grid Margin="0,8,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="12" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel>
+                                        <TextBlock Text="COLOR DE TEXTO" Style="{StaticResource LabelText}" Margin="0,0,0,5" />
+                                        <TextBox x:Name="TextColorTextBox" TextChanged="RegionVisualControl_Changed" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="2">
+                                        <TextBlock Text="COLOR DE FONDO" Style="{StaticResource LabelText}" Margin="0,0,0,5" />
+                                        <TextBox x:Name="BackgroundColorTextBox" TextChanged="CleanupStyleTextBox_Changed" />
+                                    </StackPanel>
+                                </Grid>
+
+                                <Button x:Name="DeleteRegionButton" Content="Eliminar esta zona" Margin="0,20,0,0"
+                                        Foreground="#FF7468" Background="Transparent" BorderThickness="0" Cursor="Hand"
+                                        Click="DeleteRegionButton_Click" />
+                            </StackPanel>
+                        </ScrollViewer>
+                    </Grid>
+                </Grid>
+            </Border>
+        </Grid>
+
+        <Border Grid.Row="3" Background="#151719" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,1,0,0">
+            <Grid Margin="18,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="300" />
+                </Grid.ColumnDefinitions>
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                    <Ellipse x:Name="FooterStatusDot" Width="7" Height="7" Fill="#6C747A" Margin="0,0,8,0" />
+                    <TextBlock x:Name="FooterStatusText" Text="Preparado" Foreground="{StaticResource MutedBrush}" FontSize="11" />
+                </StackPanel>
+                <ProgressBar x:Name="FooterProgressBar" Grid.Column="1" Height="5" Minimum="0" Maximum="100"
+                             Visibility="Collapsed" Foreground="{StaticResource AccentBrush}" Background="#30353A" />
+            </Grid>
+        </Border>
+    </Grid>
+</Window>

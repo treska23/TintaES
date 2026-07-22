@@ -1,0 +1,3 @@
+[submodule "engine/manga-image-translator"]
+	path = engine/manga-image-translator
+	url = https://github.com/zyddnys/manga-image-translator.git
