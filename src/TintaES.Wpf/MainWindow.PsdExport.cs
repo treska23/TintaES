@@ -33,6 +33,11 @@ public partial class MainWindow
 
         int exportPngIndex = exportPanel.Children.IndexOf(ExportButton);
         exportPanel.Children.Insert(Math.Max(0, exportPngIndex), _exportPsdButton);
+        if (_pageCounterText is not null)
+        {
+            _pageCounterText.LayoutUpdated += (_, _) => UpdatePsdExportAvailability();
+        }
+        InstallRobustCbzExport();
         UpdatePsdExportAvailability();
     }
 
