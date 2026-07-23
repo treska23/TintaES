@@ -5,6 +5,7 @@ using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Interop;
 using System.Windows.Media;
+using TintaES.Core;
 using TintaES.Wpf.Controls;
 
 namespace TintaES.Wpf;
@@ -66,8 +67,6 @@ public partial class MainWindow
         double workWidth = Math.Max(640, bottomRight.X - topLeft.X);
         double workHeight = Math.Max(460, bottomRight.Y - topLeft.Y);
 
-        // rcWork excluye la barra de tareas y pertenece al monitor real donde está
-        // la ventana. Convertimos de píxeles físicos a DIP para respetar 125-200 % DPI.
         MinWidth = Math.Min(MinWidth, workWidth);
         MinHeight = Math.Min(MinHeight, workHeight);
         MaxWidth = workWidth;
@@ -93,28 +92,39 @@ public partial class MainWindow
             Border? border = layer.Children.OfType<Border>().FirstOrDefault();
             Thumb[] thumbs = layer.Children.OfType<Thumb>().ToArray();
             ComicTextElement? text = layer.Children.OfType<ComicTextElement>().FirstOrDefault();
+            ComicRegion? region = layer.Tag as ComicRegion;
 
             if (thumbs.Length > 0)
             {
-                // El Thumb de movimiento ocupa toda la caja. Algunos temas de Windows
-                // pueden dibujar su chrome aunque Background sea Transparent, tapando el
-                // texto con un rectángulo. Opacity=0 conserva el hit-test y lo hace invisible.
                 Thumb moveThumb = thumbs[0];
                 moveThumb.Background = Brushes.Transparent;
                 moveThumb.BorderBrush = Brushes.Transparent;
                 moveThumb.Opacity = 0;
                 moveThumb.Focusable = false;
                 Panel.SetZIndex(moveThumb, 20);
+
+                // El handler original modificaba RenderBox y SafePolygon en cada píxel del
+                // arrastre, obligando a recalcular toda la composición y hasta el tamaño de
+                // fuente. Lo sustituimos por un desplazamiento visual independiente.
+                moveThumb.DragStarted -= RegionMoveThumb_DragStarted;
+                moveThumb.DragDelta -= RegionMoveThumb_DragDelta;
+                moveThumb.DragCompleted -= RegionThumb_DragCompleted;
+                moveThumb.DragStarted += RegionMoveThumb_DragStarted_Fast;
+                moveThumb.DragDelta += RegionMoveThumb_DragDelta_Fast;
+                moveThumb.DragCompleted += RegionMoveThumb_DragCompleted_Fast;
             }
 
             if (text is not null)
             {
                 Panel.SetZIndex(text, 10);
                 text.Visibility = Visibility.Visible;
+                if (region is not null)
+                {
+                    ApplyTextTransform(text, region);
+                }
                 text.InvalidateVisual();
             }
 
-            // Resultado significa resultado final: sin rectángulos, bordes ni tiradores.
             if (border is not null)
             {
                 border.Visibility = Visibility.Collapsed;
