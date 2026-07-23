@@ -19,9 +19,14 @@ public partial class MainWindow
 {
     private bool _fastEditingHandlersInstalled;
 
-    protected override void OnContentRendered(EventArgs e)
+    protected override void OnInitialized(EventArgs e)
     {
-        base.OnContentRendered(e);
+        base.OnInitialized(e);
+        InstallFastEditingHandlers();
+    }
+
+    private void InstallFastEditingHandlers()
+    {
         if (_fastEditingHandlersInstalled)
         {
             return;
