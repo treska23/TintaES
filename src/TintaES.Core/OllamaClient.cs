@@ -1,5 +1,4 @@
 using System.Net.Http.Json;
-using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
@@ -32,7 +31,12 @@ public sealed class OllamaClient : IDisposable
                     "additionalProperties": false,
                     "properties": {
                       "font_category": { "type": "string", "enum": ["comic", "handwritten", "sans", "condensed", "serif", "display", "monospace"] },
+                      "font_family": { "type": ["string", "null"] },
                       "font_weight": { "type": "integer" },
+                      "font_size": { "type": "number" },
+                      "font_width_ratio": { "type": "number" },
+                      "line_height_ratio": { "type": "number" },
+                      "line_count": { "type": "integer" },
                       "italic": { "type": "boolean" },
                       "uppercase": { "type": "boolean" },
                       "text_color": { "type": "string" },
@@ -42,7 +46,7 @@ public sealed class OllamaClient : IDisposable
                       "background_color": { "type": ["string", "null"] },
                       "shadow": { "type": "boolean" }
                     },
-                    "required": ["font_category", "font_weight", "italic", "uppercase", "text_color", "outline_color", "outline_width", "alignment", "background_color", "shadow"]
+                    "required": ["font_category", "font_family", "font_weight", "font_size", "font_width_ratio", "line_height_ratio", "line_count", "italic", "uppercase", "text_color", "outline_color", "outline_width", "alignment", "background_color", "shadow"]
                   }
                 },
                 "required": ["original", "type", "confidence", "text_box", "render_box", "rotation", "vertical", "style"]
@@ -143,10 +147,7 @@ public sealed class OllamaClient : IDisposable
         for (int index = 0; index < tiles.Count; index++)
         {
             ComicImageTile tile = tiles[index];
-            progress?.Report(new AnalysisProgress(
-                index,
-                totalSteps,
-                $"Leyendo fragmento {index + 1} de {tiles.Count}…"));
+            progress?.Report(new AnalysisProgress(index, totalSteps, $"Leyendo fragmento {index + 1} de {tiles.Count}…"));
 
             TileAnalysis analysis = await AnalyzeTileAsync(tile, model, cancellationToken);
             detected.AddRange(analysis.Regions);
@@ -168,11 +169,7 @@ public sealed class OllamaClient : IDisposable
             return new ComicAnalysis(sourceLanguage, regions);
         }
 
-        progress?.Report(new AnalysisProgress(
-            tiles.Count,
-            totalSteps,
-            $"Traduciendo {regions.Count} textos al español…"));
-
+        progress?.Report(new AnalysisProgress(tiles.Count, totalSteps, $"Traduciendo {regions.Count} textos al español…"));
         await TranslateRegionsAsync(regions, model, cancellationToken);
         progress?.Report(new AnalysisProgress(totalSteps, totalSteps, $"Listo · {regions.Count} textos traducidos"));
         return new ComicAnalysis(sourceLanguage, regions);
@@ -185,21 +182,28 @@ public sealed class OllamaClient : IDisposable
     {
         string prompt =
             """
-            Eres un rotulista profesional de cómics realizando OCR, NO una descripción de imágenes.
+            Eres un rotulista profesional de cómics realizando OCR y reconstrucción tipográfica, NO una descripción de imágenes.
             Examina este fragmento de una página y localiza absolutamente todo el texto legible: bocadillos,
             pensamientos, cartuchos, letreros y onomatopeyas. Devuelve una región distinta por cada bloque.
 
             Reglas críticas:
-            - Transcribe el texto en original exactamente, sin comillas añadidas y sin traducirlo todavía.
+            - Transcribe el texto original exactamente, sin comillas añadidas y sin traducirlo todavía.
             - No describas personajes ni dibujos. Si no hay letras legibles, devuelve regions vacío.
             - Las coordenadas van de 0 a 1000, con origen arriba a la izquierda de ESTE fragmento.
             - text_box rodea MUY AJUSTADAMENTE solo las letras impresas que deben borrarse.
-            - render_box es la zona interior segura para rotular, sin tocar el borde del bocadillo o cartucho.
+            - render_box es la zona interior segura para volver a rotular sin tocar el borde del bocadillo o cartucho.
             - Nunca uses como render_box un panel completo ni una gran zona de la ilustración.
             - Para texto sobre dibujo y efectos sonoros, render_box debe ser parecido a text_box.
             - Separa textos cercanos que pertenezcan a bocadillos diferentes.
             - confidence va de 0 a 1. No inventes texto ilegible.
-            - Estima tipografía, peso, mayúsculas, colores, contorno, alineación, fondo y rotación.
+            - rotation debe reproducir el ángulo real del texto original.
+            - Estima el aspecto de la rotulación original, no un estilo genérico.
+            - font_family: si reconoces una familia tipográfica concreta, devuelve su nombre real (por ejemplo Anime Ace, Wild Words, CCMeanwhile, Arial Narrow, Impact). Si no puedes reconocerla con suficiente confianza, usa null; no inventes nombres.
+            - font_size: tamaño visual aproximado de la fuente en la escala vertical 0..1000 de ESTE fragmento. Debe representar el tamaño de las letras, no la altura total del bocadillo.
+            - font_width_ratio: proporción aproximada de anchura de los glifos; 1.0 normal, menor de 1 condensada, mayor de 1 expandida.
+            - line_height_ratio: distancia entre líneas dividida por font_size. Normalmente está entre 0.9 y 1.4.
+            - line_count: número de líneas visuales del texto original.
+            - Conserva peso, cursiva, mayúsculas, colores, contorno, alineación, fondo y sombra observados.
             Responde únicamente con el JSON solicitado.
             """;
 
@@ -450,7 +454,7 @@ public sealed class OllamaClient : IDisposable
                 RenderBox = ToPageBox(localRender, tile),
                 Rotation = ReadDouble(item, "rotation", 0),
                 Vertical = ReadBool(item, "vertical"),
-                Style = ReadStyle(item)
+                Style = ReadStyle(item, tile)
             };
             regions.Add(RegionMerger.Sanitize(region));
         }
@@ -458,17 +462,27 @@ public sealed class OllamaClient : IDisposable
         return new TileAnalysis(language, regions);
     }
 
-    private static ComicTextStyle ReadStyle(JsonElement region)
+    private static ComicTextStyle ReadStyle(JsonElement region, ComicImageTile tile)
     {
         if (!region.TryGetProperty("style", out JsonElement style))
         {
             return new ComicTextStyle();
         }
 
+        double localFontSize = ReadDouble(style, "font_size", 0);
+        double pageFontSize = localFontSize <= 0
+            ? 0
+            : localFontSize * tile.Height / Math.Max(1d, tile.PageHeight);
+
         return new ComicTextStyle
         {
             FontCategory = ReadString(style, "font_category") is { Length: > 0 } category ? category : "comic",
+            FontFamily = ReadNullableString(style, "font_family"),
             FontWeight = (int)ReadDouble(style, "font_weight", 700),
+            FontSize = pageFontSize,
+            FontWidthRatio = ReadDouble(style, "font_width_ratio", 1),
+            LineHeightRatio = ReadDouble(style, "line_height_ratio", 1.08),
+            OriginalLineCount = (int)Math.Round(ReadDouble(style, "line_count", 0)),
             Italic = ReadBool(style, "italic"),
             Uppercase = ReadBool(style, "uppercase"),
             TextColor = ReadString(style, "text_color") is { Length: > 0 } textColor ? textColor : "#111111",
