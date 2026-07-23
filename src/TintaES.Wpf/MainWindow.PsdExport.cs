@@ -109,8 +109,8 @@ public partial class MainWindow
                 throw new InvalidOperationException("No se encuentra el exportador PSD de TintaES.");
             }
 
-            BusyTitleText.Text = "Comprobando soporte PSD…";
-            await EnsurePhotoshopApiAsync(pythonPath);
+            BusyTitleText.Text = "Comprobando motor PSD compatible…";
+            await EnsureAgPsdBackendAsync(pythonPath);
 
             string workspace = _comicWorkspace ?? Path.GetTempPath();
             string psdTemp = Path.Combine(workspace, "psd-export");
@@ -119,12 +119,11 @@ public partial class MainWindow
             temporaryComposite = Path.Combine(psdTemp, $"page-{_comicPageIndex + 1:D4}-composite.png");
             temporaryRegions = Path.Combine(psdTemp, $"page-{_comicPageIndex + 1:D4}-regions.json");
 
-            // Fondo limpio para la capa base del PSD.
+            // Fondo limpio: se guarda como la capa raster inferior del PSD.
             SaveBitmap(_cleanedBitmap, temporaryBackground);
 
-            // Imagen compuesta final. PhotoshopAPI conserva las capas editables, pero los PSD
-            // creados desde cero pueden no incluir una merged image válida para lectores de
-            // terceros. El script la insertará como sección Image Data sin tocar las capas.
+            // Composición final: ag-psd la escribe como imagen compuesta estándar del documento,
+            // evitando el PSD incompleto que producía el backend anterior en lectores como Krita.
             BitmapSource composite = _exportService.Render(_cleanedBitmap, page.Regions);
             SaveBitmap(composite, temporaryComposite);
 
@@ -133,7 +132,7 @@ public partial class MainWindow
                 JsonSerializer.Serialize(page.Regions, ProjectJsonOptions),
                 new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
 
-            BusyTitleText.Text = "Creando capas editables y compatibilidad PSD…";
+            BusyTitleText.Text = "Creando PSD compatible con capas editables…";
             FooterStatusText.Text = "Exportando PSD con fondo limpio, textos editables e imagen compuesta…";
             ProcessResult result = await RunPythonAsync(
                 pythonPath,
@@ -171,21 +170,21 @@ public partial class MainWindow
         }
     }
 
-    private async Task EnsurePhotoshopApiAsync(string pythonPath)
+    private async Task EnsureAgPsdBackendAsync(string pythonPath)
     {
-        ProcessResult probe = await RunPythonAsync(pythonPath, "-c", "import photoshopapi");
+        ProcessResult probe = await RunPythonAsync(pythonPath, "-c", "import nodejs_wheel");
         if (probe.ExitCode == 0)
         {
             return;
         }
 
-        BusyTitleText.Text = "Instalando soporte PSD por primera vez…";
-        FooterStatusText.Text = "Preparando PhotoshopAPI en el entorno local…";
-        ProcessResult install = await RunPythonAsync(pythonPath, "-m", "pip", "install", "PhotoshopAPI");
+        BusyTitleText.Text = "Instalando motor PSD compatible por primera vez…";
+        FooterStatusText.Text = "Preparando el runtime local para ag-psd…";
+        ProcessResult install = await RunPythonAsync(pythonPath, "-m", "pip", "install", "nodejs-wheel");
         if (install.ExitCode != 0)
         {
             throw new InvalidOperationException(
-                "No se pudo instalar PhotoshopAPI automáticamente. Comprueba la conexión a Internet y vuelve a intentar.\n" +
+                "No se pudo instalar el motor PSD automáticamente. Comprueba la conexión a Internet y vuelve a intentar.\n" +
                 install.StandardError.Trim());
         }
     }
