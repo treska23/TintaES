@@ -104,8 +104,8 @@ public partial class MainWindow
                 Panel.SetZIndex(moveThumb, 20);
 
                 // El handler original modificaba RenderBox y SafePolygon en cada píxel del
-                // arrastre, obligando a recalcular toda la composición y hasta el tamaño de
-                // fuente. Lo sustituimos por un desplazamiento visual independiente.
+                // arrastre. El nuevo mueve el contenedor completo según la posición absoluta
+                // del puntero, manteniendo fuente, geometría e hit-area sincronizados.
                 moveThumb.DragStarted -= RegionMoveThumb_DragStarted;
                 moveThumb.DragDelta -= RegionMoveThumb_DragDelta;
                 moveThumb.DragCompleted -= RegionThumb_DragCompleted;
@@ -120,7 +120,7 @@ public partial class MainWindow
                 text.Visibility = Visibility.Visible;
                 if (region is not null)
                 {
-                    ApplyTextTransform(text, region);
+                    ApplyRegionPlacement(layer, text, region);
                 }
                 text.InvalidateVisual();
             }
