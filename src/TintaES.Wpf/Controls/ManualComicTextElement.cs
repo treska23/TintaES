@@ -6,9 +6,10 @@ using TintaES.Core;
 namespace TintaES.Wpf.Controls;
 
 /// <summary>
-/// Renderiza una composición de líneas elegida por el usuario.
-/// Cada salto de línea del modelo corresponde exactamente a una línea dibujada:
-/// nunca se añaden saltos automáticos. Si una línea no cabe, la fuente se reduce.
+/// Renderiza la composición exacta escrita en el cuadro de traducción.
+/// Cada salto de línea corresponde a una línea real. Cambiar los saltos NO cambia
+/// automáticamente el tamaño: únicamente ManualFontScale controla la escala visual.
+/// La silueta segura se usa como recorte, no como excusa para reducir la fuente.
 /// </summary>
 public sealed class ManualComicTextElement : FrameworkElement
 {
@@ -49,14 +50,9 @@ public sealed class ManualComicTextElement : FrameworkElement
 
         IReadOnlyList<Point> safeShape = CreateEffectiveShape();
         Geometry? clip = safeShape.Count >= 3 ? CreatePolygonGeometry(safeShape) : null;
-
-        if (!TryFitExactLines(lines, typeface, fill, pixelsPerDip, safeShape, out ManualLayout? layout)
-            || layout is null)
-        {
-            return;
-        }
-
+        ManualLayout layout = CreateFixedLayout(lines, typeface, fill, pixelsPerDip, safeShape);
         Geometry geometry = BuildGeometry(layout, typeface, fill, pixelsPerDip);
+
         if (clip is not null)
         {
             drawingContext.PushClip(clip);
@@ -81,136 +77,76 @@ public sealed class ManualComicTextElement : FrameworkElement
         }
     }
 
-    private bool TryFitExactLines(
+    private ManualLayout CreateFixedLayout(
         IReadOnlyList<string> lines,
         Typeface typeface,
         Brush fill,
         double pixelsPerDip,
-        IReadOnlyList<Point> polygon,
-        out ManualLayout? layout)
+        IReadOnlyList<Point> polygon)
     {
         const double minimumSize = 1.2;
         double automaticMaximum = Math.Max(6, Math.Min(ActualHeight * 0.9, Math.Max(ActualWidth * 0.48, 16)));
-        double preferredMaximum = GetPreferredMaximumSize(automaticMaximum, minimumSize);
-        double manualScale = Math.Clamp(Region.ManualFontScale, 0.25, 2.5);
-        double high = Math.Max(minimumSize, preferredMaximum * manualScale);
-        double low = minimumSize;
-        ManualLayout? best = null;
-
-        for (int index = 0; index < 20; index++)
-        {
-            double size = (low + high) / 2;
-            if (TryCreateExactLayout(lines, typeface, fill, pixelsPerDip, polygon, size, out ManualLayout? candidate))
-            {
-                best = candidate;
-                low = size;
-            }
-            else
-            {
-                high = size;
-            }
-        }
-
-        if (best is null
-            && !TryCreateExactLayout(lines, typeface, fill, pixelsPerDip, polygon, minimumSize, out best))
-        {
-            layout = null;
-            return false;
-        }
-
-        layout = best;
-        return true;
-    }
-
-    private bool TryCreateExactLayout(
-        IReadOnlyList<string> lines,
-        Typeface typeface,
-        Brush fill,
-        double pixelsPerDip,
-        IReadOnlyList<Point> polygon,
-        double fontSize,
-        out ManualLayout? layout)
-    {
-        if (polygon.Count < 3 || lines.Count == 0)
-        {
-            layout = null;
-            return false;
-        }
-
+        double baseSize = GetPreferredMaximumSize(automaticMaximum, minimumSize);
+        double fontSize = Math.Max(minimumSize, baseSize * Math.Clamp(Region.ManualFontScale, 0.25, 2.5));
         double lineHeight = fontSize * Math.Clamp(Region.Style.LineHeightRatio, 0.82, 1.8);
         double outlinePixels = Region.Style.OutlineWidth / 1000 * PageWidth;
         double edgePadding = Math.Max(
             Math.Max(2.5, Math.Min(ActualWidth, ActualHeight) * 0.045),
             outlinePixels + fontSize * 0.10);
 
-        Rect bounds = GetPolygonBounds(polygon);
+        Rect bounds = polygon.Count >= 3
+            ? GetPolygonBounds(polygon)
+            : new Rect(0, 0, ActualWidth, ActualHeight);
         double usableTop = Math.Max(edgePadding, bounds.Top + edgePadding);
         double usableBottom = Math.Min(ActualHeight - edgePadding, bounds.Bottom - edgePadding);
+        double usableLeft = Math.Max(edgePadding, bounds.Left + edgePadding);
+        double usableRight = Math.Min(ActualWidth - edgePadding, bounds.Right - edgePadding);
+        if (usableRight <= usableLeft)
+        {
+            usableLeft = edgePadding;
+            usableRight = Math.Max(usableLeft + 1, ActualWidth - edgePadding);
+        }
+
         double blockHeight = lines.Count * lineHeight;
-        double maximumTop = usableBottom - blockHeight;
-        if (maximumTop < usableTop)
+        double preferredTop = GetOriginalTextCenterY() - blockHeight / 2;
+        double top;
+        if (usableBottom - usableTop >= blockHeight)
         {
-            layout = null;
-            return false;
+            top = Math.Clamp(preferredTop, usableTop, usableBottom - blockHeight);
+        }
+        else
+        {
+            // En modo manual no reducimos la fuente por cambiar los Enter. Si el bloque es
+            // demasiado alto, permanece centrado y el usuario decide la escala o posición.
+            top = (usableTop + usableBottom - blockHeight) / 2;
         }
 
-        double preferredCenterY = GetOriginalTextCenterY();
         double preferredCenterX = GetOriginalTextCenterX();
-        ManualLayout? best = null;
-        double bestDistance = double.PositiveInfinity;
-
-        foreach (double top in GetCandidateTops(usableTop, maximumTop, preferredCenterY - blockHeight / 2))
+        var placements = new List<ManualLinePlacement>(lines.Count);
+        for (int lineIndex = 0; lineIndex < lines.Count; lineIndex++)
         {
-            var placements = new List<ManualLinePlacement>(lines.Count);
-            bool fits = true;
+            string lineText = lines[lineIndex];
+            double lineTop = top + lineIndex * lineHeight;
+            double glyphTop = lineTop + Math.Max(0, (lineHeight - fontSize * 1.02) / 2);
+            double glyphBottom = Math.Min(lineTop + lineHeight, glyphTop + fontSize * 1.02);
 
-            for (int lineIndex = 0; lineIndex < lines.Count; lineIndex++)
+            HorizontalSpan span;
+            if (polygon.Count < 3
+                || !TryGetSafeSpanForBand(
+                    polygon,
+                    glyphTop,
+                    glyphBottom,
+                    preferredCenterX,
+                    edgePadding,
+                    out span))
             {
-                string lineText = lines[lineIndex];
-                double lineTop = top + lineIndex * lineHeight;
-                double glyphTop = lineTop + Math.Max(0, (lineHeight - fontSize * 1.02) / 2);
-                double glyphBottom = Math.Min(lineTop + lineHeight, glyphTop + fontSize * 1.02);
-
-                if (!TryGetSafeSpanForBand(
-                        polygon,
-                        glyphTop,
-                        glyphBottom,
-                        preferredCenterX,
-                        edgePadding,
-                        out HorizontalSpan span))
-                {
-                    fits = false;
-                    break;
-                }
-
-                double measured = string.IsNullOrEmpty(lineText)
-                    ? 0
-                    : MeasureText(lineText, typeface, fontSize, fill, pixelsPerDip);
-                if (measured > span.Width + 0.25)
-                {
-                    fits = false;
-                    break;
-                }
-
-                placements.Add(new ManualLinePlacement(lineText, span.Left, lineTop, span.Width));
+                span = new HorizontalSpan(usableLeft, usableRight);
             }
 
-            if (!fits)
-            {
-                continue;
-            }
-
-            double actualCenter = top + blockHeight / 2;
-            double distance = Math.Abs(actualCenter - preferredCenterY);
-            if (distance < bestDistance)
-            {
-                bestDistance = distance;
-                best = new ManualLayout(fontSize, lineHeight, placements);
-            }
+            placements.Add(new ManualLinePlacement(lineText, span.Left, lineTop, span.Width));
         }
 
-        layout = best;
-        return best is not null;
+        return new ManualLayout(fontSize, lineHeight, placements);
     }
 
     private Geometry BuildGeometry(
@@ -306,20 +242,6 @@ public sealed class ManualComicTextElement : FrameworkElement
         return ellipse;
     }
 
-    private static IEnumerable<double> GetCandidateTops(double minimum, double maximum, double preferred)
-    {
-        if (maximum <= minimum)
-        {
-            yield return minimum;
-            yield break;
-        }
-
-        yield return Math.Clamp(preferred, minimum, maximum);
-        yield return (minimum + maximum) / 2;
-        yield return minimum;
-        yield return maximum;
-    }
-
     private static bool TryGetSafeSpanForBand(
         IReadOnlyList<Point> polygon,
         double top,
@@ -331,9 +253,9 @@ public sealed class ManualComicTextElement : FrameworkElement
         double left = double.NegativeInfinity;
         double right = double.PositiveInfinity;
         double height = Math.Max(0.5, bottom - top);
-        for (int sample = 0; sample < 7; sample++)
+        for (int sample = 0; sample < 5; sample++)
         {
-            double y = top + height * sample / 6;
+            double y = top + height * sample / 4;
             if (!TryGetHorizontalSpan(polygon, y, preferredX, out HorizontalSpan span))
             {
                 safeSpan = default;
@@ -412,14 +334,6 @@ public sealed class ManualComicTextElement : FrameworkElement
         geometry.Freeze();
         return geometry;
     }
-
-    private static double MeasureText(
-        string text,
-        Typeface typeface,
-        double size,
-        Brush fill,
-        double pixelsPerDip) =>
-        CreateLineFormatted(text, typeface, size, fill, pixelsPerDip).WidthIncludingTrailingWhitespace;
 
     private static FormattedText CreateLineFormatted(
         string text,
