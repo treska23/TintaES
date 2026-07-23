@@ -49,8 +49,18 @@ public sealed class ImageExportService
                 PageWidth = width,
                 PageHeight = height,
                 Width = elementWidth,
-                Height = elementHeight
+                Height = elementHeight,
+                RenderTransformOrigin = new Point(0.5, 0.5)
             };
+
+            double scale = Math.Clamp(region.ManualFontScale, 0.25, 2.5);
+            var transforms = new TransformGroup();
+            transforms.Children.Add(new ScaleTransform(scale, scale));
+            transforms.Children.Add(new TranslateTransform(
+                region.TextOffsetX / 1000 * width,
+                region.TextOffsetY / 1000 * height));
+            text.RenderTransform = transforms;
+
             layer.Children.Add(text);
             Canvas.SetLeft(layer, left);
             Canvas.SetTop(layer, top);
