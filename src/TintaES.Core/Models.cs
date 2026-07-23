@@ -72,6 +72,12 @@ public sealed class ComicRegion : INotifyPropertyChanged
     public string DisplayText => string.IsNullOrWhiteSpace(Translation) ? Original : Translation;
     public string Type { get => _type; set => Set(ref _type, value); }
     public double Confidence { get; set; } = 0.75;
+
+    // Confianza independiente de que el bloque de texto esté realmente dentro de un
+    // bocadillo. El motor orgánico ya calcula este dato y nos permite conservar una
+    // exclamación corta dentro de un globo sin empezar a traducir onomatopeyas exteriores.
+    public double BubbleConfidence { get; set; }
+
     public NormalizedRect TextBox { get; set; } = new(100, 100, 200, 80);
     public NormalizedRect RenderBox { get; set; } = new(90, 85, 220, 110);
     public IReadOnlyList<NormalizedPoint> SafePolygon { get; set; } = [];
