@@ -6,6 +6,7 @@ using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using Microsoft.Win32;
 using TintaES.Core;
+using TintaES.Wpf.Services;
 
 namespace TintaES.Wpf;
 
