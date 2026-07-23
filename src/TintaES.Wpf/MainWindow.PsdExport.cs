@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using Microsoft.Win32;
 
@@ -92,6 +93,7 @@ public partial class MainWindow
         await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Render);
 
         string? temporaryBackground = null;
+        string? temporaryComposite = null;
         string? temporaryRegions = null;
         try
         {
@@ -114,19 +116,30 @@ public partial class MainWindow
             string psdTemp = Path.Combine(workspace, "psd-export");
             Directory.CreateDirectory(psdTemp);
             temporaryBackground = Path.Combine(psdTemp, $"page-{_comicPageIndex + 1:D4}-background.png");
+            temporaryComposite = Path.Combine(psdTemp, $"page-{_comicPageIndex + 1:D4}-composite.png");
             temporaryRegions = Path.Combine(psdTemp, $"page-{_comicPageIndex + 1:D4}-regions.json");
+
+            // Fondo limpio para la capa base del PSD.
             SaveBitmap(_cleanedBitmap, temporaryBackground);
+
+            // Imagen compuesta final. PhotoshopAPI conserva las capas editables, pero los PSD
+            // creados desde cero pueden no incluir una merged image válida para lectores de
+            // terceros. El script la insertará como sección Image Data sin tocar las capas.
+            BitmapSource composite = _exportService.Render(_cleanedBitmap, page.Regions);
+            SaveBitmap(composite, temporaryComposite);
+
             await File.WriteAllTextAsync(
                 temporaryRegions,
                 JsonSerializer.Serialize(page.Regions, ProjectJsonOptions),
                 new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
 
-            BusyTitleText.Text = "Creando capas editables de Photoshop…";
-            FooterStatusText.Text = "Exportando PSD con una capa de texto por bocadillo…";
+            BusyTitleText.Text = "Creando capas editables y compatibilidad PSD…";
+            FooterStatusText.Text = "Exportando PSD con fondo limpio, textos editables e imagen compuesta…";
             ProcessResult result = await RunPythonAsync(
                 pythonPath,
                 exporterPath,
                 "--background", temporaryBackground,
+                "--composite", temporaryComposite,
                 "--regions", temporaryRegions,
                 "--output", dialog.FileName);
 
@@ -148,6 +161,7 @@ public partial class MainWindow
         finally
         {
             TryDeleteTemporaryFile(temporaryBackground);
+            TryDeleteTemporaryFile(temporaryComposite);
             TryDeleteTemporaryFile(temporaryRegions);
             BusyOverlay.Visibility = Visibility.Collapsed;
             BusyProgressBar.IsIndeterminate = false;
