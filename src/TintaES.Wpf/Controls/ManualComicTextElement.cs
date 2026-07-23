@@ -6,10 +6,9 @@ using TintaES.Core;
 namespace TintaES.Wpf.Controls;
 
 /// <summary>
-/// Renderiza la composición exacta escrita en el cuadro de traducción.
-/// Cada salto de línea corresponde a una línea real. Cambiar los saltos NO cambia
-/// automáticamente el tamaño: únicamente ManualFontScale controla la escala visual.
-/// La silueta segura se usa como recorte, no como excusa para reducir la fuente.
+/// Renderiza la composición exacta escrita por el usuario. La primera vez que una zona entra
+/// en modo manual calcula el tamaño que tenía su composición automática y lo congela como
+/// punto de partida. A partir de ahí los Enter no cambian el tamaño: solo ManualFontScale.
 /// </summary>
 public sealed class ManualComicTextElement : FrameworkElement
 {
@@ -49,15 +48,12 @@ public sealed class ManualComicTextElement : FrameworkElement
             : ParseBrush(Region.Style.OutlineColor, null);
 
         IReadOnlyList<Point> safeShape = CreateEffectiveShape();
-        Geometry? clip = safeShape.Count >= 3 ? CreatePolygonGeometry(safeShape) : null;
-        ManualLayout layout = CreateFixedLayout(lines, typeface, fill, pixelsPerDip, safeShape);
+        double baseFontSize = GetOrCreateManualBaseFontSize(typeface, fill, pixelsPerDip, safeShape);
+        ManualLayout layout = CreateFixedLayout(lines, typeface, fill, pixelsPerDip, safeShape, baseFontSize);
         Geometry geometry = BuildGeometry(layout, typeface, fill, pixelsPerDip);
 
-        if (clip is not null)
-        {
-            drawingContext.PushClip(clip);
-        }
-
+        // En modo manual no recortamos los glifos contra la máscara del bocadillo. El usuario
+        // debe poder ver siempre el texto completo mientras lo recoloca o cambia su escala.
         if (Region.Style.Shadow)
         {
             drawingContext.PushTransform(new TranslateTransform(layout.FontSize * 0.06, layout.FontSize * 0.08));
@@ -70,11 +66,142 @@ public sealed class ManualComicTextElement : FrameworkElement
             ? null
             : new Pen(outline, Math.Max(1, outlinePixels * 2)) { LineJoin = PenLineJoin.Round };
         drawingContext.DrawGeometry(fill, pen, geometry);
+    }
 
-        if (clip is not null)
+    private double GetOrCreateManualBaseFontSize(
+        Typeface typeface,
+        Brush fill,
+        double pixelsPerDip,
+        IReadOnlyList<Point> polygon)
+    {
+        if (Region.ManualBaseFontSize > 0)
         {
-            drawingContext.Pop();
+            return Region.ManualBaseFontSize;
         }
+
+        string seedText = NormalizeNewLines(
+            string.IsNullOrWhiteSpace(Region.ManualLayoutSeedText)
+                ? Region.DisplayText
+                : Region.ManualLayoutSeedText!);
+
+        if (Region.Style.Uppercase)
+        {
+            seedText = seedText.ToUpper(CultureInfo.GetCultureInfo("es-ES"));
+        }
+
+        string[] seedLines = seedText.Split('\n', StringSplitOptions.None)
+            .Select(line => line.TrimEnd())
+            .ToArray();
+
+        const double minimumSize = 1.2;
+        double automaticMaximum = Math.Max(6, Math.Min(ActualHeight * 0.9, Math.Max(ActualWidth * 0.48, 16)));
+        double high = GetPreferredMaximumSize(automaticMaximum, minimumSize);
+        double low = minimumSize;
+        double best = minimumSize;
+
+        for (int index = 0; index < 18; index++)
+        {
+            double candidate = (low + high) / 2;
+            if (SeedLinesFit(seedLines, typeface, fill, pixelsPerDip, polygon, candidate))
+            {
+                best = candidate;
+                low = candidate;
+            }
+            else
+            {
+                high = candidate;
+            }
+        }
+
+        Region.ManualBaseFontSize = Math.Max(minimumSize, best);
+        return Region.ManualBaseFontSize;
+    }
+
+    private bool SeedLinesFit(
+        IReadOnlyList<string> lines,
+        Typeface typeface,
+        Brush fill,
+        double pixelsPerDip,
+        IReadOnlyList<Point> polygon,
+        double fontSize)
+    {
+        if (lines.Count == 0)
+        {
+            return false;
+        }
+
+        double lineHeight = fontSize * Math.Clamp(Region.Style.LineHeightRatio, 0.82, 1.8);
+        double outlinePixels = Region.Style.OutlineWidth / 1000 * PageWidth;
+        double edgePadding = Math.Max(
+            Math.Max(2.5, Math.Min(ActualWidth, ActualHeight) * 0.045),
+            outlinePixels + fontSize * 0.10);
+
+        Rect bounds = polygon.Count >= 3
+            ? GetPolygonBounds(polygon)
+            : new Rect(0, 0, ActualWidth, ActualHeight);
+        double usableTop = Math.Max(edgePadding, bounds.Top + edgePadding);
+        double usableBottom = Math.Min(ActualHeight - edgePadding, bounds.Bottom - edgePadding);
+        double usableLeft = Math.Max(edgePadding, bounds.Left + edgePadding);
+        double usableRight = Math.Min(ActualWidth - edgePadding, bounds.Right - edgePadding);
+        double blockHeight = lines.Count * lineHeight;
+        if (usableBottom - usableTop < blockHeight || usableRight <= usableLeft)
+        {
+            return false;
+        }
+
+        double preferredCenterX = GetOriginalTextCenterX();
+        double preferredTop = GetOriginalTextCenterY() - blockHeight / 2;
+        double minimumTop = usableTop;
+        double maximumTop = usableBottom - blockHeight;
+        double[] candidates =
+        [
+            Math.Clamp(preferredTop, minimumTop, maximumTop),
+            (minimumTop + maximumTop) / 2,
+            minimumTop,
+            maximumTop
+        ];
+
+        foreach (double top in candidates.Distinct())
+        {
+            bool fits = true;
+            for (int lineIndex = 0; lineIndex < lines.Count; lineIndex++)
+            {
+                double lineTop = top + lineIndex * lineHeight;
+                double glyphTop = lineTop + Math.Max(0, (lineHeight - fontSize * 1.02) / 2);
+                double glyphBottom = Math.Min(lineTop + lineHeight, glyphTop + fontSize * 1.02);
+
+                HorizontalSpan span;
+                if (polygon.Count < 3
+                    || !TryGetSafeSpanForBand(
+                        polygon,
+                        glyphTop,
+                        glyphBottom,
+                        preferredCenterX,
+                        edgePadding,
+                        out span))
+                {
+                    span = new HorizontalSpan(usableLeft, usableRight);
+                }
+
+                double width = string.IsNullOrEmpty(lines[lineIndex])
+                    ? 0
+                    : CreateLineFormatted(lines[lineIndex], typeface, fontSize, fill, pixelsPerDip)
+                        .WidthIncludingTrailingWhitespace;
+
+                if (width > span.Width + 0.25)
+                {
+                    fits = false;
+                    break;
+                }
+            }
+
+            if (fits)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private ManualLayout CreateFixedLayout(
@@ -82,11 +209,10 @@ public sealed class ManualComicTextElement : FrameworkElement
         Typeface typeface,
         Brush fill,
         double pixelsPerDip,
-        IReadOnlyList<Point> polygon)
+        IReadOnlyList<Point> polygon,
+        double baseSize)
     {
         const double minimumSize = 1.2;
-        double automaticMaximum = Math.Max(6, Math.Min(ActualHeight * 0.9, Math.Max(ActualWidth * 0.48, 16)));
-        double baseSize = GetPreferredMaximumSize(automaticMaximum, minimumSize);
         double fontSize = Math.Max(minimumSize, baseSize * Math.Clamp(Region.ManualFontScale, 0.25, 2.5));
         double lineHeight = fontSize * Math.Clamp(Region.Style.LineHeightRatio, 0.82, 1.8);
         double outlinePixels = Region.Style.OutlineWidth / 1000 * PageWidth;
@@ -116,8 +242,8 @@ public sealed class ManualComicTextElement : FrameworkElement
         }
         else
         {
-            // En modo manual no reducimos la fuente por cambiar los Enter. Si el bloque es
-            // demasiado alto, permanece centrado y el usuario decide la escala o posición.
+            // Cambiar los saltos no toca la escala. Si el bloque ya no cabe, permanece visible
+            // y el usuario decide si reduce el slider o desplaza el texto.
             top = (usableTop + usableBottom - blockHeight) / 2;
         }
 
@@ -321,18 +447,6 @@ public sealed class ManualComicTextElement : FrameworkElement
         double right = polygon.Max(point => point.X);
         double bottom = polygon.Max(point => point.Y);
         return new Rect(new Point(left, top), new Point(right, bottom));
-    }
-
-    private static Geometry CreatePolygonGeometry(IReadOnlyList<Point> polygon)
-    {
-        var geometry = new StreamGeometry();
-        using (StreamGeometryContext context = geometry.Open())
-        {
-            context.BeginFigure(polygon[0], true, true);
-            context.PolyLineTo(polygon.Skip(1).ToArray(), true, true);
-        }
-        geometry.Freeze();
-        return geometry;
     }
 
     private static FormattedText CreateLineFormatted(
