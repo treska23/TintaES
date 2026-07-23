@@ -186,7 +186,7 @@ public sealed class ManualComicTextElement : FrameworkElement
         }
 
         double originalPixels = Region.Style.FontSize / 1000 * PageHeight;
-        return Math.Max(minimum, originalPixels * 1.03 * scale);
+        return Math.Clamp(originalPixels * 1.03 * scale, minimum, automaticMaximum);
     }
 
     private double GetOriginalTextCenterY()
