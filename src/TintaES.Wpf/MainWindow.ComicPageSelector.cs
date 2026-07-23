@@ -99,12 +99,14 @@ public partial class MainWindow
         OpenImageButton.Content = "Abrir cómic";
 
         InstallProjectCommands();
+        InstallClassicMenu();
         InstallPsdExportCommand();
 
         if (_pageSelectorComboBox is not null
             || _pageCounterText?.Parent is not StackPanel previewPanel)
         {
             UpdateProjectCommandAvailability();
+            UpdateClassicMenuAvailability();
             return;
         }
 
@@ -122,6 +124,7 @@ public partial class MainWindow
         _pageCounterText.LayoutUpdated += (_, _) => SyncDirectPageSelector();
         SyncDirectPageSelector();
         UpdateProjectCommandAvailability();
+        UpdateClassicMenuAvailability();
     }
 
     private void OpenComicFilesButton_Click_Multi(object sender, RoutedEventArgs e)
@@ -179,6 +182,7 @@ public partial class MainWindow
                 ClearComicPageBitmapCache();
                 LoadComicFromCbz(cbzFiles[0]);
                 UpdateProjectCommandAvailability();
+                UpdateClassicMenuAvailability();
                 return;
             }
 
@@ -204,6 +208,7 @@ public partial class MainWindow
             ClearComicPageBitmapCache();
             LoadComicSession(images, title);
             UpdateProjectCommandAvailability();
+            UpdateClassicMenuAvailability();
         }
         catch (Exception exception)
         {
@@ -246,6 +251,7 @@ public partial class MainWindow
         }
 
         UpdateProjectCommandAvailability();
+        UpdateClassicMenuAvailability();
     }
 
     private void PageSelectorComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
