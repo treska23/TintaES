@@ -76,7 +76,19 @@ public partial class MainWindow
             return;
         }
 
-        _selectedRegion.Translation = TranslationTextBox.Text;
+        string translation = TranslationTextBox.Text;
+        _selectedRegion.Translation = translation;
+
+        // En diálogos normales, introducir Enter activa la composición manual. El
+        // renderizador rectangular de WPF respeta los saltos de línea explícitos,
+        // mientras que el compositor automático por silueta redistribuye las palabras.
+        // De este modo el usuario decide exactamente dónde corta cada línea y después
+        // puede ajustar Escala y arrastrar la zona a su posición final.
+        if (_selectedRegion.Type != "sfx")
+        {
+            _selectedRegion.Vertical = HasExplicitLineBreaks(translation);
+        }
+
         _selectedRegion.NotifyVisualChange();
         InvalidateRegionVisual(_selectedRegion);
     }
@@ -112,4 +124,7 @@ public partial class MainWindow
             break;
         }
     }
+
+    private static bool HasExplicitLineBreaks(string text) =>
+        text.Contains('\n') || text.Contains('\r');
 }
