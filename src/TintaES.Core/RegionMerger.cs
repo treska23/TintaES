@@ -69,10 +69,17 @@ public static class RegionMerger
             region.RenderBox = region.TextBox.Expand(expansionX, expansionY);
         }
 
+        region.Style.FontFamily = string.IsNullOrWhiteSpace(region.Style.FontFamily)
+            ? null
+            : region.Style.FontFamily.Trim()[..Math.Min(80, region.Style.FontFamily.Trim().Length)];
         region.Style.FontWeight = Math.Clamp(
-            (int)Math.Round(region.Style.FontWeight / 100d) * 100,
-            400,
+            (int)Math.Round(region.Style.FontWeight / 50d) * 50,
+            100,
             900);
+        region.Style.FontSize = Math.Clamp(region.Style.FontSize, 0, 250);
+        region.Style.FontWidthRatio = Math.Clamp(region.Style.FontWidthRatio, 0.55, 1.5);
+        region.Style.LineHeightRatio = Math.Clamp(region.Style.LineHeightRatio, 0.8, 1.8);
+        region.Style.OriginalLineCount = Math.Clamp(region.Style.OriginalLineCount, 0, 20);
         region.Style.OutlineWidth = Math.Clamp(region.Style.OutlineWidth, 0, 8);
         region.Style.TextColor = NormalizeColor(region.Style.TextColor, "#111111");
         region.Style.OutlineColor = NormalizeNullableColor(region.Style.OutlineColor);
