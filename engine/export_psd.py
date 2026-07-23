@@ -14,6 +14,7 @@ import photoshopapi as psapi
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Exporta una página de TintaES a PSD editable")
     parser.add_argument("--background", required=True)
+    parser.add_argument("--composite", required=True)
     parser.add_argument("--regions", required=True)
     parser.add_argument("--output", required=True)
     return parser.parse_args()
@@ -65,9 +66,100 @@ def get_font_size(region: dict[str, Any], page_height: int, box_height: float) -
     return max(4.0, min(500.0, base * scale))
 
 
+def _read_u16_be(data: bytes, offset: int) -> int:
+    if offset < 0 or offset + 2 > len(data):
+        raise ValueError("PSD truncado al leer un entero de 16 bits")
+    return int.from_bytes(data[offset : offset + 2], "big", signed=False)
+
+
+def _read_u32_be(data: bytes, offset: int) -> int:
+    if offset < 0 or offset + 4 > len(data):
+        raise ValueError("PSD truncado al leer un entero de 32 bits")
+    return int.from_bytes(data[offset : offset + 4], "big", signed=False)
+
+
+def _locate_composite_image_section(data: bytes) -> tuple[int, int, int, int, int, int]:
+    """Devuelve offset de Image Data y metadatos básicos del PSD v1.
+
+    La estructura PSD es: cabecera fija de 26 bytes, Color Mode Data,
+    Image Resources, Layer and Mask Information e Image Data. Las tres
+    secciones intermedias empiezan por una longitud big-endian de 32 bits.
+    """
+    if len(data) < 26 or data[0:4] != b"8BPS":
+        raise ValueError("El archivo generado no tiene una cabecera PSD válida")
+
+    version = _read_u16_be(data, 4)
+    if version != 1:
+        raise ValueError(f"Solo se puede completar un PSD estándar v1; versión encontrada: {version}")
+
+    channels = _read_u16_be(data, 12)
+    height = _read_u32_be(data, 14)
+    width = _read_u32_be(data, 18)
+    depth = _read_u16_be(data, 22)
+    color_mode = _read_u16_be(data, 24)
+
+    offset = 26
+    for section_name in ("Color Mode Data", "Image Resources", "Layer and Mask Information"):
+        length = _read_u32_be(data, offset)
+        offset += 4
+        end = offset + length
+        if end > len(data):
+            raise ValueError(f"La sección {section_name} del PSD está truncada")
+        offset = end
+
+    return offset, channels, width, height, depth, color_mode
+
+
+def inject_merged_composite(psd_path: Path, composite_path: Path) -> None:
+    """Añade una imagen compuesta RAW válida sin tocar la información de capas.
+
+    PhotoshopAPI prioriza archivos pequeños y sus PSD creados desde cero pueden
+    no contener una imagen merged/composite utilizable por lectores de terceros.
+    Conservamos intactas todas las capas y reemplazamos únicamente la última
+    sección Image Data del PSD por una composición RGB/RGBA sin compresión.
+    """
+    data = psd_path.read_bytes()
+    image_offset, channels, width, height, depth, color_mode = _locate_composite_image_section(data)
+
+    if depth != 8:
+        raise ValueError(f"La compatibilidad de imagen compuesta requiere 8 bits por canal; encontrados: {depth}")
+    if color_mode != 3:
+        raise ValueError(f"La compatibilidad de imagen compuesta requiere RGB; modo encontrado: {color_mode}")
+    if channels < 3:
+        raise ValueError(f"Un PSD RGB debe tener al menos 3 canales; encontrados: {channels}")
+
+    with Image.open(composite_path) as source:
+        composite = source.convert("RGBA" if channels >= 4 else "RGB")
+        if composite.size != (width, height):
+            raise ValueError(
+                f"La composición mide {composite.width}x{composite.height}, "
+                f"pero el PSD mide {width}x{height}"
+            )
+        pixels = np.asarray(composite, dtype=np.uint8)
+
+    planes: list[bytes] = []
+    planes.append(np.ascontiguousarray(pixels[:, :, 0]).tobytes())
+    planes.append(np.ascontiguousarray(pixels[:, :, 1]).tobytes())
+    planes.append(np.ascontiguousarray(pixels[:, :, 2]).tobytes())
+
+    if channels >= 4:
+        alpha = pixels[:, :, 3] if pixels.shape[2] >= 4 else np.full((height, width), 255, dtype=np.uint8)
+        planes.append(np.ascontiguousarray(alpha).tobytes())
+
+    # Los canales adicionales no son necesarios para TintaES, pero si la librería
+    # hubiese creado alguno conservamos una sección de tamaño válido rellenándolo.
+    while len(planes) < channels:
+        planes.append(bytes(width * height))
+
+    # Compression = 0 (RAW), seguido de todos los planos de canal en orden.
+    image_data = b"\x00\x00" + b"".join(planes[:channels])
+    psd_path.write_bytes(data[:image_offset] + image_data)
+
+
 def main() -> None:
     args = parse_args()
     background_path = Path(args.background)
+    composite_path = Path(args.composite)
     regions_path = Path(args.regions)
     output_path = Path(args.output)
 
@@ -150,6 +242,7 @@ def main() -> None:
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     document.write(os.fspath(output_path))
+    inject_merged_composite(output_path, composite_path)
 
 
 if __name__ == "__main__":
