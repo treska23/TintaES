@@ -1,8 +1,8 @@
+using System.Collections.Specialized;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
-using System.Windows.Media;
 using TintaES.Core;
 using TintaES.Wpf.Controls;
 using TintaES.Wpf.Services;
@@ -10,10 +10,9 @@ using TintaES.Wpf.Services;
 namespace TintaES.Wpf;
 
 /// <summary>
-/// Edición fina de la composición y navegación del lienzo.
-/// - El editor muestra los saltos de línea calculados por el rotulador automático.
-/// - Al editar esos saltos, la zona pasa a composición manual: cada Enter es una línea real.
-/// - Espacio + arrastrar desplaza la página como en Photoshop.
+/// Mantiene una sola composición de líneas para editor y bocadillo y la navegación
+/// Espacio + arrastrar. El cálculo automático se hace una sola vez al incorporar la región,
+/// nunca al hacer clic sobre ella.
 /// </summary>
 public partial class MainWindow
 {
@@ -39,73 +38,76 @@ public partial class MainWindow
         }
 
         _textLayoutHooksInstalled = true;
+        _regions.CollectionChanged += Regions_CollectionChanged_ForLineLayout;
         RegionListBox.SelectionChanged += RegionListBox_SelectionChanged_LineLayout;
         TranslationTextBox.TextChanged += TranslationTextBox_TextChanged_LineLayout;
         FontScaleSlider.ValueChanged += FontScaleSlider_ValueChanged_ManualLineLayout;
-        OverlayCanvas.LayoutUpdated += OverlayCanvas_ManualLineLayoutUpdated;
+
+        foreach (ComicRegion region in _regions)
+        {
+            PrepareRegionLineLayout(region);
+        }
+    }
+
+    private void Regions_CollectionChanged_ForLineLayout(object? sender, NotifyCollectionChangedEventArgs e)
+    {
+        if (e.NewItems is null)
+        {
+            return;
+        }
+
+        foreach (ComicRegion region in e.NewItems.OfType<ComicRegion>())
+        {
+            // El Refresh global de la lista en cada carácter era innecesario: los bindings ya
+            // reciben INotifyPropertyChanged. Lo quitamos para evitar pausas durante la edición.
+            region.PropertyChanged -= Region_PropertyChanged;
+            PrepareRegionLineLayout(region);
+        }
+    }
+
+    private void PrepareRegionLineLayout(ComicRegion region)
+    {
+        if (_originalBitmap is null
+            || region.Type == "sfx"
+            || string.IsNullOrWhiteSpace(region.Translation)
+            || region.IsManual)
+        {
+            return;
+        }
+
+        string formatted = _editorLineBreakService.FormatForEditor(
+            region,
+            _originalBitmap.PixelWidth,
+            _originalBitmap.PixelHeight);
+
+        if (!string.IsNullOrWhiteSpace(formatted))
+        {
+            region.Translation = formatted;
+        }
+
+        // A partir de aquí Translation es la única fuente de verdad para la composición.
+        // Las líneas del cuadro lateral son exactamente las que dibuja el bocadillo.
+        region.IsManual = true;
+        region.Vertical = false;
     }
 
     private void RegionListBox_SelectionChanged_LineLayout(object sender, SelectionChangedEventArgs e)
     {
-        if (_selectedRegion is null || _originalBitmap is null)
+        if (_selectedRegion is not null)
         {
-            return;
-        }
-
-        // Una composición manual ya contiene exactamente los saltos elegidos por el usuario.
-        if (_selectedRegion.Type != "sfx" && HasExplicitLineBreaks(_selectedRegion.Translation))
-        {
-            _selectedRegion.Vertical = true;
-            RefreshManualLineVisual(_selectedRegion);
-            return;
-        }
-
-        RefreshManualLineVisual(_selectedRegion);
-
-        string formatted = _editorLineBreakService.FormatForEditor(
-            _selectedRegion,
-            _originalBitmap.PixelWidth,
-            _originalBitmap.PixelHeight);
-
-        if (string.IsNullOrWhiteSpace(formatted)
-            || string.Equals(formatted, TranslationTextBox.Text, StringComparison.Ordinal))
-        {
-            return;
-        }
-
-        // El cuadro lateral enseña la propuesta automática con sus líneas. Translation sigue
-        // limpia hasta que el usuario toque el contenido. En ese momento esos saltos pasan a
-        // ser la composición manual real que se dibuja en la página.
-        _syncingEditor = true;
-        try
-        {
-            int caret = Math.Min(TranslationTextBox.CaretIndex, formatted.Length);
-            TranslationTextBox.Text = formatted;
-            TranslationTextBox.CaretIndex = caret;
-        }
-        finally
-        {
-            _syncingEditor = false;
+            RefreshManualLineVisual(_selectedRegion, invalidate: false);
         }
     }
 
     private void TranslationTextBox_TextChanged_LineLayout(object sender, TextChangedEventArgs e)
     {
-        if (_syncingEditor || _selectedRegion is null)
+        if (_syncingEditor || _selectedRegion is null || _selectedRegion.Type == "sfx")
         {
             return;
         }
 
-        bool manualLines = _selectedRegion.Type != "sfx"
-            && HasExplicitLineBreaks(TranslationTextBox.Text);
-
-        // Vertical se mantiene como indicador compatible de composición manual para diálogo,
-        // pero el dibujo ya no usa el render rectangular que añadía saltos por su cuenta.
-        if (_selectedRegion.Type != "sfx")
-        {
-            _selectedRegion.Vertical = manualLines;
-        }
-
+        _selectedRegion.IsManual = true;
+        _selectedRegion.Vertical = false;
         RefreshManualLineVisual(_selectedRegion);
     }
 
@@ -113,7 +115,7 @@ public partial class MainWindow
         object sender,
         RoutedPropertyChangedEventArgs<double> e)
     {
-        if (_syncingEditor || _selectedRegion is null)
+        if (_syncingEditor || _selectedRegion is null || !_selectedRegion.IsManual)
         {
             return;
         }
@@ -121,90 +123,72 @@ public partial class MainWindow
         RefreshManualLineVisual(_selectedRegion);
     }
 
-    private void OverlayCanvas_ManualLineLayoutUpdated(object? sender, EventArgs e)
+    private void RefreshManualLineVisual(ComicRegion region, bool invalidate = true)
     {
-        if (_selectedRegion is not null
-            && _selectedRegion.Type != "sfx"
-            && HasExplicitLineBreaks(_selectedRegion.Translation))
+        foreach (Grid layer in OverlayCanvas.Children.OfType<Grid>())
         {
-            // RebuildOverlay puede recrear la capa por cambios de estilo. Reponemos el
-            // render manual solo si falta; no invalidamos continuamente durante LayoutUpdated.
-            RefreshManualLineVisual(_selectedRegion, invalidate: false);
+            if (ReferenceEquals(layer.Tag, region))
+            {
+                EnsureManualLineVisual(layer, region, invalidate);
+                return;
+            }
         }
     }
 
-    private void RefreshManualLineVisual(ComicRegion region, bool invalidate = true)
+    private void EnsureManualLineVisual(Grid layer, ComicRegion region, bool invalidate = true)
     {
         if (_originalBitmap is null)
         {
             return;
         }
 
-        foreach (Grid layer in OverlayCanvas.Children.OfType<Grid>())
+        ComicTextElement? automatic = layer.Children.OfType<ComicTextElement>().FirstOrDefault();
+        ManualComicTextElement? manual = layer.Children.OfType<ManualComicTextElement>().FirstOrDefault();
+        bool useManual = region.Type != "sfx" && region.IsManual;
+
+        if (!useManual)
         {
-            if (!ReferenceEquals(layer.Tag, region))
-            {
-                continue;
-            }
-
-            ComicTextElement? automatic = layer.Children.OfType<ComicTextElement>().FirstOrDefault();
-            ManualComicTextElement? manual = layer.Children.OfType<ManualComicTextElement>().FirstOrDefault();
-            bool useManual = region.Type != "sfx" && HasExplicitLineBreaks(region.Translation);
-
-            if (!useManual)
-            {
-                if (automatic is not null)
-                {
-                    automatic.Visibility = Visibility.Visible;
-                    automatic.InvalidateVisual();
-                }
-                if (manual is not null)
-                {
-                    manual.Visibility = Visibility.Collapsed;
-                }
-                return;
-            }
-
-            if (manual is null)
-            {
-                manual = new ManualComicTextElement
-                {
-                    Region = region,
-                    PageWidth = _originalBitmap.PixelWidth,
-                    PageHeight = _originalBitmap.PixelHeight,
-                    Width = layer.Width,
-                    Height = layer.Height,
-                    IsHitTestVisible = false
-                };
-                Panel.SetZIndex(manual, 11);
-                layer.Children.Add(manual);
-                invalidate = true;
-            }
-            else
-            {
-                if (Math.Abs(manual.Width - layer.Width) > 0.1)
-                {
-                    manual.Width = layer.Width;
-                    invalidate = true;
-                }
-                if (Math.Abs(manual.Height - layer.Height) > 0.1)
-                {
-                    manual.Height = layer.Height;
-                    invalidate = true;
-                }
-            }
-
             if (automatic is not null)
             {
-                automatic.Visibility = Visibility.Collapsed;
+                automatic.Visibility = Visibility.Visible;
             }
-            manual.Visibility = Visibility.Visible;
-
-            if (invalidate)
+            if (manual is not null)
             {
-                manual.InvalidateVisual();
+                manual.Visibility = Visibility.Collapsed;
             }
             return;
+        }
+
+        if (manual is null)
+        {
+            manual = new ManualComicTextElement
+            {
+                Region = region,
+                PageWidth = _originalBitmap.PixelWidth,
+                PageHeight = _originalBitmap.PixelHeight,
+                Width = layer.Width,
+                Height = layer.Height,
+                IsHitTestVisible = false
+            };
+            Panel.SetZIndex(manual, 11);
+            layer.Children.Add(manual);
+            invalidate = true;
+        }
+        else
+        {
+            manual.Width = layer.Width;
+            manual.Height = layer.Height;
+        }
+
+        if (automatic is not null)
+        {
+            automatic.Visibility = Visibility.Collapsed;
+        }
+        manual.Visibility = Visibility.Visible;
+
+        if (invalidate)
+        {
+            manual.InvalidateVisual();
         }
     }
 
@@ -217,12 +201,8 @@ public partial class MainWindow
             return;
         }
 
-        if (!_spacePanHeld)
-        {
-            _spacePanHeld = true;
-            ImageScrollViewer.Cursor = Cursors.Hand;
-        }
-
+        _spacePanHeld = true;
+        ImageScrollViewer.Cursor = Cursors.Hand;
         e.Handled = true;
     }
 
@@ -269,10 +249,10 @@ public partial class MainWindow
         }
 
         Point pointer = e.GetPosition(ImageScrollViewer);
-        double deltaX = pointer.X - _panStartPointer.X;
-        double deltaY = pointer.Y - _panStartPointer.Y;
-        ImageScrollViewer.ScrollToHorizontalOffset(_panStartHorizontalOffset - deltaX);
-        ImageScrollViewer.ScrollToVerticalOffset(_panStartVerticalOffset - deltaY);
+        ImageScrollViewer.ScrollToHorizontalOffset(
+            _panStartHorizontalOffset - (pointer.X - _panStartPointer.X));
+        ImageScrollViewer.ScrollToVerticalOffset(
+            _panStartVerticalOffset - (pointer.Y - _panStartPointer.Y));
         e.Handled = true;
     }
 
@@ -306,7 +286,4 @@ public partial class MainWindow
 
     private static bool IsTextEntryFocused() =>
         Keyboard.FocusedElement is TextBoxBase or ComboBox;
-
-    private static bool HasExplicitLineBreaks(string text) =>
-        text.Contains('\n') || text.Contains('\r');
 }
