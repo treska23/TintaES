@@ -31,8 +31,8 @@ public sealed class ImageExportService
         foreach (ComicRegion region in regions.Where(region => region.IsEnabled))
         {
             NormalizedRect box = region.RenderBox;
-            double left = box.X / 1000 * width;
-            double top = box.Y / 1000 * height;
+            double left = (box.X + region.TextOffsetX) / 1000 * width;
+            double top = (box.Y + region.TextOffsetY) / 1000 * height;
             double elementWidth = box.Width / 1000 * width;
             double elementHeight = box.Height / 1000 * height;
             var layer = new Grid
@@ -50,16 +50,11 @@ public sealed class ImageExportService
                 PageHeight = height,
                 Width = elementWidth,
                 Height = elementHeight,
-                RenderTransformOrigin = new Point(0.5, 0.5)
+                RenderTransformOrigin = new Point(0.5, 0.5),
+                RenderTransform = new ScaleTransform(
+                    Math.Clamp(region.ManualFontScale, 0.25, 2.5),
+                    Math.Clamp(region.ManualFontScale, 0.25, 2.5))
             };
-
-            double scale = Math.Clamp(region.ManualFontScale, 0.25, 2.5);
-            var transforms = new TransformGroup();
-            transforms.Children.Add(new ScaleTransform(scale, scale));
-            transforms.Children.Add(new TranslateTransform(
-                region.TextOffsetX / 1000 * width,
-                region.TextOffsetY / 1000 * height));
-            text.RenderTransform = transforms;
 
             layer.Children.Add(text);
             Canvas.SetLeft(layer, left);
