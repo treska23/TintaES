@@ -97,7 +97,14 @@ public sealed class ComicRegion : INotifyPropertyChanged
     // redimensiona RenderBox/SafePolygon, por lo que arrastrar deja de recalcular la fuente.
     public double TextOffsetX { get => _textOffsetX; set => Set(ref _textOffsetX, value); }
     public double TextOffsetY { get => _textOffsetY; set => Set(ref _textOffsetY, value); }
+
+    // Una región analizada empieza siempre en modo automático. Solo pasa a manual cuando el
+    // usuario edita su composición. ManualLayoutSeedText conserva las líneas automáticas que
+    // había justo antes de editar y ManualBaseFontSize congela el tamaño de partida para que
+    // cambiar un Enter no reduzca ni amplíe la fuente por sorpresa.
     public bool IsManual { get; set; }
+    public string? ManualLayoutSeedText { get; set; }
+    public double ManualBaseFontSize { get; set; }
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
