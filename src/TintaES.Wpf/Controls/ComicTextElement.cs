@@ -84,7 +84,8 @@ public sealed class ComicTextElement : FrameworkElement
         out TextLayout? layout)
     {
         double low = 3.5;
-        double high = Math.Max(6, Math.Min(ActualHeight * 0.9, Math.Max(ActualWidth * 0.48, 16)));
+        double automaticMaximum = Math.Max(6, Math.Min(ActualHeight * 0.9, Math.Max(ActualWidth * 0.48, 16)));
+        double high = GetPreferredMaximumSize(automaticMaximum, low);
         TextLayout? best = null;
         for (int index = 0; index < 15; index++)
         {
@@ -133,20 +134,20 @@ public sealed class ComicTextElement : FrameworkElement
             return false;
         }
 
-        double lineHeight = fontSize * 1.08;
+        double lineHeight = fontSize * Region.Style.LineHeightRatio;
         double padding = Math.Max(1.5, Math.Min(ActualWidth, ActualHeight) * 0.025);
         int maxLines = Math.Min(words.Length, Math.Max(1, (int)Math.Floor((ActualHeight - padding * 2) / lineHeight)));
         TextLayout? best = null;
         double bestScore = double.PositiveInfinity;
+        double preferredCenterY = GetOriginalTextCenterY();
 
         for (int lineCount = 1; lineCount <= maxLines; lineCount++)
         {
             double blockHeight = lineCount * lineHeight;
-            double top = (ActualHeight - blockHeight) / 2;
-            if (top < padding)
-            {
-                continue;
-            }
+            double top = Math.Clamp(
+                preferredCenterY - blockHeight / 2,
+                padding,
+                Math.Max(padding, ActualHeight - padding - blockHeight));
 
             var spans = new HorizontalSpan[lineCount];
             bool usable = true;
@@ -174,6 +175,11 @@ public sealed class ComicTextElement : FrameworkElement
             if (!TryBreakWords(words, spans, typeface, fontSize, fill, pixelsPerDip, out int[]? breaks, out double score))
             {
                 continue;
+            }
+
+            if (Region.Style.OriginalLineCount > 0)
+            {
+                score += Math.Abs(lineCount - Region.Style.OriginalLineCount) * 0.16;
             }
             if (score >= bestScore)
             {
@@ -304,7 +310,8 @@ public sealed class ComicTextElement : FrameworkElement
         double availableWidth = Math.Max(2, ActualWidth - padding * 2);
         double availableHeight = Math.Max(2, ActualHeight - padding * 2);
         double low = 4;
-        double high = Math.Max(6, Math.Min(availableHeight * 0.92, Math.Max(availableWidth * 0.48, 16)));
+        double automaticMaximum = Math.Max(6, Math.Min(availableHeight * 0.92, Math.Max(availableWidth * 0.48, 16)));
+        double high = GetPreferredMaximumSize(automaticMaximum, low);
         double bestSize = low;
         FormattedText fitted = CreateFormatted(text, typeface, low, fill, availableWidth, pixelsPerDip);
         for (int index = 0; index < 14; index++)
@@ -331,8 +338,34 @@ public sealed class ComicTextElement : FrameworkElement
             "right" => TextAlignment.Right,
             _ => TextAlignment.Center
         };
-        double originY = Math.Max(padding, (ActualHeight - fitted.Height) / 2);
+        double originY = Math.Clamp(
+            GetOriginalTextCenterY() - fitted.Height / 2,
+            padding,
+            Math.Max(padding, ActualHeight - padding - fitted.Height));
         return (fitted.BuildGeometry(new Point(padding, originY)), scaledSize);
+    }
+
+    private double GetPreferredMaximumSize(double automaticMaximum, double minimum)
+    {
+        if (Region.Style.FontSize <= 0 || PageHeight <= 0)
+        {
+            return automaticMaximum;
+        }
+
+        double originalPixels = Region.Style.FontSize / 1000 * PageHeight;
+        return Math.Clamp(originalPixels * 1.03, minimum, automaticMaximum);
+    }
+
+    private double GetOriginalTextCenterY()
+    {
+        if (PageHeight <= 0 || Region.RenderBox.Height <= 0)
+        {
+            return ActualHeight / 2;
+        }
+
+        double centre = Region.TextBox.Y + Region.TextBox.Height / 2;
+        double local = (centre - Region.RenderBox.Y) / 1000 * PageHeight;
+        return Math.Clamp(local, 0, ActualHeight);
     }
 
     private IReadOnlyList<Point> CreateLocalPolygon()
@@ -420,7 +453,7 @@ public sealed class ComicTextElement : FrameworkElement
             fill,
             pixelsPerDip);
 
-    private static FormattedText CreateFormatted(
+    private FormattedText CreateFormatted(
         string text,
         Typeface typeface,
         double size,
@@ -431,13 +464,43 @@ public sealed class ComicTextElement : FrameworkElement
         var formatted = CreateLineFormatted(text, typeface, size, fill, pixelsPerDip);
         formatted.MaxTextWidth = Math.Max(1, maxWidth);
         formatted.Trimming = TextTrimming.None;
-        formatted.LineHeight = size * 1.08;
+        formatted.LineHeight = size * Region.Style.LineHeightRatio;
         return formatted;
     }
 
     private static Typeface CreateTypeface(ComicRegion region)
     {
-        string family = region.Style.FontCategory switch
+        FontFamily family = ResolveFontFamily(region.Style.FontFamily, region.Style.FontCategory);
+        FontWeight weight;
+        try
+        {
+            weight = FontWeight.FromOpenTypeWeight(Math.Clamp(region.Style.FontWeight, 1, 999));
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            weight = region.Style.FontWeight >= 650 ? FontWeights.Bold : FontWeights.Normal;
+        }
+
+        return new Typeface(
+            family,
+            region.Style.Italic ? FontStyles.Italic : FontStyles.Normal,
+            weight,
+            ResolveFontStretch(region.Style.FontWidthRatio));
+    }
+
+    private static FontFamily ResolveFontFamily(string? requestedFamily, string category)
+    {
+        if (!string.IsNullOrWhiteSpace(requestedFamily))
+        {
+            FontFamily? installed = Fonts.SystemFontFamilies.FirstOrDefault(font =>
+                string.Equals(font.Source, requestedFamily.Trim(), StringComparison.OrdinalIgnoreCase));
+            if (installed is not null)
+            {
+                return installed;
+            }
+        }
+
+        string fallback = category switch
         {
             "handwritten" => "Segoe Print",
             "sans" => "Arial",
@@ -447,11 +510,23 @@ public sealed class ComicTextElement : FrameworkElement
             "monospace" => "Consolas",
             _ => "Comic Sans MS"
         };
-        return new Typeface(
-            new FontFamily(family),
-            region.Style.Italic ? FontStyles.Italic : FontStyles.Normal,
-            region.Style.FontWeight >= 650 ? FontWeights.Bold : FontWeights.Normal,
-            FontStretches.Normal);
+        return new FontFamily(fallback);
+    }
+
+    private static FontStretch ResolveFontStretch(double ratio)
+    {
+        return ratio switch
+        {
+            <= 0.62 => FontStretches.UltraCondensed,
+            <= 0.72 => FontStretches.ExtraCondensed,
+            <= 0.82 => FontStretches.Condensed,
+            <= 0.92 => FontStretches.SemiCondensed,
+            < 1.08 => FontStretches.Normal,
+            < 1.18 => FontStretches.SemiExpanded,
+            < 1.28 => FontStretches.Expanded,
+            < 1.4 => FontStretches.ExtraExpanded,
+            _ => FontStretches.UltraExpanded
+        };
     }
 
     private static Brush? ParseBrush(string? value, Brush? fallback)
