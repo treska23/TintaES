@@ -61,6 +61,9 @@ public sealed class ComicRegion : INotifyPropertyChanged
     private bool _isEnabled = true;
     private string _cleanupMode = "auto";
     private double _fontScale = 1;
+    private double _manualFontScale = 1;
+    private double _textOffsetX;
+    private double _textOffsetY;
 
     public Guid Id { get; set; } = Guid.NewGuid();
     public int Order { get; set; }
@@ -77,7 +80,17 @@ public sealed class ComicRegion : INotifyPropertyChanged
     public ComicTextStyle Style { get; set; } = new();
     public bool IsEnabled { get => _isEnabled; set => Set(ref _isEnabled, value); }
     public string CleanupMode { get => _cleanupMode; set => Set(ref _cleanupMode, value); }
+
+    // FontScale se conserva por compatibilidad con análisis/cachés anteriores. El control
+    // interactivo usa ManualFontScale para no volver a ejecutar el algoritmo de autoajuste
+    // cada vez que el usuario mueve el slider.
     public double FontScale { get => _fontScale; set => Set(ref _fontScale, value); }
+    public double ManualFontScale { get => _manualFontScale; set => Set(ref _manualFontScale, value); }
+
+    // Desplazamiento manual del texto en coordenadas normalizadas de página. No mueve ni
+    // redimensiona RenderBox/SafePolygon, por lo que arrastrar deja de recalcular la fuente.
+    public double TextOffsetX { get => _textOffsetX; set => Set(ref _textOffsetX, value); }
+    public double TextOffsetY { get => _textOffsetY; set => Set(ref _textOffsetY, value); }
     public bool IsManual { get; set; }
 
     public event PropertyChangedEventHandler? PropertyChanged;
