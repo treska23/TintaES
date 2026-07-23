@@ -1,12 +1,15 @@
+using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Threading;
+using Microsoft.Win32;
 
 namespace TintaES.Wpf;
 
 /// <summary>
 /// Añade navegación directa a cualquier página del cómic sin llenar la interfaz de pestañas.
-/// Se instala después de que la plantilla y la barra multipágina estén listas.
+/// También fuerza el selector de apertura multipágina para que no quede enganchado el flujo
+/// antiguo de una sola imagen.
 /// </summary>
 public partial class MainWindow
 {
@@ -39,6 +42,15 @@ public partial class MainWindow
         // Asegura que la navegación multipágina base exista antes de insertar el selector.
         InstallComicBookHandlers();
 
+        // Reemplaza de forma explícita cualquier flujo antiguo de apertura de una sola página.
+        // El primer filtro muestra CBZ e imágenes juntos, por lo que el usuario puede marcar
+        // 001.jpg, 002.jpg, 003.jpg... directamente con Ctrl/Shift desde el primer momento.
+        OpenImageButton.Click -= OpenImageButton_Click;
+        OpenImageButton.Click -= OpenComicFilesButton_Click;
+        OpenImageButton.Click -= OpenComicFilesButton_Click_Multi;
+        OpenImageButton.Click += OpenComicFilesButton_Click_Multi;
+        OpenImageButton.Content = "Abrir cómic";
+
         if (_pageSelectorComboBox is not null
             || _pageCounterText?.Parent is not StackPanel previewPanel)
         {
@@ -61,6 +73,72 @@ public partial class MainWindow
         // cuando cambia realmente el índice o el número de páginas; no realiza trabajo pesado.
         _pageCounterText.LayoutUpdated += (_, _) => SyncDirectPageSelector();
         SyncDirectPageSelector();
+    }
+
+    private void OpenComicFilesButton_Click_Multi(object sender, RoutedEventArgs e)
+    {
+        var dialog = new OpenFileDialog
+        {
+            Title = "Abrir cómic o seleccionar varias páginas",
+            Filter = "Cómic o páginas|*.cbz;*.png;*.jpg;*.jpeg;*.webp;*.bmp|Cómic CBZ|*.cbz|Imágenes|*.png;*.jpg;*.jpeg;*.webp;*.bmp|Todos los archivos|*.*",
+            FilterIndex = 1,
+            Multiselect = true,
+            CheckFileExists = true
+        };
+
+        if (dialog.ShowDialog(this) != true)
+        {
+            return;
+        }
+
+        try
+        {
+            string[] selected = dialog.FileNames;
+            string[] cbzFiles = selected
+                .Where(path => string.Equals(Path.GetExtension(path), ".cbz", StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+
+            if (cbzFiles.Length > 0)
+            {
+                if (selected.Length != 1 || cbzFiles.Length != 1)
+                {
+                    MessageBox.Show(
+                        this,
+                        "Abre un CBZ por separado o selecciona varias imágenes. No mezcles un CBZ con páginas sueltas en la misma selección.",
+                        "Tinta ES",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Information);
+                    return;
+                }
+
+                LoadComicFromCbz(cbzFiles[0]);
+                return;
+            }
+
+            string[] images = selected
+                .Where(IsSupportedComicImage)
+                .OrderBy(path => path, NaturalPageComparer.Instance)
+                .ToArray();
+            if (images.Length == 0)
+            {
+                MessageBox.Show(
+                    this,
+                    "Selecciona un archivo CBZ o una o varias imágenes.",
+                    "Tinta ES",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+                return;
+            }
+
+            string title = images.Length == 1
+                ? Path.GetFileNameWithoutExtension(images[0])
+                : new DirectoryInfo(Path.GetDirectoryName(images[0]) ?? string.Empty).Name;
+            LoadComicSession(images, title);
+        }
+        catch (Exception exception)
+        {
+            ShowComicOpenError(exception);
+        }
     }
 
     private void SyncDirectPageSelector()
