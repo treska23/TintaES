@@ -56,17 +56,37 @@ public static class RegionMerger
         region.Confidence = Math.Clamp(region.Confidence, 0, 1);
         region.Rotation = Math.Clamp(region.Rotation, -180, 180);
 
-        double ratio = region.RenderBox.Area / Math.Max(1, region.TextBox.Area);
-        bool implausible = ratio > 7
-            || region.RenderBox.Area > 70_000
-            || region.RenderBox.Width > Math.Max(140, region.TextBox.Width * 4.2)
-            || region.RenderBox.Height > Math.Max(120, region.TextBox.Height * 4.2);
-
-        if (implausible)
+        region.SafePolygon = SanitizePolygon(region.SafePolygon);
+        if (IsUsablePolygon(region.SafePolygon, region.TextBox))
         {
-            double expansionX = region.Type is "dialogue" or "thought" ? 1.25 : 0.45;
-            double expansionY = region.Type is "dialogue" or "thought" ? 1.2 : 0.45;
-            region.RenderBox = region.TextBox.Expand(expansionX, expansionY);
+            // La silueta detectada del interior del bocadillo manda sobre cualquier caja.
+            // Así el texto se compone y recorta dentro de una forma real, no de un rectángulo
+            // arbitrario que puede invadir el dibujo o el borde del globo.
+            region.RenderBox = BoundsFromPolygon(region.SafePolygon).Clamp();
+        }
+        else
+        {
+            region.SafePolygon = [];
+            double ratio = region.RenderBox.Area / Math.Max(1, region.TextBox.Area);
+            bool implausible = ratio > 9
+                || region.RenderBox.Area > 100_000
+                || region.RenderBox.Width > Math.Max(180, region.TextBox.Width * 5)
+                || region.RenderBox.Height > Math.Max(150, region.TextBox.Height * 5);
+
+            if (implausible)
+            {
+                double expansionX = region.Type is "dialogue" or "thought" ? 0.65 : 0.35;
+                double expansionY = region.Type is "dialogue" or "thought" ? 0.55 : 0.35;
+                region.RenderBox = region.TextBox.Expand(expansionX, expansionY);
+            }
+
+            // Si el detector no pudo obtener un contorno fiable, un bocadillo normal usa
+            // una elipse de seguridad. Es mucho menos agresiva que recortar por las cuatro
+            // esquinas del bounding box y evita que la rotulación salga del globo.
+            if (region.Type is "dialogue" or "thought")
+            {
+                region.SafePolygon = CreateEllipsePolygon(region.RenderBox);
+            }
         }
 
         region.Style.FontFamily = string.IsNullOrWhiteSpace(region.Style.FontFamily)
@@ -97,6 +117,69 @@ public static class RegionMerger
         double intersection = Math.Max(0, right - left) * Math.Max(0, bottom - top);
         double union = a.Area + b.Area - intersection;
         return union <= 0 ? 0 : intersection / union;
+    }
+
+    private static IReadOnlyList<NormalizedPoint> SanitizePolygon(IReadOnlyList<NormalizedPoint>? polygon)
+    {
+        if (polygon is null || polygon.Count < 3)
+        {
+            return [];
+        }
+
+        return polygon
+            .Select(point => new NormalizedPoint(
+                Math.Clamp(point.X, 0, 1000),
+                Math.Clamp(point.Y, 0, 1000)))
+            .Distinct()
+            .ToArray();
+    }
+
+    private static bool IsUsablePolygon(IReadOnlyList<NormalizedPoint> polygon, NormalizedRect textBox)
+    {
+        if (polygon.Count < 3)
+        {
+            return false;
+        }
+
+        NormalizedRect bounds = BoundsFromPolygon(polygon);
+        if (bounds.Area < Math.Max(15, textBox.Area * 0.35) || bounds.Area > 160_000)
+        {
+            return false;
+        }
+
+        double textCentreX = textBox.X + textBox.Width / 2;
+        double textCentreY = textBox.Y + textBox.Height / 2;
+        return textCentreX >= bounds.X
+            && textCentreX <= bounds.Right
+            && textCentreY >= bounds.Y
+            && textCentreY <= bounds.Bottom;
+    }
+
+    private static NormalizedRect BoundsFromPolygon(IReadOnlyList<NormalizedPoint> polygon)
+    {
+        double left = polygon.Min(point => point.X);
+        double top = polygon.Min(point => point.Y);
+        double right = polygon.Max(point => point.X);
+        double bottom = polygon.Max(point => point.Y);
+        return new NormalizedRect(left, top, Math.Max(5, right - left), Math.Max(5, bottom - top));
+    }
+
+    private static IReadOnlyList<NormalizedPoint> CreateEllipsePolygon(NormalizedRect box)
+    {
+        const int pointCount = 28;
+        double centreX = box.X + box.Width / 2;
+        double centreY = box.Y + box.Height / 2;
+        double radiusX = box.Width / 2;
+        double radiusY = box.Height / 2;
+        var points = new NormalizedPoint[pointCount];
+        for (int index = 0; index < pointCount; index++)
+        {
+            double angle = index * Math.PI * 2 / pointCount;
+            points[index] = new NormalizedPoint(
+                Math.Clamp(centreX + Math.Cos(angle) * radiusX, 0, 1000),
+                Math.Clamp(centreY + Math.Sin(angle) * radiusY, 0, 1000));
+        }
+        return points;
     }
 
     private static bool IsDuplicate(ComicRegion left, ComicRegion right)
