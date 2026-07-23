@@ -212,6 +212,7 @@ public sealed class OrganicEngineService
             Translation = string.Empty,
             Type = type,
             Confidence = source.Confidence,
+            BubbleConfidence = Math.Clamp(source.BubbleConfidence, 0, 1),
             TextBox = Normalize(source.TextBox, pageWidth, pageHeight),
             RenderBox = Normalize(source.RenderBox, pageWidth, pageHeight),
             SafePolygon = NormalizePolygon(source.ShapePolygon, pageWidth, pageHeight),
