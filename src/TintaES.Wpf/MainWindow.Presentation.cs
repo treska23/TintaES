@@ -89,6 +89,10 @@ public partial class MainWindow
                 continue;
             }
 
+            // Marcamos la capa antes de añadir posibles hijos manuales para que un nuevo ciclo
+            // de LayoutUpdated no vuelva a preparar la misma capa.
+            _preparedOverlayLayers.Add(layer, new object());
+
             Border? border = layer.Children.OfType<Border>().FirstOrDefault();
             Thumb[] thumbs = layer.Children.OfType<Thumb>().ToArray();
             ComicTextElement? text = layer.Children.OfType<ComicTextElement>().FirstOrDefault();
@@ -103,9 +107,6 @@ public partial class MainWindow
                 moveThumb.Focusable = false;
                 Panel.SetZIndex(moveThumb, 20);
 
-                // El handler original modificaba RenderBox y SafePolygon en cada píxel del
-                // arrastre. El nuevo mueve el contenedor completo según la posición absoluta
-                // del puntero, manteniendo fuente, geometría e hit-area sincronizados.
                 moveThumb.DragStarted -= RegionMoveThumb_DragStarted;
                 moveThumb.DragDelta -= RegionMoveThumb_DragDelta;
                 moveThumb.DragCompleted -= RegionThumb_DragCompleted;
@@ -125,6 +126,11 @@ public partial class MainWindow
                 text.InvalidateVisual();
             }
 
+            if (region is not null)
+            {
+                EnsureManualLineVisual(layer, region, invalidate: false);
+            }
+
             if (border is not null)
             {
                 border.Visibility = Visibility.Collapsed;
@@ -134,8 +140,6 @@ public partial class MainWindow
                 thumb.Visibility = Visibility.Collapsed;
                 thumb.Opacity = 0;
             }
-
-            _preparedOverlayLayers.Add(layer, new object());
         }
     }
 
