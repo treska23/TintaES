@@ -76,7 +76,9 @@ def main() -> None:
         width, height = image.size
         rgb = np.asarray(image, dtype=np.uint8).transpose(2, 0, 1).copy()
 
-    with regions_path.open("r", encoding="utf-8") as stream:
+    # utf-8-sig acepta JSON UTF-8 tanto con BOM como sin BOM. Esto hace al exportador
+    # tolerante a archivos temporales creados por versiones anteriores de TintaES.
+    with regions_path.open("r", encoding="utf-8-sig") as stream:
         regions: list[dict[str, Any]] = json.load(stream)
 
     color_mode = psapi.enum.ColorMode.rgb
