@@ -1,6 +1,7 @@
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Threading;
 using Microsoft.Win32;
 
@@ -8,13 +9,15 @@ namespace TintaES.Wpf;
 
 /// <summary>
 /// Añade navegación directa a cualquier página del cómic sin llenar la interfaz de pestañas.
-/// También fuerza el selector de apertura multipágina para que no quede enganchado el flujo
-/// antiguo de una sola imagen.
+/// También fuerza el selector de apertura multipágina y da respuesta visual inmediata durante
+/// cualquier cambio de página.
 /// </summary>
 public partial class MainWindow
 {
     private ComboBox? _pageSelectorComboBox;
     private bool _syncingPageSelector;
+    private bool _navigationFeedbackHandlersInstalled;
+    private bool _pageNavigationFeedbackVisible;
 
     static MainWindow()
     {
@@ -51,6 +54,8 @@ public partial class MainWindow
         OpenImageButton.Click += OpenComicFilesButton_Click_Multi;
         OpenImageButton.Content = "Abrir cómic";
 
+        InstallNavigationFeedbackHandlers();
+
         if (_pageSelectorComboBox is not null
             || _pageCounterText?.Parent is not StackPanel previewPanel)
         {
@@ -73,6 +78,83 @@ public partial class MainWindow
         // cuando cambia realmente el índice o el número de páginas; no realiza trabajo pesado.
         _pageCounterText.LayoutUpdated += (_, _) => SyncDirectPageSelector();
         SyncDirectPageSelector();
+    }
+
+    private void InstallNavigationFeedbackHandlers()
+    {
+        if (_navigationFeedbackHandlersInstalled
+            || _previousPageButton is null
+            || _nextPageButton is null)
+        {
+            return;
+        }
+
+        _navigationFeedbackHandlersInstalled = true;
+
+        // PreviewMouseDown ocurre antes del Click que cambia la página. De esta forma WPF puede
+        // pintar el indicador de carga antes de empezar a decodificar imágenes o crear overlays.
+        _previousPageButton.PreviewMouseLeftButtonDown += NavigationButton_PreviewMouseLeftButtonDown;
+        _nextPageButton.PreviewMouseLeftButtonDown += NavigationButton_PreviewMouseLeftButtonDown;
+
+        // Estos Click se registran después de los handlers que llaman a ShowComicPage, por lo
+        // que ocultan el indicador una vez terminada la navegación.
+        _previousPageButton.Click += NavigationButton_ClickCompleted;
+        _nextPageButton.Click += NavigationButton_ClickCompleted;
+    }
+
+    private void NavigationButton_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        int targetIndex = ReferenceEquals(sender, _previousPageButton)
+            ? _comicPageIndex - 1
+            : _comicPageIndex + 1;
+        BeginPageNavigationFeedback(targetIndex);
+    }
+
+    private void NavigationButton_ClickCompleted(object sender, RoutedEventArgs e)
+    {
+        EndPageNavigationFeedback();
+    }
+
+    private void BeginPageNavigationFeedback(int targetIndex)
+    {
+        if (_comicBatchBusy
+            || targetIndex < 0
+            || targetIndex >= _comicPages.Count
+            || targetIndex == _comicPageIndex)
+        {
+            return;
+        }
+
+        _pageNavigationFeedbackVisible = true;
+        BusyTitleText.Text = $"Cargando página {targetIndex + 1} de {_comicPages.Count}…";
+        BusyProgressBar.IsIndeterminate = true;
+        BusyOverlay.Visibility = Visibility.Visible;
+        Panel.SetZIndex(BusyOverlay, 10_000);
+
+        FooterStatusText.Text = $"Cargando página {targetIndex + 1} de {_comicPages.Count}…";
+        FooterProgressBar.Visibility = Visibility.Visible;
+        FooterProgressBar.IsIndeterminate = true;
+        Cursor = Cursors.Wait;
+
+        // Fuerza un ciclo de pintura ahora, antes de entrar en el cambio de página síncrono.
+        Dispatcher.Invoke(() => { }, DispatcherPriority.Render);
+    }
+
+    private void EndPageNavigationFeedback()
+    {
+        if (!_pageNavigationFeedbackVisible)
+        {
+            return;
+        }
+
+        _pageNavigationFeedbackVisible = false;
+        BusyOverlay.Visibility = Visibility.Collapsed;
+        BusyProgressBar.IsIndeterminate = false;
+        FooterProgressBar.IsIndeterminate = false;
+        FooterProgressBar.Visibility = Visibility.Collapsed;
+        Cursor = Cursors.Arrow;
+        UpdateActionAvailability();
+        UpdateComicControls();
     }
 
     private void OpenComicFilesButton_Click_Multi(object sender, RoutedEventArgs e)
@@ -186,9 +268,19 @@ public partial class MainWindow
         }
 
         int index = _pageSelectorComboBox.SelectedIndex;
-        if (index >= 0 && index < _comicPages.Count && index != _comicPageIndex)
+        if (index < 0 || index >= _comicPages.Count || index == _comicPageIndex)
+        {
+            return;
+        }
+
+        BeginPageNavigationFeedback(index);
+        try
         {
             ShowComicPage(index);
+        }
+        finally
+        {
+            EndPageNavigationFeedback();
         }
     }
 }
