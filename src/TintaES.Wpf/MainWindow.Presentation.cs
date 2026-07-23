@@ -2,6 +2,7 @@ using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
+using System.Windows.Media;
 
 namespace TintaES.Wpf;
 
@@ -31,6 +32,14 @@ public partial class MainWindow
         }
 
         _presentationHooksAttached = true;
+
+        // Evita que el tema del sistema aplique texto oscuro a las tarjetas de la
+        // lista lateral. DisplayText y Original deben ser legibles sobre el panel oscuro.
+        if (FindResource("InkBrush") is Brush inkBrush)
+        {
+            RegionListBox.Foreground = inkBrush;
+        }
+
         OverlayCanvas.LayoutUpdated += OverlayCanvas_PresentationLayoutUpdated;
     }
 
