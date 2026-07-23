@@ -44,16 +44,18 @@ public partial class MainWindow
         TranslationTextBox.TextChanged += TranslationTextBox_TextChanged_LineLayout;
         FontScaleSlider.ValueChanged += FontScaleSlider_ValueChanged_ManualLineLayout;
 
-        foreach (ComicRegion region in _regions)
-        {
-            PrepareRegionLinePreview(region);
-        }
+        // No precalculamos la composición auxiliar de todos los bocadillos al activar la
+        // ventana. Ese cálculo era muy costoso y, en un cómic multipágina, se repetía en cada
+        // navegación. La rotulación visible ya está resuelta por ComicTextElement; el formato
+        // auxiliar del editor lateral puede calcularse más adelante cuando se retome esa mejora.
     }
 
     private void Regions_CollectionChanged_ForLineLayout(object? sender, NotifyCollectionChangedEventArgs e)
     {
         if (e.Action == NotifyCollectionChangedAction.Reset)
         {
+            // Las previsualizaciones antiguas no se reutilizan entre páginas. Limpiar el
+            // diccionario es barato; lo importante es no volver a calcular cada región aquí.
             _automaticLinePreviews.Clear();
             return;
         }
@@ -65,10 +67,9 @@ public partial class MainWindow
 
         foreach (ComicRegion region in e.NewItems.OfType<ComicRegion>())
         {
-            // El binding de cada región ya escucha INotifyPropertyChanged. Evitamos el
-            // Items.Refresh global que provocaba pausas al escribir cada carácter.
+            // El binding de cada región ya escucha INotifyPropertyChanged. Evitamos tanto el
+            // Items.Refresh global como el cálculo tipográfico pesado al cargar una página.
             region.PropertyChanged -= Region_PropertyChanged;
-            PrepareRegionLinePreview(region);
         }
     }
 
@@ -106,9 +107,8 @@ public partial class MainWindow
             return;
         }
 
-        // El cuadro lateral muestra una copia de la composición automática, pero NO cambia
-        // Translation ni activa el render manual. Por eso la página sigue usando el ajuste
-        // automático hasta que el usuario toque realmente el texto.
+        // Si ya existe una previsualización calculada anteriormente la mostramos. No forzamos
+        // aquí un cálculo nuevo: seleccionar o cambiar de página debe responder al instante.
         if (!_automaticLinePreviews.TryGetValue(_selectedRegion.Id, out string? formatted)
             || string.IsNullOrWhiteSpace(formatted)
             || string.Equals(formatted, TranslationTextBox.Text, StringComparison.Ordinal))
@@ -139,8 +139,7 @@ public partial class MainWindow
         if (!_selectedRegion.IsManual)
         {
             // Congelamos como semilla la composición que el usuario estaba viendo antes de
-            // editar. El render manual calculará una sola vez su tamaño de partida y después
-            // cambiar los Enter no volverá a encoger ni agrandar la fuente.
+            // editar. Si no existe una previsualización auxiliar, usamos la traducción actual.
             _selectedRegion.ManualLayoutSeedText = _automaticLinePreviews.TryGetValue(_selectedRegion.Id, out string? preview)
                 ? preview
                 : _selectedRegion.Translation;
