@@ -57,35 +57,42 @@ public static class RegionMerger
         region.Rotation = Math.Clamp(region.Rotation, -180, 180);
 
         region.SafePolygon = SanitizePolygon(region.SafePolygon);
-        if (IsUsablePolygon(region.SafePolygon, region.TextBox))
+
+        if (region.Type is "dialogue" or "thought")
         {
-            // La silueta detectada del interior del bocadillo manda sobre cualquier caja.
-            // Así el texto se compone y recorta dentro de una forma real, no de un rectángulo
-            // arbitrario que puede invadir el dibujo o el borde del globo.
-            region.RenderBox = BoundsFromPolygon(region.SafePolygon).Clamp();
+            // El texto original ya estaba dentro del bocadillo. Ese bloque es nuestra referencia
+            // más fiable. Una silueta de bocadillo detectada solo se acepta si permanece cerca de
+            // esa zona; así una detección antigua o una cola conectada al fondo nunca puede convertir
+            // media viñeta en una zona válida de rotulación.
+            if (IsUsableDialoguePolygon(region.SafePolygon, region.TextBox))
+            {
+                region.RenderBox = BoundsFromPolygon(region.SafePolygon).Clamp();
+            }
+            else
+            {
+                region.RenderBox = CreateConservativeDialogueBox(region.TextBox, region.Type);
+                region.SafePolygon = CreateEllipsePolygon(region.RenderBox);
+            }
         }
         else
         {
-            region.SafePolygon = [];
-            double ratio = region.RenderBox.Area / Math.Max(1, region.TextBox.Area);
-            bool implausible = ratio > 9
-                || region.RenderBox.Area > 100_000
-                || region.RenderBox.Width > Math.Max(180, region.TextBox.Width * 5)
-                || region.RenderBox.Height > Math.Max(150, region.TextBox.Height * 5);
-
-            if (implausible)
+            if (IsUsableGeneralPolygon(region.SafePolygon, region.TextBox))
             {
-                double expansionX = region.Type is "dialogue" or "thought" ? 0.65 : 0.35;
-                double expansionY = region.Type is "dialogue" or "thought" ? 0.55 : 0.35;
-                region.RenderBox = region.TextBox.Expand(expansionX, expansionY);
+                region.RenderBox = BoundsFromPolygon(region.SafePolygon).Clamp();
             }
-
-            // Si el detector no pudo obtener un contorno fiable, un bocadillo normal usa
-            // una elipse de seguridad. Es mucho menos agresiva que recortar por las cuatro
-            // esquinas del bounding box y evita que la rotulación salga del globo.
-            if (region.Type is "dialogue" or "thought")
+            else
             {
-                region.SafePolygon = CreateEllipsePolygon(region.RenderBox);
+                region.SafePolygon = [];
+                double ratio = region.RenderBox.Area / Math.Max(1, region.TextBox.Area);
+                bool implausible = ratio > 7
+                    || region.RenderBox.Area > 70_000
+                    || region.RenderBox.Width > Math.Max(140, region.TextBox.Width * 4.2)
+                    || region.RenderBox.Height > Math.Max(120, region.TextBox.Height * 4.2);
+
+                if (implausible)
+                {
+                    region.RenderBox = region.TextBox.Expand(0.30, 0.30);
+                }
             }
         }
 
@@ -134,7 +141,9 @@ public static class RegionMerger
             .ToArray();
     }
 
-    private static bool IsUsablePolygon(IReadOnlyList<NormalizedPoint> polygon, NormalizedRect textBox)
+    private static bool IsUsableDialoguePolygon(
+        IReadOnlyList<NormalizedPoint> polygon,
+        NormalizedRect textBox)
     {
         if (polygon.Count < 3)
         {
@@ -142,7 +151,45 @@ public static class RegionMerger
         }
 
         NormalizedRect bounds = BoundsFromPolygon(polygon);
-        if (bounds.Area < Math.Max(15, textBox.Area * 0.35) || bounds.Area > 160_000)
+        if (bounds.Area < Math.Max(15, textBox.Area * 0.55)
+            || bounds.Area > textBox.Area * 3.2)
+        {
+            return false;
+        }
+
+        // El interior seguro de un bocadillo puede ser mayor que las letras originales,
+        // pero no varias veces mayor ni desplazarse lejos de ellas.
+        NormalizedRect allowedEnvelope = textBox.Expand(0.70, 0.90);
+        bool insideEnvelope = bounds.X >= allowedEnvelope.X - 1
+            && bounds.Y >= allowedEnvelope.Y - 1
+            && bounds.Right <= allowedEnvelope.Right + 1
+            && bounds.Bottom <= allowedEnvelope.Bottom + 1;
+        if (!insideEnvelope)
+        {
+            return false;
+        }
+
+        double textCentreX = textBox.X + textBox.Width / 2;
+        double textCentreY = textBox.Y + textBox.Height / 2;
+        double boundsCentreX = bounds.X + bounds.Width / 2;
+        double boundsCentreY = bounds.Y + bounds.Height / 2;
+
+        return Math.Abs(boundsCentreX - textCentreX) <= Math.Max(12, textBox.Width * 0.28)
+            && Math.Abs(boundsCentreY - textCentreY) <= Math.Max(10, textBox.Height * 0.30);
+    }
+
+    private static bool IsUsableGeneralPolygon(
+        IReadOnlyList<NormalizedPoint> polygon,
+        NormalizedRect textBox)
+    {
+        if (polygon.Count < 3)
+        {
+            return false;
+        }
+
+        NormalizedRect bounds = BoundsFromPolygon(polygon);
+        if (bounds.Area < Math.Max(15, textBox.Area * 0.35)
+            || bounds.Area > Math.Max(25_000, textBox.Area * 6))
         {
             return false;
         }
@@ -153,6 +200,16 @@ public static class RegionMerger
             && textCentreX <= bounds.Right
             && textCentreY >= bounds.Y
             && textCentreY <= bounds.Bottom;
+    }
+
+    private static NormalizedRect CreateConservativeDialogueBox(NormalizedRect textBox, string type)
+    {
+        // Ampliamos solo un poco el bloque OCR. El texto traducido puede usar ese margen,
+        // pero si es más largo tendrá que reducir el tamaño de fuente en lugar de invadir
+        // el dibujo o otro bocadillo.
+        double expansionX = type == "thought" ? 0.14 : 0.18;
+        double expansionY = type == "thought" ? 0.18 : 0.22;
+        return textBox.Expand(expansionX, expansionY);
     }
 
     private static NormalizedRect BoundsFromPolygon(IReadOnlyList<NormalizedPoint> polygon)
@@ -166,7 +223,7 @@ public static class RegionMerger
 
     private static IReadOnlyList<NormalizedPoint> CreateEllipsePolygon(NormalizedRect box)
     {
-        const int pointCount = 28;
+        const int pointCount = 36;
         double centreX = box.X + box.Width / 2;
         double centreY = box.Y + box.Height / 2;
         double radiusX = box.Width / 2;
