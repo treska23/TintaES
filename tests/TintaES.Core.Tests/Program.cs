@@ -36,12 +36,26 @@ static Task TestSanitizeAsync()
         Type = "sfx",
         TextBox = new NormalizedRect(420, 300, 80, 45),
         RenderBox = new NormalizedRect(180, 120, 600, 720),
-        Confidence = 2
+        Confidence = 2,
+        Style = new ComicTextStyle
+        {
+            FontFamily = "  Impact  ",
+            FontWeight = 947,
+            FontSize = 500,
+            FontWidthRatio = 3,
+            LineHeightRatio = 0.2,
+            OriginalLineCount = 99
+        }
     };
     RegionMerger.Sanitize(region);
     Assert(region.Original == "SMASH", "Debe retirar comillas artificiales.");
     Assert(region.RenderBox.Area < 20_000, "Debe sustituir una caja de panel completo.");
     Assert(region.Confidence == 1, "Debe limitar la confianza.");
+    Assert(region.Style.FontFamily == "Impact", "Debe limpiar el nombre de la fuente detectada.");
+    Assert(region.Style.FontSize == 250, "Debe limitar tamaños tipográficos imposibles.");
+    Assert(region.Style.FontWidthRatio == 1.5, "Debe limitar la anchura tipográfica.");
+    Assert(region.Style.LineHeightRatio == 0.8, "Debe limitar el interlineado.");
+    Assert(region.Style.OriginalLineCount == 20, "Debe limitar el número de líneas detectado.");
     return Task.CompletedTask;
 }
 
@@ -84,6 +98,9 @@ static async Task TestOllamaPipelineAsync()
     Assert(result.Regions.Count == 1, "Debe devolver la región detectada.");
     Assert(result.Regions[0].Translation == "¡CRASH!", "La traducción separada no puede quedar vacía.");
     Assert(result.Regions[0].RenderBox.Area < 20_000, "Debe corregir la caja gigante del detector.");
+    Assert(result.Regions[0].Style.FontFamily == "Impact", "Debe conservar la familia tipográfica detectada.");
+    Assert(Math.Abs(result.Regions[0].Style.FontSize - 52) < 0.01, "Debe convertir el tamaño detectado a coordenadas de página.");
+    Assert(result.Regions[0].Style.OriginalLineCount == 1, "Debe conservar el número de líneas original.");
     Assert(handler.VisionCalls == 1 && handler.TranslationCalls == 1, "Debe realizar detección y traducción por separado.");
 }
 
@@ -131,7 +148,12 @@ sealed class FakeOllamaHandler : HttpMessageHandler
                         style = new
                         {
                             font_category = "display",
+                            font_family = "Impact",
                             font_weight = 900,
+                            font_size = 52,
+                            font_width_ratio = 0.88,
+                            line_height_ratio = 1.02,
+                            line_count = 1,
                             italic = false,
                             uppercase = true,
                             text_color = "#111111",
