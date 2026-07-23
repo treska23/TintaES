@@ -6,6 +6,7 @@ using TintaES.Core;
 var tests = new (string Name, Func<Task> Run)[]
 {
     ("Sanea cajas gigantes", TestSanitizeAsync),
+    ("Rechaza polígonos de bocadillo desmesurados", TestOversizedBubblePolygonAsync),
     ("Combina lecturas solapadas", TestMergeAsync),
     ("Separa detección y traducción", TestOllamaPipelineAsync)
 };
@@ -56,6 +57,31 @@ static Task TestSanitizeAsync()
     Assert(region.Style.FontWidthRatio == 1.5, "Debe limitar la anchura tipográfica.");
     Assert(region.Style.LineHeightRatio == 0.8, "Debe limitar el interlineado.");
     Assert(region.Style.OriginalLineCount == 20, "Debe limitar el número de líneas detectado.");
+    return Task.CompletedTask;
+}
+
+static Task TestOversizedBubblePolygonAsync()
+{
+    var region = new ComicRegion
+    {
+        Original = "THIS IS A SPEECH BUBBLE",
+        Type = "dialogue",
+        TextBox = new NormalizedRect(400, 300, 120, 50),
+        RenderBox = new NormalizedRect(100, 50, 700, 650),
+        SafePolygon =
+        [
+            new NormalizedPoint(120, 80),
+            new NormalizedPoint(780, 80),
+            new NormalizedPoint(780, 680),
+            new NormalizedPoint(120, 680)
+        ]
+    };
+
+    RegionMerger.Sanitize(region);
+
+    Assert(region.RenderBox.Width < 150, "Un polígono enorme no puede ampliar la rotulación por media viñeta.");
+    Assert(region.RenderBox.Height < 70, "La altura segura debe mantenerse cerca del texto original.");
+    Assert(region.SafePolygon.Count >= 20, "Debe crear una forma elíptica conservadora para el diálogo.");
     return Task.CompletedTask;
 }
 
