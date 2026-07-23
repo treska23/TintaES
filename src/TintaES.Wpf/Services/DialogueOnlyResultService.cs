@@ -122,12 +122,19 @@ public sealed class DialogueOnlyResultService
             return true;
         }
 
-        // El motor a veces etiqueta una exclamación corta dentro de un bocadillo como sfx.
-        // Si además detectó una silueta útil claramente mayor que las letras, la tratamos
-        // como bocadillo. Una onomatopeya sobre el dibujo suele caer al rectángulo del OCR.
+        // Una exclamación corta como VICTORY! puede ser etiquetada como sfx aunque esté
+        // dentro de un globo. El motor orgánico ya calcula bubbleConfidence antes de esa
+        // clasificación. Aceptamos una señal moderada de bocadillo, pero seguimos dejando
+        // fuera las onomatopeyas dibujadas sobre la ilustración, que normalmente valen ~0.
+        if (region.Type == "sfx" && region.BubbleConfidence >= 0.12)
+        {
+            return true;
+        }
+
+        // Fallback geométrico para cachés antiguas o casos donde la confianza sea nula.
         return region.Type == "sfx"
             && region.SafePolygon.Count >= 3
-            && region.RenderBox.Area >= region.TextBox.Area * 1.12;
+            && region.RenderBox.Area >= region.TextBox.Area * 1.08;
     }
 
     private static BitmapSource ConvertTo(BitmapSource source, PixelFormat format)
