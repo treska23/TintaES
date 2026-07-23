@@ -14,6 +14,7 @@ public sealed class ComicTextElement : FrameworkElement
     protected override void OnRender(DrawingContext drawingContext)
     {
         base.OnRender(drawingContext);
+
         string text = Region.DisplayText;
         if (!Region.IsEnabled || string.IsNullOrWhiteSpace(text) || ActualWidth < 2 || ActualHeight < 2)
         {
@@ -24,6 +25,7 @@ public sealed class ComicTextElement : FrameworkElement
         {
             text = text.ToUpper(CultureInfo.GetCultureInfo("es-ES"));
         }
+
         if (Region.Vertical && Region.Type == "sfx")
         {
             text = string.Join(Environment.NewLine, text.Where(character => !char.IsWhiteSpace(character)));
@@ -36,27 +38,31 @@ public sealed class ComicTextElement : FrameworkElement
             ? null
             : ParseBrush(Region.Style.OutlineColor, null);
 
-        IReadOnlyList<Point> polygon = CreateLocalPolygon();
+        IReadOnlyList<Point> safeShape = CreateEffectiveShape();
+        Geometry? clip = safeShape.Count >= 3 ? CreatePolygonGeometry(safeShape) : null;
+
         Geometry geometry;
         double renderedSize;
-        Geometry? clip = null;
+
         if (!Region.Vertical
-            && polygon.Count >= 3
-            && TryFitPolygon(text, typeface, fill, pixelsPerDip, polygon, out TextLayout? shaped))
+            && safeShape.Count >= 3
+            && TryFitShape(text, typeface, fill, pixelsPerDip, safeShape, out TextLayout? shaped))
         {
             geometry = BuildShapedGeometry(shaped!, typeface, fill, pixelsPerDip);
             renderedSize = shaped!.FontSize;
-            clip = CreatePolygonGeometry(polygon);
         }
         else
         {
             (geometry, renderedSize) = BuildRectangularGeometry(text, typeface, fill, pixelsPerDip);
         }
 
+        // La forma segura siempre manda. Incluso si hubiera que caer al ajuste rectangular,
+        // el texto jamás puede dibujarse fuera del bocadillo detectado.
         if (clip is not null)
         {
             drawingContext.PushClip(clip);
         }
+
         if (Region.Style.Shadow)
         {
             drawingContext.PushTransform(new TranslateTransform(renderedSize * 0.06, renderedSize * 0.08));
@@ -68,14 +74,16 @@ public sealed class ComicTextElement : FrameworkElement
         Pen? pen = outline is null || outlinePixels <= 0
             ? null
             : new Pen(outline, Math.Max(1, outlinePixels * 2)) { LineJoin = PenLineJoin.Round };
+
         drawingContext.DrawGeometry(fill, pen, geometry);
+
         if (clip is not null)
         {
             drawingContext.Pop();
         }
     }
 
-    private bool TryFitPolygon(
+    private bool TryFitShape(
         string text,
         Typeface typeface,
         Brush fill,
@@ -83,14 +91,18 @@ public sealed class ComicTextElement : FrameworkElement
         IReadOnlyList<Point> polygon,
         out TextLayout? layout)
     {
-        double low = 3.5;
+        const double minimumSize = 2.5;
         double automaticMaximum = Math.Max(6, Math.Min(ActualHeight * 0.9, Math.Max(ActualWidth * 0.48, 16)));
-        double high = GetPreferredMaximumSize(automaticMaximum, low);
+        double high = GetPreferredMaximumSize(automaticMaximum, minimumSize);
+        double low = minimumSize;
         TextLayout? best = null;
-        for (int index = 0; index < 15; index++)
+
+        // Búsqueda binaria: el mayor tamaño posible solo se acepta si TODAS las líneas
+        // caben dentro de la silueta durante toda la altura real de los glifos.
+        for (int index = 0; index < 18; index++)
         {
             double size = (low + high) / 2;
-            if (TryCreatePolygonLayout(text, typeface, fill, pixelsPerDip, polygon, size, out TextLayout? candidate))
+            if (TryCreateShapeLayout(text, typeface, fill, pixelsPerDip, polygon, size, out TextLayout? candidate))
             {
                 best = candidate;
                 low = size;
@@ -102,23 +114,17 @@ public sealed class ComicTextElement : FrameworkElement
         }
 
         if (best is null
-            && !TryCreatePolygonLayout(text, typeface, fill, pixelsPerDip, polygon, low, out best))
+            && !TryCreateShapeLayout(text, typeface, fill, pixelsPerDip, polygon, minimumSize, out best))
         {
             layout = null;
             return false;
         }
 
-        double requestedSize = Math.Max(3.5, best!.FontSize * Region.FontScale);
-        if (requestedSize < best.FontSize
-            && TryCreatePolygonLayout(text, typeface, fill, pixelsPerDip, polygon, requestedSize, out TextLayout? scaled))
-        {
-            best = scaled;
-        }
         layout = best;
         return true;
     }
 
-    private bool TryCreatePolygonLayout(
+    private bool TryCreateShapeLayout(
         string text,
         Typeface typeface,
         Brush fill,
@@ -134,76 +140,171 @@ public sealed class ComicTextElement : FrameworkElement
             return false;
         }
 
-        double lineHeight = fontSize * Region.Style.LineHeightRatio;
-        double padding = Math.Max(1.5, Math.Min(ActualWidth, ActualHeight) * 0.025);
-        int maxLines = Math.Min(words.Length, Math.Max(1, (int)Math.Floor((ActualHeight - padding * 2) / lineHeight)));
+        double lineHeightRatio = Math.Clamp(Region.Style.LineHeightRatio, 0.82, 1.8);
+        double lineHeight = fontSize * lineHeightRatio;
+        double outlinePixels = Region.Style.OutlineWidth / 1000 * PageWidth;
+        double edgePadding = Math.Max(
+            Math.Max(2.5, Math.Min(ActualWidth, ActualHeight) * 0.045),
+            outlinePixels + fontSize * 0.10);
+
+        Rect bounds = GetPolygonBounds(polygon);
+        double usableTop = Math.Max(edgePadding, bounds.Top + edgePadding);
+        double usableBottom = Math.Min(ActualHeight - edgePadding, bounds.Bottom - edgePadding);
+        if (usableBottom <= usableTop)
+        {
+            layout = null;
+            return false;
+        }
+
+        int maxLinesByHeight = Math.Max(1, (int)Math.Floor((usableBottom - usableTop) / lineHeight));
+        int maxLines = Math.Min(words.Length, maxLinesByHeight);
         TextLayout? best = null;
         double bestScore = double.PositiveInfinity;
         double preferredCenterY = GetOriginalTextCenterY();
+        double preferredCenterX = GetOriginalTextCenterX();
 
         for (int lineCount = 1; lineCount <= maxLines; lineCount++)
         {
             double blockHeight = lineCount * lineHeight;
-            double top = Math.Clamp(
-                preferredCenterY - blockHeight / 2,
-                padding,
-                Math.Max(padding, ActualHeight - padding - blockHeight));
-
-            var spans = new HorizontalSpan[lineCount];
-            bool usable = true;
-            for (int line = 0; line < lineCount; line++)
+            double minimumTop = usableTop;
+            double maximumTop = usableBottom - blockHeight;
+            if (maximumTop < minimumTop)
             {
-                double centreY = top + (line + 0.5) * lineHeight;
-                if (!TryGetHorizontalSpan(polygon, centreY, out HorizontalSpan span))
+                continue;
+            }
+
+            foreach (double top in GetCandidateTops(minimumTop, maximumTop, preferredCenterY - blockHeight / 2))
+            {
+                var spans = new HorizontalSpan[lineCount];
+                bool usable = true;
+
+                for (int line = 0; line < lineCount; line++)
                 {
-                    usable = false;
-                    break;
+                    double lineTop = top + line * lineHeight;
+                    // FormattedText puede ocupar prácticamente una em completa. Comprobamos
+                    // una banda vertical, no solo el centro de la línea, para evitar que las
+                    // esquinas de las letras atraviesen un bocadillo ovalado.
+                    double glyphTop = lineTop + Math.Max(0, (lineHeight - fontSize * 1.02) / 2);
+                    double glyphBottom = Math.Min(
+                        lineTop + lineHeight,
+                        glyphTop + fontSize * 1.02);
+
+                    if (!TryGetSafeSpanForBand(
+                            polygon,
+                            glyphTop,
+                            glyphBottom,
+                            preferredCenterX,
+                            edgePadding,
+                            out HorizontalSpan span)
+                        || span.Width <= fontSize * 0.9)
+                    {
+                        usable = false;
+                        break;
+                    }
+
+                    spans[line] = span;
                 }
-                span = new HorizontalSpan(span.Left + padding, span.Right - padding);
-                if (span.Width <= fontSize * 0.8)
+
+                if (!usable
+                    || !TryBreakWords(words, spans, typeface, fontSize, fill, pixelsPerDip, out int[]? breaks, out double score))
                 {
-                    usable = false;
-                    break;
+                    continue;
                 }
-                spans[line] = span;
-            }
-            if (!usable)
-            {
-                continue;
-            }
 
-            if (!TryBreakWords(words, spans, typeface, fontSize, fill, pixelsPerDip, out int[]? breaks, out double score))
-            {
-                continue;
-            }
+                if (Region.Style.OriginalLineCount > 0)
+                {
+                    score += Math.Abs(lineCount - Region.Style.OriginalLineCount) * 0.12;
+                }
 
-            if (Region.Style.OriginalLineCount > 0)
-            {
-                score += Math.Abs(lineCount - Region.Style.OriginalLineCount) * 0.16;
-            }
-            if (score >= bestScore)
-            {
-                continue;
-            }
+                double actualCenterY = top + blockHeight / 2;
+                score += Math.Abs(actualCenterY - preferredCenterY) / Math.Max(1, ActualHeight) * 0.08;
 
-            var placements = new List<LinePlacement>(lineCount);
-            int start = 0;
-            for (int line = 0; line < lineCount; line++)
-            {
-                int end = breaks![line];
-                placements.Add(new LinePlacement(
-                    string.Join(' ', words[start..end]),
-                    spans[line].Left,
-                    top + line * lineHeight,
-                    spans[line].Width));
-                start = end;
+                if (score >= bestScore)
+                {
+                    continue;
+                }
+
+                var placements = new List<LinePlacement>(lineCount);
+                int start = 0;
+                for (int line = 0; line < lineCount; line++)
+                {
+                    int end = breaks![line];
+                    placements.Add(new LinePlacement(
+                        string.Join(' ', words[start..end]),
+                        spans[line].Left,
+                        top + line * lineHeight,
+                        spans[line].Width));
+                    start = end;
+                }
+
+                bestScore = score;
+                best = new TextLayout(fontSize, lineHeight, placements);
             }
-            bestScore = score;
-            best = new TextLayout(fontSize, lineHeight, placements);
         }
 
         layout = best;
         return best is not null;
+    }
+
+    private static IEnumerable<double> GetCandidateTops(double minimum, double maximum, double preferred)
+    {
+        if (maximum <= minimum)
+        {
+            yield return minimum;
+            yield break;
+        }
+
+        var candidates = new List<double>
+        {
+            Math.Clamp(preferred, minimum, maximum),
+            (minimum + maximum) / 2,
+            minimum,
+            maximum
+        };
+
+        const int steps = 12;
+        for (int index = 1; index < steps; index++)
+        {
+            candidates.Add(minimum + (maximum - minimum) * index / steps);
+        }
+
+        foreach (double value in candidates.Distinct().OrderBy(value => Math.Abs(value - preferred)))
+        {
+            yield return value;
+        }
+    }
+
+    private static bool TryGetSafeSpanForBand(
+        IReadOnlyList<Point> polygon,
+        double top,
+        double bottom,
+        double preferredX,
+        double padding,
+        out HorizontalSpan safeSpan)
+    {
+        double left = double.NegativeInfinity;
+        double right = double.PositiveInfinity;
+        double height = Math.Max(0.5, bottom - top);
+
+        // Siete cortes son baratos y suficientemente conservadores para óvalos,
+        // polígonos irregulares y bocadillos con laterales inclinados.
+        for (int sample = 0; sample < 7; sample++)
+        {
+            double y = top + height * sample / 6;
+            if (!TryGetHorizontalSpan(polygon, y, preferredX, out HorizontalSpan span))
+            {
+                safeSpan = default;
+                return false;
+            }
+
+            left = Math.Max(left, span.Left);
+            right = Math.Min(right, span.Right);
+        }
+
+        left += padding;
+        right -= padding;
+        safeSpan = new HorizontalSpan(left, right);
+        return safeSpan.Width > 0;
     }
 
     private static bool TryBreakWords(
@@ -220,6 +321,7 @@ public sealed class ComicTextElement : FrameworkElement
         int wordCount = words.Length;
         var costs = new double[lineCount + 1, wordCount + 1];
         var previous = new int[lineCount + 1, wordCount + 1];
+
         for (int line = 0; line <= lineCount; line++)
         {
             for (int word = 0; word <= wordCount; word++)
@@ -228,6 +330,7 @@ public sealed class ComicTextElement : FrameworkElement
                 previous[line, word] = -1;
             }
         }
+
         costs[0, 0] = 0;
 
         for (int line = 0; line < lineCount; line++)
@@ -238,6 +341,7 @@ public sealed class ComicTextElement : FrameworkElement
                 {
                     continue;
                 }
+
                 int wordsStillNeeded = lineCount - line - 1;
                 for (int end = start + 1; end <= wordCount - wordsStillNeeded; end++)
                 {
@@ -247,6 +351,7 @@ public sealed class ComicTextElement : FrameworkElement
                     {
                         break;
                     }
+
                     double unused = (spans[line].Width - width) / spans[line].Width;
                     double raggedness = unused * unused * (line == lineCount - 1 ? 0.45 : 1);
                     double candidateCost = costs[line, start] + raggedness;
@@ -273,6 +378,7 @@ public sealed class ComicTextElement : FrameworkElement
             breaks[line - 1] = cursor;
             cursor = previous[line, cursor];
         }
+
         score = costs[lineCount, wordCount] + lineCount * 0.008;
         return true;
     }
@@ -296,6 +402,7 @@ public sealed class ComicTextElement : FrameworkElement
             };
             group.Children.Add(formatted.BuildGeometry(new Point(x, line.Y)));
         }
+
         group.Freeze();
         return group;
     }
@@ -306,19 +413,22 @@ public sealed class ComicTextElement : FrameworkElement
         Brush fill,
         double pixelsPerDip)
     {
-        double padding = Math.Max(2, Math.Min(ActualWidth, ActualHeight) * 0.045);
+        double padding = Math.Max(3, Math.Min(ActualWidth, ActualHeight) * 0.065);
         double availableWidth = Math.Max(2, ActualWidth - padding * 2);
         double availableHeight = Math.Max(2, ActualHeight - padding * 2);
-        double low = 4;
+        const double minimumSize = 2.5;
         double automaticMaximum = Math.Max(6, Math.Min(availableHeight * 0.92, Math.Max(availableWidth * 0.48, 16)));
-        double high = GetPreferredMaximumSize(automaticMaximum, low);
-        double bestSize = low;
-        FormattedText fitted = CreateFormatted(text, typeface, low, fill, availableWidth, pixelsPerDip);
-        for (int index = 0; index < 14; index++)
+        double high = GetPreferredMaximumSize(automaticMaximum, minimumSize);
+        double low = minimumSize;
+        double bestSize = minimumSize;
+        FormattedText fitted = CreateFormatted(text, typeface, minimumSize, fill, availableWidth, pixelsPerDip);
+
+        for (int index = 0; index < 18; index++)
         {
             double size = (low + high) / 2;
             FormattedText candidate = CreateFormatted(text, typeface, size, fill, availableWidth, pixelsPerDip);
-            if (candidate.Height <= availableHeight)
+            if (candidate.Height <= availableHeight
+                && candidate.WidthIncludingTrailingWhitespace <= availableWidth + 0.5)
             {
                 fitted = candidate;
                 bestSize = size;
@@ -330,30 +440,32 @@ public sealed class ComicTextElement : FrameworkElement
             }
         }
 
-        double scaledSize = Math.Clamp(bestSize * Region.FontScale, 4, bestSize);
-        fitted = CreateFormatted(text, typeface, scaledSize, fill, availableWidth, pixelsPerDip);
+        fitted = CreateFormatted(text, typeface, bestSize, fill, availableWidth, pixelsPerDip);
         fitted.TextAlignment = Region.Style.Alignment switch
         {
             "left" => TextAlignment.Left,
             "right" => TextAlignment.Right,
             _ => TextAlignment.Center
         };
+
         double originY = Math.Clamp(
             GetOriginalTextCenterY() - fitted.Height / 2,
             padding,
             Math.Max(padding, ActualHeight - padding - fitted.Height));
-        return (fitted.BuildGeometry(new Point(padding, originY)), scaledSize);
+
+        return (fitted.BuildGeometry(new Point(padding, originY)), bestSize);
     }
 
     private double GetPreferredMaximumSize(double automaticMaximum, double minimum)
     {
+        double scale = Math.Clamp(Region.FontScale, 0.35, 1.6);
         if (Region.Style.FontSize <= 0 || PageHeight <= 0)
         {
-            return automaticMaximum;
+            return Math.Clamp(automaticMaximum * scale, minimum, automaticMaximum);
         }
 
         double originalPixels = Region.Style.FontSize / 1000 * PageHeight;
-        return Math.Clamp(originalPixels * 1.03, minimum, automaticMaximum);
+        return Math.Clamp(originalPixels * 1.03 * scale, minimum, automaticMaximum);
     }
 
     private double GetOriginalTextCenterY()
@@ -368,12 +480,64 @@ public sealed class ComicTextElement : FrameworkElement
         return Math.Clamp(local, 0, ActualHeight);
     }
 
+    private double GetOriginalTextCenterX()
+    {
+        if (PageWidth <= 0 || Region.RenderBox.Width <= 0)
+        {
+            return ActualWidth / 2;
+        }
+
+        double centre = Region.TextBox.X + Region.TextBox.Width / 2;
+        double local = (centre - Region.RenderBox.X) / 1000 * PageWidth;
+        return Math.Clamp(local, 0, ActualWidth);
+    }
+
+    private IReadOnlyList<Point> CreateEffectiveShape()
+    {
+        IReadOnlyList<Point> detected = CreateLocalPolygon();
+        if (detected.Count >= 3)
+        {
+            return detected;
+        }
+
+        double insetX = Math.Max(2, ActualWidth * 0.035);
+        double insetY = Math.Max(2, ActualHeight * 0.045);
+        double left = insetX;
+        double top = insetY;
+        double width = Math.Max(2, ActualWidth - insetX * 2);
+        double height = Math.Max(2, ActualHeight - insetY * 2);
+
+        if (Region.Type is "dialogue" or "thought")
+        {
+            var ellipse = new List<Point>(40);
+            double centerX = left + width / 2;
+            double centerY = top + height / 2;
+            for (int index = 0; index < 40; index++)
+            {
+                double angle = Math.PI * 2 * index / 40;
+                ellipse.Add(new Point(
+                    centerX + Math.Cos(angle) * width / 2,
+                    centerY + Math.Sin(angle) * height / 2));
+            }
+            return ellipse;
+        }
+
+        return
+        [
+            new Point(left, top),
+            new Point(left + width, top),
+            new Point(left + width, top + height),
+            new Point(left, top + height)
+        ];
+    }
+
     private IReadOnlyList<Point> CreateLocalPolygon()
     {
         if (Region.SafePolygon.Count < 3 || PageWidth <= 0 || PageHeight <= 0)
         {
             return [];
         }
+
         NormalizedRect box = Region.RenderBox;
         return Region.SafePolygon
             .Select(point => new Point(
@@ -382,9 +546,19 @@ public sealed class ComicTextElement : FrameworkElement
             .ToArray();
     }
 
+    private static Rect GetPolygonBounds(IReadOnlyList<Point> polygon)
+    {
+        double left = polygon.Min(point => point.X);
+        double top = polygon.Min(point => point.Y);
+        double right = polygon.Max(point => point.X);
+        double bottom = polygon.Max(point => point.Y);
+        return new Rect(new Point(left, top), new Point(right, bottom));
+    }
+
     private static bool TryGetHorizontalSpan(
         IReadOnlyList<Point> polygon,
         double y,
+        double preferredX,
         out HorizontalSpan span)
     {
         var intersections = new List<double>();
@@ -398,6 +572,7 @@ public sealed class ComicTextElement : FrameworkElement
                 intersections.Add(first.X + ratio * (second.X - first.X));
             }
         }
+
         intersections.Sort();
         if (intersections.Count < 2)
         {
@@ -406,14 +581,19 @@ public sealed class ComicTextElement : FrameworkElement
         }
 
         HorizontalSpan best = default;
+        bool foundPreferred = false;
         for (int index = 0; index + 1 < intersections.Count; index += 2)
         {
             var candidate = new HorizontalSpan(intersections[index], intersections[index + 1]);
-            if (candidate.Width > best.Width)
+            bool containsPreferred = candidate.Left <= preferredX && preferredX <= candidate.Right;
+            if ((containsPreferred && !foundPreferred)
+                || (containsPreferred == foundPreferred && candidate.Width > best.Width))
             {
                 best = candidate;
+                foundPreferred = containsPreferred;
             }
         }
+
         span = best;
         return best.Width > 0;
     }
@@ -464,7 +644,7 @@ public sealed class ComicTextElement : FrameworkElement
         var formatted = CreateLineFormatted(text, typeface, size, fill, pixelsPerDip);
         formatted.MaxTextWidth = Math.Max(1, maxWidth);
         formatted.Trimming = TextTrimming.None;
-        formatted.LineHeight = size * Region.Style.LineHeightRatio;
+        formatted.LineHeight = size * Math.Clamp(Region.Style.LineHeightRatio, 0.82, 1.8);
         return formatted;
     }
 
