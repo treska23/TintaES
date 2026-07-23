@@ -10,13 +10,14 @@ using TintaES.Wpf.Services;
 namespace TintaES.Wpf;
 
 /// <summary>
-/// Mantiene una sola composición de líneas para editor y bocadillo y la navegación
-/// Espacio + arrastrar. El cálculo automático se hace una sola vez al incorporar la región,
-/// nunca al hacer clic sobre ella.
+/// Mantiene el rotulado automático como estado inicial y solo activa la composición manual
+/// cuando el usuario modifica realmente el texto o sus saltos de línea. También gestiona
+/// Espacio + arrastrar para navegar por la página.
 /// </summary>
 public partial class MainWindow
 {
     private readonly ComicTextLineBreakService _editorLineBreakService = new();
+    private readonly Dictionary<Guid, string> _automaticLinePreviews = new();
     private bool _textLayoutHooksInstalled;
     private bool _spacePanHeld;
     private bool _isSpacePanning;
@@ -45,12 +46,18 @@ public partial class MainWindow
 
         foreach (ComicRegion region in _regions)
         {
-            PrepareRegionLineLayout(region);
+            PrepareRegionLinePreview(region);
         }
     }
 
     private void Regions_CollectionChanged_ForLineLayout(object? sender, NotifyCollectionChangedEventArgs e)
     {
+        if (e.Action == NotifyCollectionChangedAction.Reset)
+        {
+            _automaticLinePreviews.Clear();
+            return;
+        }
+
         if (e.NewItems is null)
         {
             return;
@@ -58,14 +65,14 @@ public partial class MainWindow
 
         foreach (ComicRegion region in e.NewItems.OfType<ComicRegion>())
         {
-            // El Refresh global de la lista en cada carácter era innecesario: los bindings ya
-            // reciben INotifyPropertyChanged. Lo quitamos para evitar pausas durante la edición.
+            // El binding de cada región ya escucha INotifyPropertyChanged. Evitamos el
+            // Items.Refresh global que provocaba pausas al escribir cada carácter.
             region.PropertyChanged -= Region_PropertyChanged;
-            PrepareRegionLineLayout(region);
+            PrepareRegionLinePreview(region);
         }
     }
 
-    private void PrepareRegionLineLayout(ComicRegion region)
+    private void PrepareRegionLinePreview(ComicRegion region)
     {
         if (_originalBitmap is null
             || region.Type == "sfx"
@@ -82,20 +89,43 @@ public partial class MainWindow
 
         if (!string.IsNullOrWhiteSpace(formatted))
         {
-            region.Translation = formatted;
+            _automaticLinePreviews[region.Id] = formatted;
         }
-
-        // A partir de aquí Translation es la única fuente de verdad para la composición.
-        // Las líneas del cuadro lateral son exactamente las que dibuja el bocadillo.
-        region.IsManual = true;
-        region.Vertical = false;
     }
 
     private void RegionListBox_SelectionChanged_LineLayout(object sender, SelectionChangedEventArgs e)
     {
-        if (_selectedRegion is not null)
+        if (_selectedRegion is null)
+        {
+            return;
+        }
+
+        if (_selectedRegion.IsManual)
         {
             RefreshManualLineVisual(_selectedRegion, invalidate: false);
+            return;
+        }
+
+        // El cuadro lateral muestra una copia de la composición automática, pero NO cambia
+        // Translation ni activa el render manual. Por eso la página sigue usando el ajuste
+        // automático hasta que el usuario toque realmente el texto.
+        if (!_automaticLinePreviews.TryGetValue(_selectedRegion.Id, out string? formatted)
+            || string.IsNullOrWhiteSpace(formatted)
+            || string.Equals(formatted, TranslationTextBox.Text, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        _syncingEditor = true;
+        try
+        {
+            int caret = Math.Min(TranslationTextBox.CaretIndex, formatted.Length);
+            TranslationTextBox.Text = formatted;
+            TranslationTextBox.CaretIndex = caret;
+        }
+        finally
+        {
+            _syncingEditor = false;
         }
     }
 
@@ -106,7 +136,19 @@ public partial class MainWindow
             return;
         }
 
-        _selectedRegion.IsManual = true;
+        if (!_selectedRegion.IsManual)
+        {
+            // Congelamos como semilla la composición que el usuario estaba viendo antes de
+            // editar. El render manual calculará una sola vez su tamaño de partida y después
+            // cambiar los Enter no volverá a encoger ni agrandar la fuente.
+            _selectedRegion.ManualLayoutSeedText = _automaticLinePreviews.TryGetValue(_selectedRegion.Id, out string? preview)
+                ? preview
+                : _selectedRegion.Translation;
+            _selectedRegion.ManualBaseFontSize = 0;
+            _selectedRegion.ManualFontScale = 1;
+            _selectedRegion.IsManual = true;
+        }
+
         _selectedRegion.Vertical = false;
         RefreshManualLineVisual(_selectedRegion);
     }
