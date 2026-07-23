@@ -18,6 +18,11 @@ public sealed record OrganicAnalysisResult(
 
 public sealed class OrganicEngineService
 {
+    // Cambiar esta versión invalida únicamente la caché del análisis orgánico.
+    // Es intencionado: la geometría de los bocadillos y la máscara de borrado
+    // forman parte del resultado cacheado y no deben sobrevivir a cambios del algoritmo.
+    private const string CacheVersion = "organic-layout-v4";
+
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         PropertyNameCaseInsensitive = true
@@ -287,6 +292,7 @@ public sealed class OrganicEngineService
     private static string CreateCacheKey(string sourcePath, params string[] dependencies)
     {
         var identity = new StringBuilder();
+        identity.Append(CacheVersion).Append('|');
         var source = new FileInfo(sourcePath);
         identity.Append(source.FullName).Append('|').Append(source.Length).Append('|').Append(source.LastWriteTimeUtc.Ticks);
         foreach (string dependency in dependencies)
