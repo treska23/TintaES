@@ -119,7 +119,7 @@ public partial class MainWindow
             await File.WriteAllTextAsync(
                 temporaryRegions,
                 JsonSerializer.Serialize(page.Regions, ProjectJsonOptions),
-                Encoding.UTF8);
+                new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
 
             BusyTitleText.Text = "Creando capas editables de Photoshop…";
             FooterStatusText.Text = "Exportando PSD con una capa de texto por bocadillo…";
