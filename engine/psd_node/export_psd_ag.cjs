@@ -158,8 +158,11 @@ function main() {
     children,
   };
 
+  // En Node puro ag-psd necesita un backend Canvas únicamente para generar la miniatura
+  // incrustada. El PSD, la composición y las capas no dependen de esa miniatura, así que la
+  // desactivamos para evitar exigir node-canvas/initializeCanvas en una exportación local.
   const output = writePsdBuffer(psd, {
-    generateThumbnail: true,
+    generateThumbnail: false,
     invalidateTextLayers: true,
     noBackground: true,
   });
