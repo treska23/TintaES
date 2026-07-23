@@ -43,18 +43,34 @@ public sealed class ImageExportService
                 RenderTransformOrigin = new Point(0.5, 0.5),
                 RenderTransform = new RotateTransform(region.Rotation)
             };
-            var text = new ComicTextElement
+
+            FrameworkElement text;
+            if (region.Type != "sfx" && HasExplicitLineBreaks(region.Translation))
             {
-                Region = region,
-                PageWidth = width,
-                PageHeight = height,
-                Width = elementWidth,
-                Height = elementHeight,
-                RenderTransformOrigin = new Point(0.5, 0.5),
-                RenderTransform = new ScaleTransform(
-                    Math.Clamp(region.ManualFontScale, 0.25, 2.5),
-                    Math.Clamp(region.ManualFontScale, 0.25, 2.5))
-            };
+                text = new ManualComicTextElement
+                {
+                    Region = region,
+                    PageWidth = width,
+                    PageHeight = height,
+                    Width = elementWidth,
+                    Height = elementHeight
+                };
+            }
+            else
+            {
+                text = new ComicTextElement
+                {
+                    Region = region,
+                    PageWidth = width,
+                    PageHeight = height,
+                    Width = elementWidth,
+                    Height = elementHeight,
+                    RenderTransformOrigin = new Point(0.5, 0.5),
+                    RenderTransform = new ScaleTransform(
+                        Math.Clamp(region.ManualFontScale, 0.25, 2.5),
+                        Math.Clamp(region.ManualFontScale, 0.25, 2.5))
+                };
+            }
 
             layer.Children.Add(text);
             Canvas.SetLeft(layer, left);
@@ -78,4 +94,7 @@ public sealed class ImageExportService
         using FileStream stream = File.Create(path);
         encoder.Save(stream);
     }
+
+    private static bool HasExplicitLineBreaks(string text) =>
+        text.Contains('\n') || text.Contains('\r');
 }
