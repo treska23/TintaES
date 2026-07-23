@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -25,12 +26,22 @@ def run_node_exporter(args: argparse.Namespace) -> int:
         ) from exc
 
     engine_dir = Path(__file__).resolve().parent
-    tool_dir = engine_dir / "psd_node"
-    exporter = tool_dir / "export_psd_ag.cjs"
-    if not exporter.exists():
-        raise FileNotFoundError(f"No se encuentra el exportador PSD: {exporter}")
+    source_exporter = engine_dir / "psd_node" / "export_psd_ag.cjs"
+    if not source_exporter.exists():
+        raise FileNotFoundError(f"No se encuentra el exportador PSD: {source_exporter}")
 
+    local_root = os.environ.get("LOCALAPPDATA")
+    if local_root:
+        tool_dir = Path(local_root) / "TintaES" / "PsdNode"
+    else:
+        tool_dir = Path.home() / ".tintaes" / "PsdNode"
     tool_dir.mkdir(parents=True, exist_ok=True)
+
+    # El runtime y node_modules viven fuera del repositorio para no ensuciar Git/Visual Studio.
+    exporter = tool_dir / "export_psd_ag.cjs"
+    if not exporter.exists() or source_exporter.read_bytes() != exporter.read_bytes():
+        shutil.copy2(source_exporter, exporter)
+
     node_modules = tool_dir / "node_modules"
     ag_psd_module = node_modules / "ag-psd"
     pngjs_module = node_modules / "pngjs"
