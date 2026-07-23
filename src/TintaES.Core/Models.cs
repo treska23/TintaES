@@ -37,7 +37,12 @@ public sealed record NormalizedPoint(double X, double Y);
 public sealed class ComicTextStyle
 {
     public string FontCategory { get; set; } = "comic";
+    public string? FontFamily { get; set; }
     public int FontWeight { get; set; } = 700;
+    public double FontSize { get; set; }
+    public double FontWidthRatio { get; set; } = 1;
+    public double LineHeightRatio { get; set; } = 1.08;
+    public int OriginalLineCount { get; set; }
     public bool Italic { get; set; }
     public bool Uppercase { get; set; }
     public string TextColor { get; set; } = "#111111";
