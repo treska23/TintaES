@@ -45,7 +45,7 @@ public sealed class ImageExportService
             };
 
             FrameworkElement text;
-            if (region.Type != "sfx" && HasExplicitLineBreaks(region.Translation))
+            if (region.Type != "sfx" && region.IsManual)
             {
                 text = new ManualComicTextElement
                 {
@@ -94,7 +94,4 @@ public sealed class ImageExportService
         using FileStream stream = File.Create(path);
         encoder.Save(stream);
     }
-
-    private static bool HasExplicitLineBreaks(string text) =>
-        text.Contains('\n') || text.Contains('\r');
 }
