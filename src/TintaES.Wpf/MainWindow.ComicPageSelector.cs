@@ -101,6 +101,7 @@ public partial class MainWindow
         InstallProjectCommands();
         InstallClassicMenu();
         InstallPsdExportCommand();
+        InstallComicReaderCommand();
         InstallPageSelectionPanel();
 
         if (_pageSelectorComboBox is not null
