@@ -7,7 +7,7 @@ namespace TintaES.Wpf.Controls;
 
 /// <summary>
 /// Render final de una caja de texto manual. El ancho envuelve las palabras y la escala únicamente
-/// multiplica el tamaño; nunca vuelve a ajustar la fuente contra la máscara o la altura disponible.
+/// multiplica el tamaño. El contenido se recorta siempre dentro de su caja, igual que en el editor.
 /// </summary>
 public sealed class TextFrameComicTextElement : FrameworkElement
 {
@@ -66,35 +66,55 @@ public sealed class TextFrameComicTextElement : FrameworkElement
         double y = (ActualHeight - formatted.Height) / 2;
         Geometry geometry = formatted.BuildGeometry(new Point(padding, y));
 
-        if (Region.Style.Shadow)
+        drawingContext.PushClip(new RectangleGeometry(new Rect(0, 0, ActualWidth, ActualHeight)));
+        try
         {
-            drawingContext.PushTransform(new TranslateTransform(fontSize * 0.06, fontSize * 0.08));
-            drawingContext.DrawGeometry(new SolidColorBrush(Color.FromArgb(110, 0, 0, 0)), null, geometry);
+            if (Region.Style.Shadow)
+            {
+                drawingContext.PushTransform(new TranslateTransform(fontSize * 0.06, fontSize * 0.08));
+                drawingContext.DrawGeometry(new SolidColorBrush(Color.FromArgb(110, 0, 0, 0)), null, geometry);
+                drawingContext.Pop();
+            }
+
+            double outlinePixels = Region.Style.OutlineWidth / 1000 * PageWidth;
+            Pen? pen = outline is null || outlinePixels <= 0
+                ? null
+                : new Pen(outline, Math.Max(1, outlinePixels * 2)) { LineJoin = PenLineJoin.Round };
+            drawingContext.DrawGeometry(fill, pen, geometry);
+        }
+        finally
+        {
             drawingContext.Pop();
         }
-
-        double outlinePixels = Region.Style.OutlineWidth / 1000 * PageWidth;
-        Pen? pen = outline is null || outlinePixels <= 0
-            ? null
-            : new Pen(outline, Math.Max(1, outlinePixels * 2)) { LineJoin = PenLineJoin.Round };
-        drawingContext.DrawGeometry(fill, pen, geometry);
     }
 
     private double ResolveBaseSize()
     {
-        if (Region.ManualBaseFontSize > 0 && double.IsFinite(Region.ManualBaseFontSize))
+        double stored = Region.ManualBaseFontSize;
+        double detected = Region.Style.FontSize > 0 && PageHeight > 0
+            ? Region.Style.FontSize / 1000 * PageHeight
+            : 0;
+
+        if (detected >= 1.2 && double.IsFinite(detected))
         {
-            return Region.ManualBaseFontSize;
+            bool storedValid = stored >= 1.2 && double.IsFinite(stored);
+            double ratio = storedValid ? stored / detected : 0;
+            return !storedValid || ratio < 0.45 || ratio > 2.2
+                ? detected
+                : stored;
         }
 
-        if (Region.Style.FontSize > 0 && PageHeight > 0)
+        double maximumReasonableBase = Math.Max(8, ActualHeight * 0.62);
+        if (stored >= 1.2 && double.IsFinite(stored) && stored <= maximumReasonableBase)
         {
-            return Math.Max(1.2, Region.Style.FontSize / 1000 * PageHeight);
+            return stored;
         }
 
-        int lines = Math.Max(1, Region.Style.OriginalLineCount);
-        double ratio = Math.Clamp(Region.Style.LineHeightRatio, 0.82, 1.8);
-        return Math.Max(1.2, ActualHeight * 0.72 / (lines * ratio));
+        int lines = Region.Style.OriginalLineCount > 0
+            ? Region.Style.OriginalLineCount
+            : 3;
+        double lineRatio = Math.Clamp(Region.Style.LineHeightRatio, 0.82, 1.8);
+        return Math.Max(1.2, ActualHeight * 0.72 / (lines * lineRatio));
     }
 
     private static Typeface CreateTypeface(ComicRegion region)
