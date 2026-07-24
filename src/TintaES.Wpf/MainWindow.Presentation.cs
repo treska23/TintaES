@@ -124,12 +124,10 @@ public partial class MainWindow
             return;
         }
 
-        HwndSource? source = HwndSource.FromHwnd(handle);
-        Matrix fromDevice = source?.CompositionTarget?.TransformFromDevice ?? Matrix.Identity;
-        Point topLeft = fromDevice.Transform(new Point(info.Work.Left, info.Work.Top));
-        Point bottomRight = fromDevice.Transform(new Point(info.Work.Right, info.Work.Bottom));
-        double workWidth = Math.Max(640, bottomRight.X - topLeft.X);
-        double workHeight = Math.Max(460, bottomRight.Y - topLeft.Y);
+        uint windowDpi = GetDpiForWindow(handle);
+        double dpiScale = windowDpi > 0 ? windowDpi / 96d : 1d;
+        double workWidth = Math.Max(640, (info.Work.Right - info.Work.Left) / dpiScale);
+        double workHeight = Math.Max(460, (info.Work.Bottom - info.Work.Top) / dpiScale);
 
         MinWidth = Math.Min(PreferredMinimumWidth, workWidth);
         MinHeight = Math.Min(PreferredMinimumHeight, workHeight);
@@ -140,13 +138,6 @@ public partial class MainWindow
         {
             Width = Math.Min(Width, workWidth);
             Height = Math.Min(Height, workHeight);
-
-            double currentLeft = double.IsFinite(Left) ? Left : topLeft.X;
-            double currentTop = double.IsFinite(Top) ? Top : topLeft.Y;
-            double maxLeft = topLeft.X + Math.Max(0, workWidth - Width);
-            double maxTop = topLeft.Y + Math.Max(0, workHeight - Height);
-            Left = Math.Clamp(currentLeft, topLeft.X, maxLeft);
-            Top = Math.Clamp(currentTop, topLeft.Y, maxTop);
         }
 
         ApplyResponsiveWorkspaceColumns();
@@ -284,6 +275,9 @@ public partial class MainWindow
     [DllImport("user32.dll", CharSet = CharSet.Auto)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetMonitorInfo(nint monitor, ref MonitorInfo monitorInfo);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetDpiForWindow(nint hwnd);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct MonitorInfo
