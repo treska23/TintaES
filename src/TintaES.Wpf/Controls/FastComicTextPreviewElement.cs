@@ -59,7 +59,6 @@ public sealed class FastComicTextPreviewElement : FrameworkElement
             fontSize,
             fill,
             availableWidth,
-            availableHeight,
             pixelsPerDip);
 
         // Una única corrección proporcional sustituye las 18 iteraciones y el algoritmo de
@@ -74,7 +73,6 @@ public sealed class FastComicTextPreviewElement : FrameworkElement
                 fontSize,
                 fill,
                 availableWidth,
-                availableHeight,
                 pixelsPerDip);
         }
 
@@ -101,7 +99,6 @@ public sealed class FastComicTextPreviewElement : FrameworkElement
         double fontSize,
         Brush fill,
         double availableWidth,
-        double availableHeight,
         double pixelsPerDip)
     {
         var formatted = new FormattedText(
@@ -114,7 +111,6 @@ public sealed class FastComicTextPreviewElement : FrameworkElement
             pixelsPerDip)
         {
             MaxTextWidth = availableWidth,
-            MaxTextHeight = availableHeight,
             TextAlignment = Region.Style.Alignment switch
             {
                 "left" => TextAlignment.Left,
@@ -171,6 +167,7 @@ public sealed class FastComicTextPreviewElement : FrameworkElement
         }
         _subscribed = true;
         Region.PropertyChanged += Region_PropertyChanged;
+        SynchronizeVisualState();
     }
 
     private void FastComicTextPreviewElement_Unloaded(object sender, RoutedEventArgs e)
@@ -185,6 +182,15 @@ public sealed class FastComicTextPreviewElement : FrameworkElement
 
     private void Region_PropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
+        SynchronizeVisualState();
         InvalidateVisual();
+    }
+
+    private void SynchronizeVisualState()
+    {
+        Visibility = Region.IsEnabled ? Visibility.Visible : Visibility.Collapsed;
+        RenderTransformOrigin = new Point(0.5, 0.5);
+        double scale = Math.Clamp(Region.ManualFontScale, 0.25, 2.5);
+        RenderTransform = new ScaleTransform(scale, scale);
     }
 }
