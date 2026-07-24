@@ -8,12 +8,13 @@ namespace TintaES.Wpf;
 
 /// <summary>
 /// Exportación CBZ resistente a páginas que bloquean el render de WPF. Cada página se procesa
-/// en un hilo STA independiente y dispone de cuatro minutos antes de ser omitida.
-/// Los checkboxes actúan como lista de pendientes: una página se desmarca al quedar preparada.
+/// en un hilo STA independiente. Cada dos minutos se pregunta si debe seguir esperando; si el
+/// usuario no responde en treinta segundos, la página se omite. Los checkboxes actúan como lista
+/// de pendientes: una página se desmarca al quedar preparada.
 /// </summary>
 public partial class MainWindow
 {
-    private static readonly TimeSpan CbzPageTimeout = TimeSpan.FromMinutes(4);
+    private static readonly TimeSpan CbzPageReviewInterval = TimeSpan.FromMinutes(2);
     private static readonly bool ResponsiveCbzExportRegistered = RegisterResponsiveCbzExport();
 
     private bool _responsiveCbzExportInstalled;
@@ -159,7 +160,7 @@ public partial class MainWindow
                     : $"Renderizando página {pageIndex + 1} · {position + 1}/{selectedPages.Count}";
                 FooterStatusText.Text = reusable
                     ? "Reutilizando una página preparada de una exportación interrumpida…"
-                    : $"Preparando página {pageIndex + 1} de {_comicPages.Count} · máximo 4 minutos…";
+                    : $"Preparando página {pageIndex + 1} de {_comicPages.Count} · se preguntará cada 2 minutos…";
                 await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Render);
 
                 if (!reusable)
@@ -194,9 +195,8 @@ public partial class MainWindow
 
                         SetCbzPagePendingInSelector(pageIndex, pending: true);
                         UpdateResponsiveCbzProgress(position, selectedPages.Count, failedPages.Count);
-                        FooterStatusText.Text = exception is TimeoutException
-                            ? $"Página {pageIndex + 1} omitida tras 4 minutos. Continúa marcada."
-                            : $"Página {pageIndex + 1} omitida por un error. Continúa marcada.";
+                        FooterStatusText.Text =
+                            $"Página {pageIndex + 1} omitida. Continúa marcada y se pasa a la siguiente.";
                         await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Background);
                         continue;
                     }
@@ -406,15 +406,42 @@ public partial class MainWindow
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
 
-        using var timeoutTimer = new System.Threading.Timer(
-            _ => completion.TrySetException(
-                new TimeoutException("superó el límite real de 4 minutos")),
-            state: null,
-            dueTime: CbzPageTimeout,
-            period: Timeout.InfiniteTimeSpan);
-
         using CancellationTokenRegistration cancellationRegistration = cancellationToken.Register(
             () => completion.TrySetCanceled(cancellationToken));
+
+        while (!completion.Task.IsCompleted)
+        {
+            Task reviewDelay = Task.Delay(CbzPageReviewInterval, cancellationToken);
+            Task completed = await Task.WhenAny(completion.Task, reviewDelay).ConfigureAwait(false);
+            if (ReferenceEquals(completed, completion.Task))
+            {
+                break;
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            bool continueWaiting = await Dispatcher.InvokeAsync(() =>
+            {
+                var prompt = new CbzPageWaitPromptWindow(pageIndex + 1)
+                {
+                    Owner = this
+                };
+                return prompt.ShowDialog() == true;
+            });
+
+            // La página puede haber terminado durante los treinta segundos de la pregunta.
+            if (completion.Task.IsCompleted)
+            {
+                break;
+            }
+
+            if (!continueWaiting)
+            {
+                completion.TrySetException(new TimeoutException(
+                    "omitida porque se eligió saltarla o no hubo respuesta durante 30 segundos"));
+                break;
+            }
+        }
 
         CbzStaPageResult completedResult = await completion.Task.ConfigureAwait(false);
         cancellationToken.ThrowIfCancellationRequested();
