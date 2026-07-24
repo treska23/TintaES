@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
 using TintaES.Core;
@@ -8,16 +9,16 @@ using TintaES.Core;
 namespace TintaES.Wpf;
 
 /// <summary>
-/// Unifica el editor lateral con el modelo manual. El control de escala es un multiplicador puro:
-/// al tocarlo se congelan las líneas visibles y nunca se vuelve a ajustar el texto a la máscara,
-/// al rectángulo ni al polígono del bocadillo.
+/// Mantiene el control de escala completamente aislado de la máscara, el fondo limpio y el resto
+/// de zonas. Al moverlo solo cambia ManualFontScale en la región seleccionada.
 /// </summary>
 public partial class MainWindow
 {
     private static readonly bool ManualTextRegressionFixRegistered = RegisterManualTextRegressionFix();
-    private readonly HashSet<Guid> _pureManualScaleBaselines = [];
+
     private bool _manualTextRegressionFixInstalled;
-    private bool _manualCleanupRefreshPending;
+    private Guid? _manualTextSeedRegionId;
+    private string? _manualTextSeed;
 
     private static bool RegisterManualTextRegressionFix()
     {
@@ -52,34 +53,69 @@ public partial class MainWindow
 
         FontScaleSlider.ValueChanged -= FontScaleSlider_ValueChanged;
         FontScaleSlider.ValueChanged -= FontScaleSlider_ValueChanged_ManualLineLayout;
+        FontScaleSlider.ValueChanged -= FontScaleSlider_ValueChanged_FixedManual;
         FontScaleSlider.ValueChanged += FontScaleSlider_ValueChanged_FixedManual;
+        FontScaleSlider.PreviewMouseLeftButtonDown += FontScaleSlider_PreviewMouseLeftButtonDown_Isolated;
+        FontScaleSlider.PreviewKeyDown += FontScaleSlider_PreviewKeyDown_Isolated;
 
         TranslationTextBox.TextChanged -= TranslationTextBox_TextChanged;
         TranslationTextBox.TextChanged -= TranslationTextBox_TextChanged_LineLayout;
+        TranslationTextBox.TextChanged -= TranslationTextBox_TextChanged_FixedManual;
         TranslationTextBox.TextChanged += TranslationTextBox_TextChanged_FixedManual;
         TranslationTextBox.GotKeyboardFocus += TranslationTextBox_GotKeyboardFocus_CaptureManualSeed;
 
         RegionListBox.SelectionChanged -= RegionListBox_SelectionChanged;
         RegionListBox.SelectionChanged -= RegionListBox_SelectionChanged_LineLayout;
+        RegionListBox.SelectionChanged -= RegionListBox_SelectionChanged_FixedManualScale;
         RegionListBox.SelectionChanged += RegionListBox_SelectionChanged_FixedManualScale;
 
         SynchronizeFixedManualScaleSlider();
     }
 
-    private void TranslationTextBox_GotKeyboardFocus_CaptureManualSeed(
-        object sender,
-        System.Windows.Input.KeyboardFocusChangedEventArgs e)
+    private void FontScaleSlider_PreviewMouseLeftButtonDown_Isolated(object sender, MouseButtonEventArgs e) =>
+        PrepareResultViewForFontScale();
+
+    private void FontScaleSlider_PreviewKeyDown_Isolated(object sender, KeyEventArgs e)
     {
-        ComicRegion? region = _selectedRegion;
-        if (region is null || region.IsManual)
+        if (e.Key is Key.Left or Key.Right or Key.Up or Key.Down or Key.PageUp or Key.PageDown
+            or Key.Home or Key.End)
         {
+            PrepareResultViewForFontScale();
+        }
+    }
+
+    private void PrepareResultViewForFontScale()
+    {
+        // La escala tipográfica no forma parte del editor de máscara. Si este quedó activo,
+        // restauramos primero el resultado y todas las capas de texto una sola vez.
+        if (_manualMaskTool != ManualMaskTool.None)
+        {
+            LeaveManualMaskView();
             return;
         }
 
-        region.ManualLayoutSeedText = _automaticLinePreviews.TryGetValue(region.Id, out string? preview)
-            && !string.IsNullOrWhiteSpace(preview)
-                ? preview
-                : region.Translation;
+        if (!string.Equals(_previewMode, "result", StringComparison.Ordinal))
+        {
+            ShowPreviewMode("result");
+        }
+
+        OverlayCanvas.Visibility = Visibility.Visible;
+        SetMaskEditingRegionLayersVisible(true);
+    }
+
+    private void TranslationTextBox_GotKeyboardFocus_CaptureManualSeed(
+        object sender,
+        KeyboardFocusChangedEventArgs e)
+    {
+        if (_selectedRegion is null || _selectedRegion.IsManual)
+        {
+            _manualTextSeedRegionId = null;
+            _manualTextSeed = null;
+            return;
+        }
+
+        _manualTextSeedRegionId = _selectedRegion.Id;
+        _manualTextSeed = _selectedRegion.Translation;
     }
 
     private void TranslationTextBox_TextChanged_FixedManual(object sender, TextChangedEventArgs e)
@@ -90,6 +126,7 @@ public partial class MainWindow
         }
 
         ComicRegion region = _selectedRegion;
+        string previous = region.Translation;
         region.Translation = TranslationTextBox.Text;
 
         if (region.Type == "sfx")
@@ -99,28 +136,20 @@ public partial class MainWindow
 
         if (!region.IsManual)
         {
-            if (string.IsNullOrWhiteSpace(region.ManualLayoutSeedText))
-            {
-                region.ManualLayoutSeedText = _automaticLinePreviews.TryGetValue(region.Id, out string? preview)
-                    && !string.IsNullOrWhiteSpace(preview)
-                        ? preview
-                        : region.Translation;
-            }
+            string seed = _manualTextSeedRegionId == region.Id
+                ? _manualTextSeed ?? previous
+                : previous;
 
-            region.ManualBaseFontSize = PureScaleReferenceSize(region);
-            region.ManualFontScale = 1;
+            region.ManualLayoutSeedText = seed;
+            region.ManualBaseFontSize = ResolveFontScaleBaseSize(region, seed);
+            region.ManualFontScale = Math.Clamp(region.FontScale, 0.25, 2.5);
             region.FontScale = 1;
             region.IsManual = true;
-            _pureManualScaleBaselines.Add(region.Id);
-            SynchronizeFixedManualScaleSlider();
+            region.Vertical = false;
         }
 
-        region.Vertical = false;
-        bool cleanupChanged = EnsureManualDialogueCleanup(region);
-        if (cleanupChanged)
-        {
-            QueueManualCleanupRefresh();
-        }
+        // Translation dispara PropertyChanged y el preview ligero repinta únicamente esta zona.
+        // No se toca la máscara, no se regenera el fondo y no se reconstruye el overlay.
     }
 
     private void FontScaleSlider_ValueChanged_FixedManual(
@@ -132,64 +161,63 @@ public partial class MainWindow
             return;
         }
 
-        double targetScale = FontScaleSlider.Value / 100;
         FontScaleText.Text = $"{Math.Round(FontScaleSlider.Value)} %";
         if (_syncingEditor || _selectedRegion is null)
         {
             return;
         }
 
-        ComicRegion region = _selectedRegion;
-        if (region.Type != "sfx")
-        {
-            if (!region.IsManual)
-            {
-                FreezeRegionForPureScale(region, targetScale);
-            }
-            else
-            {
-                EnsurePureScaleBaseline(region);
-                region.ManualFontScale = targetScale;
-            }
+        PrepareResultViewForFontScale();
 
-            bool cleanupChanged = EnsureManualDialogueCleanup(region);
-            if (cleanupChanged)
-            {
-                QueueManualCleanupRefresh();
-            }
+        ComicRegion region = _selectedRegion;
+        double targetScale = Math.Clamp(FontScaleSlider.Value / 100, 0.25, 2.5);
+
+        if (region.Type == "sfx")
+        {
+            region.FontScale = targetScale;
             return;
         }
 
-        // Las onomatopeyas todavía usan su renderer especializado, pero no reconstruimos el lienzo.
-        region.FontScale = targetScale;
+        EnsureSelectedRegionHasFixedScaleLayout(region);
+        region.ManualFontScale = targetScale;
+
+        // Nada más. En particular: no CleanupMode, no UpdateCleanedPreview, no RebuildOverlay,
+        // no ShowPreviewMode(mask) y ninguna modificación sobre las demás regiones.
     }
 
-    private void FreezeRegionForPureScale(ComicRegion region, double targetScale)
+    private void EnsureSelectedRegionHasFixedScaleLayout(ComicRegion region)
     {
-        double previousAutomaticScale = Math.Clamp(region.FontScale, 0.25, 2.5);
-        double referenceSize = PureScaleReferenceSize(region);
-        string stableText = PureScaleStableLines(region, referenceSize * previousAutomaticScale);
+        if (region.IsManual)
+        {
+            if (region.ManualBaseFontSize <= 0)
+            {
+                region.ManualBaseFontSize = ResolveFontScaleBaseSize(region, region.DisplayText);
+            }
+            region.FontScale = 1;
+            return;
+        }
+
+        string stableText = CreateCheapStableLineLayout(region);
+        double previousScale = Math.Clamp(region.FontScale, 0.25, 2.5);
 
         region.ManualLayoutSeedText = stableText;
-        region.ManualBaseFontSize = referenceSize;
+        region.ManualBaseFontSize = ResolveFontScaleBaseSize(region, stableText);
         region.FontScale = 1;
-        region.ManualFontScale = targetScale;
+        region.ManualFontScale = previousScale;
         region.IsManual = true;
         region.Vertical = false;
-        _pureManualScaleBaselines.Add(region.Id);
 
+        // Conservamos visualmente los saltos que tenía la composición automática. Esto solo ocurre
+        // una vez, al pasar la zona a escala manual; después el fader no vuelve a cambiar líneas.
         if (!string.Equals(region.Translation, stableText, StringComparison.Ordinal))
         {
             _syncingEditor = true;
             try
             {
+                int caret = Math.Min(TranslationTextBox.CaretIndex, stableText.Length);
                 region.Translation = stableText;
-                if (ReferenceEquals(region, _selectedRegion))
-                {
-                    int caret = Math.Min(TranslationTextBox.CaretIndex, stableText.Length);
-                    TranslationTextBox.Text = stableText;
-                    TranslationTextBox.CaretIndex = caret;
-                }
+                TranslationTextBox.Text = stableText;
+                TranslationTextBox.CaretIndex = caret;
             }
             finally
             {
@@ -200,65 +228,12 @@ public partial class MainWindow
         {
             region.NotifyVisualChange();
         }
-
-        SetFooterStatus(
-            "Escala manual activa: el control solo agranda o reduce; no vuelve a encajar el texto.",
-            "#4CB2BB");
     }
 
-    private void EnsurePureScaleBaseline(ComicRegion region)
+    private string CreateCheapStableLineLayout(ComicRegion region)
     {
-        if (!_pureManualScaleBaselines.Add(region.Id))
-        {
-            return;
-        }
-
-        // Las versiones anteriores podían guardar como base un tamaño ya encogido para caber en
-        // la máscara. Al tocar de nuevo el control recuperamos una referencia tipográfica estable.
-        region.ManualBaseFontSize = PureScaleReferenceSize(region);
-        region.ManualLayoutSeedText ??= region.Translation;
-        region.FontScale = 1;
-        region.NotifyVisualChange();
-    }
-
-    private double PureScaleReferenceSize(ComicRegion region)
-    {
-        if (_originalBitmap is null)
-        {
-            return Math.Max(1.2, region.ManualBaseFontSize > 0 ? region.ManualBaseFontSize : 12);
-        }
-
-        if (region.Style.FontSize > 0)
-        {
-            return Math.Max(1.2, region.Style.FontSize / 1000 * _originalBitmap.PixelHeight);
-        }
-
-        double width = Math.Max(8, region.RenderBox.Width / 1000 * _originalBitmap.PixelWidth);
-        double height = Math.Max(8, region.RenderBox.Height / 1000 * _originalBitmap.PixelHeight);
-        string text = PureScaleNormalizeNewLines(region.DisplayText);
-        int lineCount = Math.Max(1, text.Count(character => character == '\n') + 1);
-        int longestLine = Math.Max(1, text.Split('\n').Select(line => line.Length).DefaultIfEmpty(1).Max());
-        double lineHeightRatio = Math.Clamp(region.Style.LineHeightRatio, 0.82, 1.8);
-        double byHeight = height * 0.82 / (lineCount * lineHeightRatio);
-        double byWidth = width * 1.65 / Math.Max(4, longestLine);
-        return Math.Clamp(Math.Min(byHeight, byWidth), 1.2, Math.Max(6, height * 0.9));
-    }
-
-    private string PureScaleStableLines(ComicRegion region, double currentFontSize)
-    {
-        string text = PureScaleNormalizeNewLines(region.Translation);
-        if (string.IsNullOrWhiteSpace(text) || text.Contains('\n'))
-        {
-            return text;
-        }
-
-        if (_automaticLinePreviews.TryGetValue(region.Id, out string? preview)
-            && !string.IsNullOrWhiteSpace(preview))
-        {
-            return PureScaleNormalizeNewLines(preview);
-        }
-
-        if (_originalBitmap is null)
+        string text = NormalizeFontScaleNewLines(region.Translation);
+        if (string.IsNullOrWhiteSpace(text) || text.Contains('\n') || _originalBitmap is null)
         {
             return text;
         }
@@ -269,17 +244,19 @@ public partial class MainWindow
             return text;
         }
 
-        double maximumWidth = Math.Max(8, region.RenderBox.Width / 1000 * _originalBitmap.PixelWidth * 0.9);
-        Typeface typeface = PureScaleTypeface(region);
+        double fontSize = ResolveFontScaleBaseSize(region, text)
+            * Math.Clamp(region.FontScale, 0.25, 2.5);
+        double maxWidth = Math.Max(8, region.RenderBox.Width / 1000 * _originalBitmap.PixelWidth * 0.9);
+        Typeface typeface = CreateFontScaleTypeface(region);
         double pixelsPerDip = VisualTreeHelper.GetDpi(this).PixelsPerDip;
         var lines = new List<string>();
         var current = new List<string>();
 
         foreach (string word in words)
         {
-            string candidate = current.Count == 0 ? word : string.Join(' ', current) + " " + word;
+            string candidate = current.Count == 0 ? word : $"{string.Join(' ', current)} {word}";
             if (current.Count > 0
-                && PureScaleMeasure(candidate, region, typeface, currentFontSize, pixelsPerDip) > maximumWidth)
+                && MeasureFontScaleText(candidate, region, typeface, fontSize, pixelsPerDip) > maxWidth)
             {
                 lines.Add(string.Join(' ', current));
                 current.Clear();
@@ -291,31 +268,60 @@ public partial class MainWindow
         {
             lines.Add(string.Join(' ', current));
         }
+
         return string.Join(Environment.NewLine, lines);
     }
 
-    private static double PureScaleMeasure(
+    private double ResolveFontScaleBaseSize(ComicRegion region, string text)
+    {
+        if (_originalBitmap is null)
+        {
+            return Math.Max(1.2, region.ManualBaseFontSize > 0 ? region.ManualBaseFontSize : 12);
+        }
+
+        if (region.Style.FontSize > 0)
+        {
+            return Math.Max(1.2, region.Style.FontSize / 1000 * _originalBitmap.PixelHeight);
+        }
+
+        if (region.ManualBaseFontSize > 0)
+        {
+            return region.ManualBaseFontSize;
+        }
+
+        double width = Math.Max(8, region.RenderBox.Width / 1000 * _originalBitmap.PixelWidth);
+        double height = Math.Max(8, region.RenderBox.Height / 1000 * _originalBitmap.PixelHeight);
+        string normalized = NormalizeFontScaleNewLines(text);
+        string[] lines = normalized.Split('\n');
+        int lineCount = Math.Max(1, lines.Length);
+        int longest = Math.Max(1, lines.Select(line => line.Length).DefaultIfEmpty(1).Max());
+        double lineHeightRatio = Math.Clamp(region.Style.LineHeightRatio, 0.82, 1.8);
+        double byHeight = height * 0.78 / (lineCount * lineHeightRatio);
+        double byWidth = width * 1.55 / Math.Max(4, longest);
+        return Math.Clamp(Math.Min(byHeight, byWidth), 1.2, Math.Max(6, height * 0.9));
+    }
+
+    private static double MeasureFontScaleText(
         string text,
         ComicRegion region,
         Typeface typeface,
         double fontSize,
         double pixelsPerDip)
     {
-        string measuredText = region.Style.Uppercase
+        string measured = region.Style.Uppercase
             ? text.ToUpper(CultureInfo.GetCultureInfo("es-ES"))
             : text;
-        var formatted = new FormattedText(
-            measuredText,
+        return new FormattedText(
+            measured,
             CultureInfo.GetCultureInfo("es-ES"),
             FlowDirection.LeftToRight,
             typeface,
             Math.Max(1.2, fontSize),
             Brushes.Black,
-            pixelsPerDip);
-        return formatted.WidthIncludingTrailingWhitespace;
+            pixelsPerDip).WidthIncludingTrailingWhitespace;
     }
 
-    private static Typeface PureScaleTypeface(ComicRegion region)
+    private static Typeface CreateFontScaleTypeface(ComicRegion region)
     {
         string family = !string.IsNullOrWhiteSpace(region.Style.FontFamily)
             ? region.Style.FontFamily
@@ -334,15 +340,16 @@ public partial class MainWindow
         return new Typeface(new FontFamily(family), style, weight, FontStretches.Normal);
     }
 
-    private static string PureScaleNormalizeNewLines(string? text) =>
-        (text ?? string.Empty).Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n');
+    private static string NormalizeFontScaleNewLines(string? text) =>
+        (text ?? string.Empty)
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace('\r', '\n');
 
     private void RegionListBox_SelectionChanged_FixedManualScale(object sender, SelectionChangedEventArgs e)
     {
         _selectedRegion = RegionListBox.SelectedItem as ComicRegion;
         ShowRegionEditor(_selectedRegion);
         SynchronizeFixedManualScaleSlider();
-        QueueFastCanvasTextRefresh(forceLayout: false);
     }
 
     private void SynchronizeFixedManualScaleSlider()
@@ -354,7 +361,6 @@ public partial class MainWindow
         }
 
         MigrateLegacyManualScale(region);
-        bool cleanupChanged = region.IsManual && EnsureManualDialogueCleanup(region);
         double scale = region.IsManual && region.Type != "sfx"
             ? region.ManualFontScale
             : region.FontScale;
@@ -372,11 +378,6 @@ public partial class MainWindow
         {
             _syncingEditor = false;
         }
-
-        if (cleanupChanged)
-        {
-            QueueManualCleanupRefresh();
-        }
     }
 
     private void MigrateLegacyManualScale(ComicRegion region)
@@ -389,56 +390,11 @@ public partial class MainWindow
             return;
         }
 
-        double previousScale = Math.Clamp(region.FontScale, 0.25, 2.5);
+        region.ManualFontScale = Math.Clamp(region.FontScale, 0.25, 2.5);
         region.FontScale = 1;
-        region.ManualFontScale = previousScale;
-        region.ManualBaseFontSize = PureScaleReferenceSize(region);
-        _pureManualScaleBaselines.Add(region.Id);
-    }
-
-    private bool EnsureManualDialogueCleanup(ComicRegion region)
-    {
-        if (_maskBitmap is null
-            || !string.Equals(region.CleanupMode, "none", StringComparison.OrdinalIgnoreCase)
-            || region.Type is not ("dialogue" or "thought" or "narration" or "caption"))
+        if (region.ManualBaseFontSize <= 0)
         {
-            return false;
+            region.ManualBaseFontSize = ResolveFontScaleBaseSize(region, region.DisplayText);
         }
-
-        region.CleanupMode = "auto";
-        if (ReferenceEquals(region, _selectedRegion) && CleanupComboBox is not null)
-        {
-            _syncingEditor = true;
-            try
-            {
-                CleanupComboBox.SelectedValue = "auto";
-            }
-            finally
-            {
-                _syncingEditor = false;
-            }
-        }
-        return true;
-    }
-
-    private void QueueManualCleanupRefresh()
-    {
-        if (_manualCleanupRefreshPending || Dispatcher.HasShutdownStarted)
-        {
-            return;
-        }
-
-        _manualCleanupRefreshPending = true;
-        Dispatcher.BeginInvoke(
-            () =>
-            {
-                _manualCleanupRefreshPending = false;
-                if (_originalBitmap is not null && !_pageNavigationBusy && !_comicBatchBusy)
-                {
-                    UpdateCleanedPreview();
-                    QueueFastCanvasTextRefresh(forceLayout: true);
-                }
-            },
-            DispatcherPriority.ContextIdle);
     }
 }
