@@ -42,8 +42,16 @@ public partial class MainWindow
             return;
         }
 
+        // El selector forma parte de la zona de trabajo y debe quedar antes del visor, no entre
+        // el visor y la mesa de rotulación. Insertamos una columna a la izquierda y desplazamos
+        // intacto todo el contenido existente una posición hacia la derecha.
+        UIElement[] existingChildren = contentGrid.Children.Cast<UIElement>().ToArray();
         _pageSelectionColumn = new ColumnDefinition { Width = new GridLength(252) };
-        contentGrid.ColumnDefinitions.Add(_pageSelectionColumn);
+        contentGrid.ColumnDefinitions.Insert(0, _pageSelectionColumn);
+        foreach (UIElement child in existingChildren)
+        {
+            Grid.SetColumn(child, Grid.GetColumn(child) + 1);
+        }
 
         _pageSelectionItemsPanel = new StackPanel { Margin = new Thickness(0, 4, 0, 4) };
         var pageScroll = new ScrollViewer
@@ -111,10 +119,11 @@ public partial class MainWindow
         {
             Background = FindResource("PanelBrush") as Brush ?? new SolidColorBrush(Color.FromRgb(27, 30, 33)),
             BorderBrush = FindResource("LineBrush") as Brush ?? Brushes.DimGray,
-            BorderThickness = new Thickness(1, 0, 0, 0),
+            BorderThickness = new Thickness(0, 0, 1, 0),
             Child = panelGrid
         };
-        Grid.SetColumn(_pageSelectionPanel, contentGrid.ColumnDefinitions.Count - 1);
+        Grid.SetColumn(_pageSelectionPanel, 0);
+        Panel.SetZIndex(_pageSelectionPanel, 50);
         contentGrid.Children.Add(_pageSelectionPanel);
 
         if (_pageCounterText?.Parent is StackPanel navigationPanel)
