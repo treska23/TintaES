@@ -1,6 +1,8 @@
 using System.Windows;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using TintaES.Core;
 
@@ -9,6 +11,7 @@ namespace TintaES.Wpf;
 /// <summary>
 /// Corrige el desplazamiento conjunto de texto y máscara. El arrastre del editor modifica
 /// TextOffsetX/TextOffsetY; comparar RenderBox siempre producía un desplazamiento cero.
+/// También detecta una máscara que ya hubiera quedado atrás por el fallo anterior.
 /// </summary>
 public partial class MainWindow
 {
@@ -34,8 +37,8 @@ public partial class MainWindow
             return;
         }
 
-        // MaskEditing se instala en SystemIdle. Esperamos únicamente hasta que exista y después
-        // retiramos este LayoutUpdated; no dejamos otro trabajo permanente en cada frame.
+        // MaskEditing se instala en SystemIdle. Esperamos solo hasta que exista y retiramos el
+        // evento inmediatamente; no queda trabajo permanente asociado a LayoutUpdated.
         window.LayoutUpdated -= window.MainWindow_TryInstallMaskMovementFix;
         window.LayoutUpdated += window.MainWindow_TryInstallMaskMovementFix;
         window.BusyOverlay.IsVisibleChanged -= window.BusyOverlay_MaskToolsVisibilityChanged;
@@ -109,17 +112,22 @@ public partial class MainWindow
         }
 
         ComicRegion region = visual.Region;
-        NormalizedRect currentMaskBounds = TranslateMaskBounds(
-            GetRegionMaskBounds(region),
+        NormalizedRect baseBounds = GetRegionMaskBounds(region);
+        NormalizedRect movedBounds = TranslateMaskBounds(
+            baseBounds,
             region.TextOffsetX,
             region.TextOffsetY);
+
+        long baseCoverage = MeasureMaskCoverage(baseBounds);
+        long movedCoverage = MeasureMaskCoverage(movedBounds);
+        bool maskAlreadyFollowedText = movedCoverage > baseCoverage;
 
         _correctedMaskMoveState = new CorrectedMaskMoveState(
             _comicPageIndex,
             region.Id,
-            region.TextOffsetX,
-            region.TextOffsetY,
-            currentMaskBounds);
+            maskAlreadyFollowedText ? region.TextOffsetX : 0,
+            maskAlreadyFollowedText ? region.TextOffsetY : 0,
+            maskAlreadyFollowedText ? movedBounds : baseBounds);
     }
 
     private void CorrectedMaskThumb_DragCompleted(object sender, DragCompletedEventArgs e)
@@ -139,8 +147,9 @@ public partial class MainWindow
             return;
         }
 
-        double deltaX = visual.Region.TextOffsetX - state.OriginalTextOffsetX;
-        double deltaY = visual.Region.TextOffsetY - state.OriginalTextOffsetY;
+        ComicRegion region = visual.Region;
+        double deltaX = region.TextOffsetX - state.ActualMaskOffsetX;
+        double deltaY = region.TextOffsetY - state.ActualMaskOffsetY;
         if (Math.Abs(deltaX) < 0.01 && Math.Abs(deltaY) < 0.01)
         {
             return;
@@ -149,9 +158,44 @@ public partial class MainWindow
         var moveState = new MaskMoveState(
             state.PageIndex,
             state.RegionId,
-            visual.Region.RenderBox,
-            state.OriginalMaskBounds);
+            region.RenderBox,
+            state.ActualMaskBounds);
         _ = MoveRegionMaskAsync(moveState, deltaX, deltaY);
+    }
+
+    private long MeasureMaskCoverage(NormalizedRect bounds)
+    {
+        if (_maskBitmap is null)
+        {
+            return 0;
+        }
+
+        BitmapSource mask = _maskBitmap.Format == PixelFormats.Gray8
+            ? _maskBitmap
+            : new FormatConvertedBitmap(_maskBitmap, PixelFormats.Gray8, null, 0);
+        int width = mask.PixelWidth;
+        int height = mask.PixelHeight;
+        int x = Math.Clamp((int)Math.Floor(bounds.X / 1000 * width), 0, Math.Max(0, width - 1));
+        int y = Math.Clamp((int)Math.Floor(bounds.Y / 1000 * height), 0, Math.Max(0, height - 1));
+        int right = Math.Clamp((int)Math.Ceiling(bounds.Right / 1000 * width), x + 1, width);
+        int bottom = Math.Clamp((int)Math.Ceiling(bounds.Bottom / 1000 * height), y + 1, height);
+        var rect = new Int32Rect(x, y, right - x, bottom - y);
+
+        int stride = rect.Width;
+        byte[] pixels = new byte[stride * rect.Height];
+        mask.CopyPixels(rect, pixels, stride, 0);
+
+        long coverage = 0;
+        int step = Math.Max(1, Math.Min(rect.Width, rect.Height) / 80);
+        for (int row = 0; row < rect.Height; row += step)
+        {
+            int offset = row * stride;
+            for (int column = 0; column < rect.Width; column += step)
+            {
+                coverage += pixels[offset + column];
+            }
+        }
+        return coverage;
     }
 
     private static NormalizedRect TranslateMaskBounds(
@@ -169,7 +213,7 @@ public partial class MainWindow
     private sealed record CorrectedMaskMoveState(
         int PageIndex,
         Guid RegionId,
-        double OriginalTextOffsetX,
-        double OriginalTextOffsetY,
-        NormalizedRect OriginalMaskBounds);
+        double ActualMaskOffsetX,
+        double ActualMaskOffsetY,
+        NormalizedRect ActualMaskBounds);
 }
