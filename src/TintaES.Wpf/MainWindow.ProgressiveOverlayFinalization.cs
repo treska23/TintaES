@@ -124,6 +124,7 @@ public partial class MainWindow
 
                 layer.Width = width;
                 layer.Height = height;
+                layer.ClipToBounds = false;
                 Canvas.SetLeft(layer, (box.X + region.TextOffsetX) / 1000 * _originalBitmap.PixelWidth);
                 Canvas.SetTop(layer, (box.Y + region.TextOffsetY) / 1000 * _originalBitmap.PixelHeight);
 
@@ -155,9 +156,7 @@ public partial class MainWindow
                 preview.Width = width;
                 preview.Height = height;
                 preview.Visibility = region.IsEnabled ? Visibility.Visible : Visibility.Collapsed;
-                preview.RenderTransformOrigin = new Point(0.5, 0.5);
-                double scale = Math.Clamp(region.ManualFontScale, 0.25, 2.5);
-                preview.RenderTransform = new ScaleTransform(scale, scale);
+                preview.RenderTransform = Transform.Identity;
                 preview.InvalidateVisual();
 
                 foreach (Border border in layer.Children.OfType<Border>())
