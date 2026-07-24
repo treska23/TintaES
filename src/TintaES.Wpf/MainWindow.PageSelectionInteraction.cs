@@ -7,9 +7,8 @@ using System.Windows.Threading;
 namespace TintaES.Wpf;
 
 /// <summary>
-/// Convierte cada entrada del selector de páginas en una fila completamente clicable. El
-/// CheckBox queda como indicador visual y la fila entera alterna la selección, evitando que
-/// estilos, padding o contenido multilínea dejen una zona diminuta difícil de pulsar.
+/// Separa claramente las dos acciones del panel izquierdo: pulsar la fila visualiza la página
+/// y pulsar el CheckBox la incluye o excluye de la exportación.
 /// </summary>
 public partial class MainWindow
 {
@@ -77,8 +76,10 @@ public partial class MainWindow
             checkBox.Padding = new Thickness(0);
             checkBox.Background = Brushes.Transparent;
             checkBox.BorderThickness = new Thickness(0);
-            checkBox.IsHitTestVisible = false;
-            checkBox.Focusable = false;
+            checkBox.IsHitTestVisible = true;
+            checkBox.Focusable = true;
+            checkBox.Cursor = Cursors.Arrow;
+            checkBox.ToolTip = "Marcar o desmarcar esta página para la exportación CBZ";
 
             var row = new Border
             {
@@ -89,11 +90,11 @@ public partial class MainWindow
                 BorderThickness = new Thickness(1),
                 Cursor = Cursors.Hand,
                 Tag = index,
-                ToolTip = "Pulsa en cualquier punto de la fila para marcar o desmarcar esta página"
+                ToolTip = "Pulsa en el nombre o en la fila para visualizar esta página. Usa el checkbox para exportarla."
             };
-            row.PreviewMouseLeftButtonDown += (_, args) => TogglePageSelectionFromRow(index, checkBox, args);
-            checkBox.Checked += (_, _) => RefreshInteractivePageSelectionRow(index);
-            checkBox.Unchecked += (_, _) => RefreshInteractivePageSelectionRow(index);
+            row.PreviewMouseLeftButtonDown += (_, args) => NavigateFromPageSelectionRow(index, checkBox, args);
+            checkBox.Checked += (_, _) => PageSelectionCheckBoxChanged(index);
+            checkBox.Unchecked += (_, _) => PageSelectionCheckBoxChanged(index);
 
             _interactivePageSelectionRows[index] = row;
             parent.Children.Insert(childIndex, row);
@@ -109,8 +110,19 @@ public partial class MainWindow
         }
     }
 
-    private void TogglePageSelectionFromRow(int index, CheckBox checkBox, MouseButtonEventArgs e)
+    private void NavigateFromPageSelectionRow(
+        int index,
+        CheckBox checkBox,
+        MouseButtonEventArgs e)
     {
+        // El evento Preview de la fila también recibe los clics efectuados dentro del checkbox.
+        // En ese caso no lo interceptamos: WPF cambiará IsChecked y los handlers originales
+        // actualizarán la selección de exportación.
+        if (e.OriginalSource is DependencyObject source && IsDescendantOf(source, checkBox))
+        {
+            return;
+        }
+
         if (_comicBatchBusy
             || _pageNavigationBusy
             || index < 0
@@ -119,24 +131,48 @@ public partial class MainWindow
             return;
         }
 
-        bool selected = !_selectedComicPageIndices.Contains(index);
-        SetPageSelected(index, selected);
-
-        _syncingPageSelection = true;
-        try
+        e.Handled = true;
+        if (index != _comicPageIndex)
         {
-            checkBox.IsChecked = selected;
+            _ = ShowComicPageFastAsync(index);
         }
-        finally
+        else
         {
-            _syncingPageSelection = false;
+            RefreshInteractivePageSelectionRows();
         }
+    }
 
+    private void PageSelectionCheckBoxChanged(int index)
+    {
         RefreshPageSelectionVisuals();
         RefreshInteractivePageSelectionRow(index);
         UpdatePageSelectionSummary();
         UpdateCbzExportSelectionCaption();
-        e.Handled = true;
+    }
+
+    private static bool IsDescendantOf(DependencyObject source, DependencyObject ancestor)
+    {
+        DependencyObject? current = source;
+        while (current is not null)
+        {
+            if (ReferenceEquals(current, ancestor))
+            {
+                return true;
+            }
+
+            current = current is Visual or System.Windows.Media.Media3D.Visual3D
+                ? VisualTreeHelper.GetParent(current)
+                : LogicalTreeHelper.GetParent(current);
+        }
+        return false;
+    }
+
+    private void RefreshInteractivePageSelectionRows()
+    {
+        foreach (int index in _interactivePageSelectionRows.Keys.ToArray())
+        {
+            RefreshInteractivePageSelectionRow(index);
+        }
     }
 
     private void RefreshInteractivePageSelectionRow(int index)
@@ -170,9 +206,10 @@ public partial class MainWindow
         row.Background = current
             ? new SolidColorBrush(Color.FromArgb(42, 238, 89, 75))
             : selected
-                ? new SolidColorBrush(Color.FromArgb(34, 76, 178, 187))
+                ? new SolidColorBrush(Color.FromArgb(24, 76, 178, 187))
                 : Brushes.Transparent;
         row.Opacity = enabled ? 1 : 0.58;
         row.Cursor = enabled ? Cursors.Hand : Cursors.Arrow;
+        checkBox.IsEnabled = enabled;
     }
 }
