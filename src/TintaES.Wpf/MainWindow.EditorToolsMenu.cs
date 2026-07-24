@@ -56,7 +56,7 @@ public partial class MainWindow
         editMenu.Items.Add(CreateMenuItem("_Rehacer", "Ctrl+Y", (_, _) => RedoEditorChange()));
         editMenu.Items.Add(new Separator());
         editMenu.Items.Add(CreateMenuItem("_Dibujar zona", null, DrawRegionButton_Click));
-        editMenu.Items.Add(CreateMenuItem("_Eliminar zona seleccionada", "Supr", DeleteSelectedRegionCompletely_Click));
+        editMenu.Items.Add(CreateMenuItem("_Eliminar zona seleccionada", "Supr", DeleteSelectedRegionFast_Click));
         editMenu.Items.Add(new Separator());
         editMenu.Items.Add(CreateMenuItem("Analizar y _traducir", null, AnalyzeComicButton_Click));
         editMenu.SubmenuOpened += (_, _) => RefreshEditorToolAvailability();
