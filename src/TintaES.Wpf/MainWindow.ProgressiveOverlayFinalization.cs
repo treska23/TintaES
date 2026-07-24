@@ -124,7 +124,7 @@ public partial class MainWindow
 
                 layer.Width = width;
                 layer.Height = height;
-                layer.ClipToBounds = false;
+                layer.ClipToBounds = true;
                 Canvas.SetLeft(layer, (box.X + region.TextOffsetX) / 1000 * _originalBitmap.PixelWidth);
                 Canvas.SetTop(layer, (box.Y + region.TextOffsetY) / 1000 * _originalBitmap.PixelHeight);
 
@@ -153,9 +153,17 @@ public partial class MainWindow
                     layer.Children.Add(preview);
                 }
 
+                bool nativeEditorVisible = ReferenceEquals(region, _selectedRegion)
+                    && layer.Children
+                        .OfType<TextBlock>()
+                        .Any(text => Equals(text.Tag, NativeTextBlockTag)
+                            && text.Visibility == Visibility.Visible);
+
                 preview.Width = width;
                 preview.Height = height;
-                preview.Visibility = region.IsEnabled ? Visibility.Visible : Visibility.Collapsed;
+                preview.Visibility = region.IsEnabled && !nativeEditorVisible
+                    ? Visibility.Visible
+                    : Visibility.Collapsed;
                 preview.RenderTransform = Transform.Identity;
                 preview.InvalidateVisual();
 
