@@ -58,7 +58,7 @@ public partial class MainWindow
         file.Items.Add(_menuSaveProjectAs);
         file.Items.Add(new Separator());
 
-        _menuExportCbz = CreateMenuItem("Exportar cómic _CBZ…", null, ExportComicButton_Click_Robust);
+        _menuExportCbz = CreateMenuItem("Exportar páginas seleccionadas a _CBZ…", null, ExportComicButton_Click_Robust);
         _menuExportPsd = CreateMenuItem("Exportar página _PSD…", null, ExportPsdButton_Click);
         _menuExportPng = CreateMenuItem("Exportar página P_NG…", null, ExportButton_Click);
         file.Items.Add(_menuExportCbz);
@@ -78,6 +78,9 @@ public partial class MainWindow
         view.Items.Add(new Separator());
         view.Items.Add(CreateMenuItem("Ver _original", null, (_, _) => ShowPreviewMode("original")));
         view.Items.Add(CreateMenuItem("Ver _resultado", null, (_, _) => ShowPreviewMode("result")));
+        view.Items.Add(new Separator());
+        view.Items.Add(CreateMenuItem("Selector de _páginas", null, (_, _) =>
+            SetPageSelectionPanelVisible(_pageSelectionPanel?.Visibility != Visibility.Visible)));
 
         MenuItem help = new() { Header = "A_yuda" };
         help.Items.Add(CreateMenuItem("_Acerca de Tinta ES", null, (_, _) =>
