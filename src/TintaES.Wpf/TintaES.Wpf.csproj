@@ -9,6 +9,7 @@
     <AssemblyName>TintaES</AssemblyName>
     <RootNamespace>TintaES.Wpf</RootNamespace>
     <ApplicationIcon />
+    <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\TintaES.Core\TintaES.Core.csproj" />
