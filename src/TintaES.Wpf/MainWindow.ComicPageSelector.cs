@@ -49,8 +49,6 @@ public partial class MainWindow
             return;
         }
 
-        // Abrir una carpeta inicia un cómic nuevo. Limpiamos únicamente el estado asociado al
-        // proyecto anterior; el handler normal del botón seguirá abriendo la carpeta.
         if (ReferenceEquals(button, window._openFolderButton))
         {
             window._currentProjectPath = null;
@@ -82,8 +80,6 @@ public partial class MainWindow
             return;
         }
 
-        // Los handlers antiguos son síncronos y vuelven a decodificar todo desde disco. Marcamos
-        // el evento como atendido y usamos la ruta asíncrona con caché y precarga de vecinos.
         e.Handled = true;
         _ = window.ShowComicPageFastAsync(targetIndex);
     }
@@ -124,7 +120,9 @@ public partial class MainWindow
 
         int counterIndex = previewPanel.Children.IndexOf(_pageCounterText);
         previewPanel.Children.Insert(Math.Min(previewPanel.Children.Count, counterIndex + 1), _pageSelectorComboBox);
-        _pageCounterText.LayoutUpdated += (_, _) => SyncDirectPageSelector();
+
+        // La navegación y las cargas llaman explícitamente a SyncDirectPageSelector. Escucharlo
+        // en LayoutUpdated provocaba cascadas continuas de estado, selección y 179 filas.
         SyncDirectPageSelector();
         UpdateProjectCommandAvailability();
         UpdateClassicMenuAvailability();
