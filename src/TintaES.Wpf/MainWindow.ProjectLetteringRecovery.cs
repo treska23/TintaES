@@ -1,7 +1,6 @@
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
-using System.Windows.Media;
 using System.Windows.Threading;
 using TintaES.Core;
 using TintaES.Wpf.Controls;
@@ -9,9 +8,8 @@ using TintaES.Wpf.Controls;
 namespace TintaES.Wpf;
 
 /// <summary>
-/// Las capas creadas al deserializar un proyecto necesitan pasar por un ciclo de medida y
-/// disposición real. Invalidar el dibujo sin organizar los controles dejaba ComicTextElement
-/// con ActualWidth/ActualHeight igual a cero y por eso se veían las zonas, pero no las letras.
+/// Organiza una página restaurada usando exclusivamente las previsualizaciones ligeras. Los
+/// renderizadores tipográficos precisos quedan reservados para exportar y no se miden al navegar.
 /// </summary>
 public partial class MainWindow
 {
@@ -33,14 +31,12 @@ public partial class MainWindow
 
     private static void MainWindow_ProjectLetteringRecoveryLoaded(object sender, RoutedEventArgs e)
     {
-        if (sender is not MainWindow window)
+        if (sender is MainWindow window)
         {
-            return;
+            window.Dispatcher.BeginInvoke(
+                window.InstallProjectLetteringRecovery,
+                DispatcherPriority.ApplicationIdle);
         }
-
-        window.Dispatcher.BeginInvoke(
-            window.InstallProjectLetteringRecovery,
-            DispatcherPriority.ApplicationIdle);
     }
 
     private void InstallProjectLetteringRecovery()
@@ -56,8 +52,6 @@ public partial class MainWindow
 
     private void BusyOverlay_ProjectLetteringIsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e)
     {
-        // ShowComicPageFastAsync oculta el overlay al terminar cada página. Ese es el punto
-        // estable para organizar los elementos restaurados sin entrar en ciclos de LayoutUpdated.
         if (BusyOverlay.IsVisible
             || _comicBatchBusy
             || _pageNavigationBusy
@@ -113,9 +107,8 @@ public partial class MainWindow
             OverlayCanvas.Width = _originalBitmap.PixelWidth;
             OverlayCanvas.Height = _originalBitmap.PixelHeight;
 
-            // Ejecutamos la preparación normal y luego forzamos Measure/Arrange. La versión
-            // anterior solo llamaba a InvalidateVisual, pero un control con tamaño real 0 no
-            // puede dibujar nada por muchas invalidaciones que reciba.
+            // Prepara los controles de arrastre una sola vez. EnsureManualLineVisual ya no crea ni
+            // mide los renderizadores caros: únicamente instala FastComicTextPreviewElement.
             OverlayCanvas_PresentationLayoutUpdated(OverlayCanvas, EventArgs.Empty);
 
             foreach (Grid layer in OverlayCanvas.Children.OfType<Grid>())
@@ -130,35 +123,23 @@ public partial class MainWindow
                 double height = Math.Max(2, box.Height / 1000 * _originalBitmap.PixelHeight);
                 layer.Width = width;
                 layer.Height = height;
+                layer.ClipToBounds = false;
                 Canvas.SetLeft(layer, (box.X + region.TextOffsetX) / 1000 * _originalBitmap.PixelWidth);
                 Canvas.SetTop(layer, (box.Y + region.TextOffsetY) / 1000 * _originalBitmap.PixelHeight);
 
-                EnsureManualLineVisual(layer, region, invalidate: true);
+                EnsureManualLineVisual(layer, region, invalidate: false);
+                FastComicTextPreviewElement? preview = layer.Children
+                    .OfType<FastComicTextPreviewElement>()
+                    .FirstOrDefault();
 
-                ComicTextElement? automatic = layer.Children.OfType<ComicTextElement>().FirstOrDefault();
-                ManualComicTextElement? manual = layer.Children.OfType<ManualComicTextElement>().FirstOrDefault();
-                FrameworkElement? renderer = region.Type != "sfx" && region.IsManual
-                    ? manual
-                    : automatic;
-
-                if (automatic is not null)
+                foreach (ComicTextElement renderer in layer.Children.OfType<ComicTextElement>())
                 {
-                    automatic.Width = width;
-                    automatic.Height = height;
-                    automatic.Visibility = renderer == automatic ? Visibility.Visible : Visibility.Collapsed;
-                    if (renderer == automatic)
-                    {
-                        ApplyTextTransform(automatic, region);
-                    }
+                    renderer.Visibility = Visibility.Collapsed;
                 }
-
-                if (manual is not null)
+                foreach (ManualComicTextElement renderer in layer.Children.OfType<ManualComicTextElement>())
                 {
-                    manual.Width = width;
-                    manual.Height = height;
-                    manual.Visibility = renderer == manual ? Visibility.Visible : Visibility.Collapsed;
+                    renderer.Visibility = Visibility.Collapsed;
                 }
-
                 foreach (Border border in layer.Children.OfType<Border>())
                 {
                     border.Visibility = Visibility.Collapsed;
@@ -166,19 +147,27 @@ public partial class MainWindow
                 foreach (Thumb thumb in layer.Children.OfType<Thumb>().Skip(1))
                 {
                     thumb.Visibility = Visibility.Collapsed;
+                    thumb.Opacity = 0;
+                }
+
+                if (preview is not null)
+                {
+                    preview.Width = width;
+                    preview.Height = height;
+                    preview.Visibility = region.IsEnabled ? Visibility.Visible : Visibility.Collapsed;
+                    preview.Measure(new Size(width, height));
+                    preview.Arrange(new Rect(0, 0, width, height));
+                    preview.InvalidateVisual();
                 }
 
                 layer.Measure(new Size(width, height));
                 layer.Arrange(new Rect(0, 0, width, height));
-                renderer?.Measure(new Size(width, height));
-                renderer?.Arrange(new Rect(0, 0, width, height));
-                renderer?.InvalidateVisual();
             }
 
             OverlayCanvas.Measure(new Size(_originalBitmap.PixelWidth, _originalBitmap.PixelHeight));
             OverlayCanvas.Arrange(new Rect(0, 0, _originalBitmap.PixelWidth, _originalBitmap.PixelHeight));
-            OverlayCanvas.UpdateLayout();
             OverlayCanvas.InvalidateVisual();
+            RefreshSelectedTextFrame();
         }
         finally
         {
