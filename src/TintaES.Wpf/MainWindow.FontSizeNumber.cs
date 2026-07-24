@@ -17,6 +17,7 @@ public partial class MainWindow
 
     private bool _fontSizeNumberInstalled;
     private bool _syncingFontSizeNumber;
+    private Guid? _fontSizeNumberRegionId;
     private TextBox? _fontSizeNumberTextBox;
 
     private static bool RegisterFontSizeNumber()
@@ -179,6 +180,7 @@ public partial class MainWindow
         _syncingFontSizeNumber = true;
         try
         {
+            _fontSizeNumberRegionId = _selectedRegion?.Id;
             _fontSizeNumberTextBox.IsEnabled = _selectedRegion is not null;
             _fontSizeNumberTextBox.Text = _selectedRegion is null
                 ? string.Empty
@@ -221,8 +223,10 @@ public partial class MainWindow
     private void CommitFontSizeNumber()
     {
         if (_syncingFontSizeNumber
+            || _syncingEditor
             || _fontSizeNumberTextBox is null
-            || _selectedRegion is null)
+            || _selectedRegion is null
+            || _fontSizeNumberRegionId != _selectedRegion.Id)
         {
             return;
         }
@@ -253,6 +257,7 @@ public partial class MainWindow
         _selectedRegion.Vertical = false;
         _validatedNativeBaseSizes.Add(_selectedRegion.Id);
 
+        bool previousSyncingEditor = _syncingEditor;
         _syncingEditor = true;
         try
         {
@@ -261,7 +266,7 @@ public partial class MainWindow
         }
         finally
         {
-            _syncingEditor = false;
+            _syncingEditor = previousSyncingEditor;
         }
 
         _selectedRegion.NotifyVisualChange();
