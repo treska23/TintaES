@@ -34,10 +34,6 @@ public partial class MainWindow
 
         int exportPngIndex = exportPanel.Children.IndexOf(ExportButton);
         exportPanel.Children.Insert(Math.Max(0, exportPngIndex), _exportPsdButton);
-        if (_pageCounterText is not null)
-        {
-            _pageCounterText.LayoutUpdated += (_, _) => UpdatePsdExportAvailability();
-        }
         InstallRobustCbzExport();
         UpdatePsdExportAvailability();
     }
@@ -53,7 +49,11 @@ public partial class MainWindow
             && _comicPageIndex < _comicPages.Count
             && _comicPages[_comicPageIndex].Processed
             && _comicPages[_comicPageIndex].Error is null;
-        _exportPsdButton.IsEnabled = processed && !_comicBatchBusy && !_pageNavigationBusy;
+        bool enabled = processed && !_comicBatchBusy && !_pageNavigationBusy;
+        if (_exportPsdButton.IsEnabled != enabled)
+        {
+            _exportPsdButton.IsEnabled = enabled;
+        }
     }
 
     private async void ExportPsdButton_Click(object sender, RoutedEventArgs e)
@@ -119,11 +119,7 @@ public partial class MainWindow
             temporaryComposite = Path.Combine(psdTemp, $"page-{_comicPageIndex + 1:D4}-composite.png");
             temporaryRegions = Path.Combine(psdTemp, $"page-{_comicPageIndex + 1:D4}-regions.json");
 
-            // Fondo limpio: se guarda como la capa raster inferior del PSD.
             SaveBitmap(_cleanedBitmap, temporaryBackground);
-
-            // Composición final: ag-psd la escribe como imagen compuesta estándar del documento,
-            // evitando el PSD incompleto que producía el backend anterior en lectores como Krita.
             BitmapSource composite = _exportService.Render(_cleanedBitmap, page.Regions);
             SaveBitmap(composite, temporaryComposite);
 
