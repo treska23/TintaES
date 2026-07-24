@@ -1,5 +1,8 @@
 using System.IO;
 using System.IO.Compression;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
@@ -81,62 +84,95 @@ public partial class MainWindow
         UpdateProjectCommandAvailability();
         UpdatePsdExportAvailability();
         RefreshPageSelectionVisuals();
-        BusyTitleText.Text = "Preparando exportación segura…";
+        BusyTitleText.Text = "Preparando exportación reanudable…";
         BusyProgressBar.IsIndeterminate = false;
         FooterProgressBar.IsIndeterminate = false;
+        BusyProgressBar.Value = 0;
+        FooterProgressBar.Value = 0;
+        await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Render);
 
         var fallbackPages = new List<string>();
-        var committedPages = new List<int>();
-        string batchTemporaryPath = outputPath + ".tinta-batch.tmp";
+        var stagedPages = new Dictionary<int, string>();
+        string stagingDirectory = GetCbzStagingDirectory(outputPath);
+        string stagingManifestPath = Path.Combine(stagingDirectory, "stage.json");
+        string buildTemporaryPath = outputPath + ".tinta-build.tmp";
 
         try
         {
-            int[][] batches = selectedPages
-                .Chunk(SafeExportBatchSize)
-                .Select(chunk => chunk.ToArray())
-                .ToArray();
+            Directory.CreateDirectory(stagingDirectory);
+            CbzStageManifest stageManifest = await Task.Run(
+                () => LoadCbzStageManifest(stagingManifestPath),
+                cancellationToken);
 
-            for (int batchIndex = 0; batchIndex < batches.Length; batchIndex++)
+            for (int position = 0; position < selectedPages.Count; position++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                int[] batch = batches[batchIndex];
-                TryDeleteTemporaryCbz(batchTemporaryPath);
+                int pageIndex = selectedPages[position];
+                ComicBookPageState page = _comicPages[pageIndex];
+                string entryName = GetCbzPageEntryName(pageIndex);
+                string stagePath = Path.Combine(stagingDirectory, entryName);
+                string fingerprint = CreateCbzPageFingerprint(pageIndex, page);
 
-                BusyTitleText.Text = $"Lote {batchIndex + 1}/{batches.Length} · páginas {batch[0] + 1}–{batch[^1] + 1}";
-                FooterStatusText.Text = $"Creando punto de control {batchIndex + 1} de {batches.Length}…";
+                bool reusable = File.Exists(stagePath)
+                    && stageManifest.Pages.TryGetValue(entryName, out string? savedFingerprint)
+                    && string.Equals(savedFingerprint, fingerprint, StringComparison.Ordinal);
+
+                BusyTitleText.Text = reusable
+                    ? $"Recuperando página {pageIndex + 1} · {position + 1}/{selectedPages.Count}"
+                    : $"Renderizando página {pageIndex + 1} · {position + 1}/{selectedPages.Count}";
+                FooterStatusText.Text = reusable
+                    ? $"Reutilizando una página preparada de una exportación interrumpida…"
+                    : $"Preparando página {pageIndex + 1} de {_comicPages.Count}…";
                 await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Render);
 
-                await BuildCbzCheckpointAsync(
-                    File.Exists(outputPath) ? outputPath : null,
-                    batchTemporaryPath,
-                    batch,
-                    selectedPages.Count,
-                    committedPages.Count,
-                    fallbackPages,
-                    cancellationToken);
+                if (!reusable)
+                {
+                    BitmapSource image = RenderComicPageForCbz(pageIndex, page, fallbackPages);
+                    await Task.Run(
+                        () => SavePngAtomically(image, stagePath, cancellationToken),
+                        cancellationToken);
 
-                cancellationToken.ThrowIfCancellationRequested();
-                CommitCbzCheckpoint(batchTemporaryPath, outputPath);
-                committedPages.AddRange(batch);
-                MarkComicPagesExported(batch);
+                    stageManifest.Pages[entryName] = fingerprint;
+                    await Task.Run(
+                        () => SaveCbzStageManifest(stagingManifestPath, stageManifest),
+                        cancellationToken);
+                }
 
-                double committedProgress = committedPages.Count / (double)selectedPages.Count * 100;
-                BusyProgressBar.Value = committedProgress;
-                FooterProgressBar.Value = committedProgress;
-                FooterStatusText.Text = $"Guardadas {committedPages.Count} de {selectedPages.Count} páginas seleccionadas.";
-                await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Render);
-
-                // Liberamos imágenes grandes entre puntos de control. No es necesario conservar
-                // ningún RenderTargetBitmap del lote anterior para continuar el CBZ.
-                GC.Collect(2, GCCollectionMode.Optimized, blocking: false, compacting: false);
+                stagedPages[pageIndex] = stagePath;
+                double progress = (position + 1d) / selectedPages.Count * 88;
+                BusyProgressBar.Value = progress;
+                FooterProgressBar.Value = progress;
+                FooterStatusText.Text = $"Preparadas {position + 1} de {selectedPages.Count} páginas.";
+                await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Background);
             }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            BusyTitleText.Text = "Montando el CBZ una sola vez…";
+            FooterStatusText.Text = "Conservando páginas anteriores y añadiendo las seleccionadas…";
+            BusyProgressBar.Value = 90;
+            FooterProgressBar.Value = 90;
+            await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Render);
+
+            TryDeleteTemporaryCbz(buildTemporaryPath);
+            await Task.Run(
+                () => BuildFinalCbz(
+                    File.Exists(outputPath) ? outputPath : null,
+                    buildTemporaryPath,
+                    stagedPages,
+                    cancellationToken),
+                cancellationToken);
+
+            cancellationToken.ThrowIfCancellationRequested();
+            CommitCbzCheckpoint(buildTemporaryPath, outputPath);
+            MarkComicPagesExported(selectedPages);
+            CleanupCommittedCbzStaging(stagingDirectory, stagingManifestPath, selectedPages);
 
             BusyProgressBar.Value = 100;
             FooterProgressBar.Value = 100;
             if (fallbackPages.Count == 0)
             {
                 SetFooterStatus(
-                    $"CBZ actualizado · {committedPages.Count} página(s) · {Path.GetFileName(outputPath)}",
+                    $"CBZ actualizado · {selectedPages.Count} página(s) · {Path.GetFileName(outputPath)}",
                     "#58A77D");
             }
             else
@@ -158,31 +194,25 @@ public partial class MainWindow
         }
         catch (OperationCanceledException)
         {
-            TryDeleteTemporaryCbz(batchTemporaryPath);
-            string detail = committedPages.Count == 0
-                ? "No se llegó a confirmar ninguna página nueva."
-                : $"Las {committedPages.Count} páginas ya confirmadas siguen guardadas correctamente en el CBZ.";
+            TryDeleteTemporaryCbz(buildTemporaryPath);
             MessageBox.Show(
                 this,
-                $"La exportación se ha cancelado.\n\n{detail}",
+                "La exportación se ha cancelado.\n\nEl CBZ anterior sigue intacto y las páginas ya preparadas se reutilizarán cuando vuelvas a exportar al mismo archivo.",
                 "Tinta ES",
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);
-            SetFooterStatus("Exportación CBZ cancelada sin dañar el archivo anterior.", "#C99A35");
+            SetFooterStatus("Exportación CBZ pausada sin perder las páginas preparadas.", "#C99A35");
         }
         catch (Exception exception)
         {
-            TryDeleteTemporaryCbz(batchTemporaryPath);
-            string detail = committedPages.Count == 0
-                ? "El CBZ anterior no se ha modificado."
-                : $"Las {committedPages.Count} páginas de los lotes anteriores permanecen guardadas.";
+            TryDeleteTemporaryCbz(buildTemporaryPath);
             MessageBox.Show(
                 this,
-                $"No se pudo terminar la exportación CBZ.\n\n{exception.Message}\n\n{detail}",
+                $"No se pudo terminar la exportación CBZ.\n\n{exception.Message}\n\nEl CBZ anterior no se ha dañado. Las páginas preparadas se conservarán para reanudar.",
                 "Tinta ES",
                 MessageBoxButton.OK,
                 MessageBoxImage.Error);
-            SetFooterStatus("La exportación CBZ se detuvo en un punto de control seguro.", "#EE594B");
+            SetFooterStatus("La exportación CBZ se detuvo sin dañar el archivo anterior.", "#EE594B");
         }
         finally
         {
@@ -196,25 +226,89 @@ public partial class MainWindow
         }
     }
 
-    private async Task BuildCbzCheckpointAsync(
+    private BitmapSource RenderComicPageForCbz(
+        int index,
+        ComicBookPageState page,
+        List<string> fallbackPages)
+    {
+        try
+        {
+            if (page.Processed
+                && page.Error is null
+                && !string.IsNullOrWhiteSpace(page.CleanedPath)
+                && File.Exists(page.CleanedPath))
+            {
+                BitmapSource background = LoadBitmapSource(page.CleanedPath);
+                return _exportService.Render(background, page.Regions);
+            }
+
+            return LoadBitmapSource(page.SourcePath);
+        }
+        catch (Exception exception)
+        {
+            fallbackPages.Add($"Página {index + 1}: {exception.Message}");
+            return LoadBitmapSource(page.SourcePath);
+        }
+    }
+
+    private static void SavePngAtomically(BitmapSource image, string targetPath, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        string temporaryPath = targetPath + ".tmp";
+        TryDeleteTemporaryCbz(temporaryPath);
+        try
+        {
+            var encoder = new PngBitmapEncoder();
+            encoder.Frames.Add(BitmapFrame.Create(image));
+            using (FileStream stream = new(
+                       temporaryPath,
+                       FileMode.Create,
+                       FileAccess.Write,
+                       FileShare.None,
+                       bufferSize: 1024 * 1024,
+                       FileOptions.SequentialScan))
+            {
+                encoder.Save(stream);
+                stream.Flush(flushToDisk: true);
+            }
+            cancellationToken.ThrowIfCancellationRequested();
+            File.Move(temporaryPath, targetPath, overwrite: true);
+        }
+        catch
+        {
+            TryDeleteTemporaryCbz(temporaryPath);
+            throw;
+        }
+    }
+
+    private static void BuildFinalCbz(
         string? existingCbzPath,
         string temporaryPath,
-        IReadOnlyCollection<int> batchPages,
-        int totalSelected,
-        int alreadyCommitted,
-        List<string> fallbackPages,
+        IReadOnlyDictionary<int, string> stagedPages,
         CancellationToken cancellationToken)
     {
         var replacementEntries = new HashSet<string>(
-            batchPages.Select(index => GetCbzPageEntryName(index)),
+            stagedPages.Keys.Select(GetCbzPageEntryName),
             StringComparer.OrdinalIgnoreCase);
 
-        using FileStream output = File.Create(temporaryPath);
+        using FileStream output = new(
+            temporaryPath,
+            FileMode.Create,
+            FileAccess.Write,
+            FileShare.None,
+            bufferSize: 1024 * 1024,
+            FileOptions.SequentialScan);
         using var destinationArchive = new ZipArchive(output, ZipArchiveMode.Create, leaveOpen: false);
 
         if (!string.IsNullOrWhiteSpace(existingCbzPath) && File.Exists(existingCbzPath))
         {
-            using FileStream existingStream = File.OpenRead(existingCbzPath);
+            using FileStream existingStream = new(
+                existingCbzPath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read,
+                bufferSize: 1024 * 1024,
+                FileOptions.SequentialScan);
             using var existingArchive = new ZipArchive(existingStream, ZipArchiveMode.Read, leaveOpen: false);
             foreach (ZipArchiveEntry existingEntry in existingArchive.Entries)
             {
@@ -226,7 +320,7 @@ public partial class MainWindow
 
                 ZipArchiveEntry copiedEntry = destinationArchive.CreateEntry(
                     existingEntry.FullName,
-                    CompressionLevel.Fastest);
+                    CompressionLevel.NoCompression);
                 copiedEntry.LastWriteTime = existingEntry.LastWriteTime;
                 if (string.IsNullOrEmpty(existingEntry.Name))
                 {
@@ -235,68 +329,127 @@ public partial class MainWindow
 
                 using Stream source = existingEntry.Open();
                 using Stream target = copiedEntry.Open();
-                await source.CopyToAsync(target, cancellationToken);
+                source.CopyTo(target, 1024 * 1024);
             }
         }
 
-        int completedInsideBatch = 0;
-        foreach (int index in batchPages)
+        foreach ((int pageIndex, string stagePath) in stagedPages.OrderBy(item => item.Key))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            ComicBookPageState page = _comicPages[index];
-            int globalCompleted = alreadyCommitted + completedInsideBatch;
-            double progress = globalCompleted / (double)Math.Max(1, totalSelected) * 100;
-            BusyProgressBar.Value = progress;
-            FooterProgressBar.Value = progress;
-            BusyTitleText.Text = $"Exportando página {index + 1} · {globalCompleted + 1}/{totalSelected}";
-            FooterStatusText.Text = $"Renderizando página {index + 1} de {_comicPages.Count}…";
-            await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Render);
-
-            byte[] encoded = RenderComicPageForCbz(index, page, fallbackPages);
             ZipArchiveEntry entry = destinationArchive.CreateEntry(
-                GetCbzPageEntryName(index),
-                CompressionLevel.Fastest);
-            using Stream entryStream = entry.Open();
-            await entryStream.WriteAsync(encoded, cancellationToken);
-            completedInsideBatch++;
-
-            // Cedemos el hilo entre páginas para que Cancelar y el progreso sigan respondiendo.
-            await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Background);
+                GetCbzPageEntryName(pageIndex),
+                CompressionLevel.NoCompression);
+            using FileStream source = new(
+                stagePath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read,
+                bufferSize: 1024 * 1024,
+                FileOptions.SequentialScan);
+            using Stream target = entry.Open();
+            source.CopyTo(target, 1024 * 1024);
         }
     }
 
-    private byte[] RenderComicPageForCbz(int index, ComicBookPageState page, List<string> fallbackPages)
+    private string CreateCbzPageFingerprint(int pageIndex, ComicBookPageState page)
     {
-        BitmapSource image;
-        try
+        var identity = new StringBuilder();
+        identity.Append("cbz-stage-v2|").Append(pageIndex).Append('|');
+        AppendFileIdentity(identity, page.SourcePath);
+        AppendFileIdentity(identity, page.CleanedPath);
+        identity.Append('|').Append(page.Processed).Append('|').Append(page.Error);
+        identity.Append('|').Append(JsonSerializer.Serialize(page.Regions, ProjectJsonOptions));
+        byte[] digest = SHA256.HashData(Encoding.UTF8.GetBytes(identity.ToString()));
+        return Convert.ToHexString(digest);
+    }
+
+    private static void AppendFileIdentity(StringBuilder identity, string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
         {
-            if (page.Processed
-                && page.Error is null
-                && !string.IsNullOrWhiteSpace(page.CleanedPath)
-                && File.Exists(page.CleanedPath))
-            {
-                BitmapSource background = LoadBitmapSource(page.CleanedPath);
-                image = _exportService.Render(background, page.Regions);
-            }
-            else
-            {
-                image = LoadBitmapSource(page.SourcePath);
-            }
-        }
-        catch (Exception exception)
-        {
-            fallbackPages.Add($"Página {index + 1}: {exception.Message}");
-            image = LoadBitmapSource(page.SourcePath);
+            identity.Append("missing|");
+            return;
         }
 
+        var file = new FileInfo(path);
+        identity.Append(file.FullName)
+            .Append('|')
+            .Append(file.Length)
+            .Append('|')
+            .Append(file.LastWriteTimeUtc.Ticks)
+            .Append('|');
+    }
+
+    private static string GetCbzStagingDirectory(string outputPath)
+    {
+        byte[] digest = SHA256.HashData(Encoding.UTF8.GetBytes(Path.GetFullPath(outputPath).ToUpperInvariant()));
+        string key = Convert.ToHexString(digest)[..24].ToLowerInvariant();
+        return Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "TintaES",
+            "ExportStaging",
+            key);
+    }
+
+    private static CbzStageManifest LoadCbzStageManifest(string path)
+    {
         try
         {
-            return EncodePng(image);
+            if (!File.Exists(path))
+            {
+                return new CbzStageManifest();
+            }
+
+            return JsonSerializer.Deserialize<CbzStageManifest>(File.ReadAllText(path, Encoding.UTF8))
+                   ?? new CbzStageManifest();
         }
-        catch (Exception exception)
+        catch (JsonException)
         {
-            fallbackPages.Add($"Página {index + 1} (codificación): {exception.Message}");
-            return EncodePng(LoadBitmapSource(page.SourcePath));
+            return new CbzStageManifest();
+        }
+    }
+
+    private static void SaveCbzStageManifest(string path, CbzStageManifest manifest)
+    {
+        string temporaryPath = path + ".tmp";
+        File.WriteAllText(
+            temporaryPath,
+            JsonSerializer.Serialize(manifest),
+            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        File.Move(temporaryPath, path, overwrite: true);
+    }
+
+    private static void CleanupCommittedCbzStaging(
+        string stagingDirectory,
+        string manifestPath,
+        IEnumerable<int> committedPages)
+    {
+        CbzStageManifest manifest = LoadCbzStageManifest(manifestPath);
+        foreach (int pageIndex in committedPages)
+        {
+            string entryName = GetCbzPageEntryName(pageIndex);
+            manifest.Pages.Remove(entryName);
+            TryDeleteTemporaryCbz(Path.Combine(stagingDirectory, entryName));
+        }
+
+        if (manifest.Pages.Count == 0)
+        {
+            TryDeleteTemporaryCbz(manifestPath);
+            try
+            {
+                if (Directory.Exists(stagingDirectory)
+                    && !Directory.EnumerateFileSystemEntries(stagingDirectory).Any())
+                {
+                    Directory.Delete(stagingDirectory);
+                }
+            }
+            catch
+            {
+            }
+        }
+        else
+        {
+            SaveCbzStageManifest(manifestPath, manifest);
         }
     }
 
@@ -320,7 +473,6 @@ public partial class MainWindow
         }
         catch
         {
-            // Recuperación para unidades o sistemas de archivos que no admiten File.Replace.
             try
             {
                 File.Move(outputPath, backupPath, overwrite: true);
@@ -338,15 +490,6 @@ public partial class MainWindow
         }
     }
 
-    private static byte[] EncodePng(BitmapSource image)
-    {
-        var encoder = new PngBitmapEncoder();
-        encoder.Frames.Add(BitmapFrame.Create(image));
-        using var memory = new MemoryStream();
-        encoder.Save(memory);
-        return memory.ToArray();
-    }
-
     private static void TryDeleteTemporaryCbz(string path)
     {
         try
@@ -359,5 +502,10 @@ public partial class MainWindow
         catch
         {
         }
+    }
+
+    private sealed class CbzStageManifest
+    {
+        public Dictionary<string, string> Pages { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     }
 }
