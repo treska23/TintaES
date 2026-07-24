@@ -9,6 +9,7 @@ namespace TintaES.Wpf;
 /// <summary>
 /// Exportación CBZ resistente a páginas que bloquean el render de WPF. Cada página se procesa
 /// en un hilo STA independiente y dispone de cuatro minutos antes de ser omitida.
+/// Los checkboxes actúan como lista de pendientes: una página se desmarca al quedar preparada.
 /// </summary>
 public partial class MainWindow
 {
@@ -142,6 +143,7 @@ public partial class MainWindow
             for (int position = 0; position < selectedPages.Count; position++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+
                 int pageIndex = selectedPages[position];
                 ComicBookPageState page = _comicPages[pageIndex];
                 string entryName = GetCbzPageEntryName(pageIndex);
@@ -190,16 +192,22 @@ public partial class MainWindow
                             () => SaveCbzStageManifest(stagingManifestPath, stageManifest),
                             cancellationToken);
 
+                        SetCbzPagePendingInSelector(pageIndex, pending: true);
                         UpdateResponsiveCbzProgress(position, selectedPages.Count, failedPages.Count);
                         FooterStatusText.Text = exception is TimeoutException
-                            ? $"Página {pageIndex + 1} omitida tras 4 minutos. Continuando…"
-                            : $"Página {pageIndex + 1} omitida por un error. Continuando…";
+                            ? $"Página {pageIndex + 1} omitida tras 4 minutos. Continúa marcada."
+                            : $"Página {pageIndex + 1} omitida por un error. Continúa marcada.";
                         await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Background);
                         continue;
                     }
                 }
 
                 stagedPages[pageIndex] = stagePath;
+
+                // El checkbox se convierte en un indicador de trabajo: desmarcado significa
+                // que la página ya quedó preparada y puede reutilizarse aunque se cancele después.
+                SetCbzPagePendingInSelector(pageIndex, pending: false);
+
                 UpdateResponsiveCbzProgress(position, selectedPages.Count, failedPages.Count);
                 await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Background);
             }
@@ -207,7 +215,6 @@ public partial class MainWindow
             cancellationToken.ThrowIfCancellationRequested();
             if (stagedPages.Count == 0)
             {
-                ApplyPageSelection(failedPages.Select(failure => failure.PageIndex));
                 MessageBox.Show(
                     this,
                     "No se pudo preparar ninguna de las páginas seleccionadas.\n\nLas páginas problemáticas continúan marcadas para volver a intentarlo.",
@@ -235,6 +242,7 @@ public partial class MainWindow
 
             cancellationToken.ThrowIfCancellationRequested();
             CommitCbzCheckpoint(buildTemporaryPath, outputPath);
+
             int[] committedPages = stagedPages.Keys.OrderBy(index => index).ToArray();
             MarkComicPagesExported(committedPages);
             CleanupCommittedCbzStaging(
@@ -247,7 +255,6 @@ public partial class MainWindow
 
             if (failedPages.Count > 0)
             {
-                ApplyPageSelection(failedPages.Select(failure => failure.PageIndex));
                 SetFooterStatus(
                     $"CBZ actualizado · {committedPages.Length} añadidas · {failedPages.Count} pendientes",
                     "#C99A35");
@@ -257,7 +264,7 @@ public partial class MainWindow
                     string.Join("\n", failedPages.Take(12).Select(failure =>
                         $"Página {failure.PageIndex + 1}: {failure.Reason}")) +
                     (failedPages.Count > 12 ? $"\n… y {failedPages.Count - 12} más." : string.Empty) +
-                    "\n\nHan quedado marcadas. Vuelve a exportar seleccionando el mismo CBZ para añadirlas sin rehacer las anteriores.",
+                    "\n\nLas omitidas siguen marcadas. Vuelve a exportar seleccionando el mismo CBZ para añadirlas sin rehacer las anteriores.",
                     "CBZ exportado con páginas pendientes",
                     MessageBoxButton.OK,
                     MessageBoxImage.Warning);
@@ -288,7 +295,7 @@ public partial class MainWindow
             TryDeleteTemporaryCbz(buildTemporaryPath);
             MessageBox.Show(
                 this,
-                "La exportación se ha cancelado.\n\nEl CBZ anterior sigue intacto y las páginas ya preparadas se reutilizarán al volver a exportar al mismo archivo.",
+                "La exportación se ha cancelado.\n\nEl CBZ anterior sigue intacto. Las páginas ya desmarcadas quedaron preparadas y se reutilizarán al volver a exportar al mismo archivo.",
                 "Tinta ES",
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);
@@ -315,6 +322,39 @@ public partial class MainWindow
             RefreshPageSelectionVisuals();
             UpdatePageSelectionSummary();
         }
+    }
+
+    private void SetCbzPagePendingInSelector(int pageIndex, bool pending)
+    {
+        if (pageIndex < 0 || pageIndex >= _comicPages.Count)
+        {
+            return;
+        }
+
+        if (pending)
+        {
+            _selectedComicPageIndices.Add(pageIndex);
+        }
+        else
+        {
+            _selectedComicPageIndices.Remove(pageIndex);
+        }
+
+        _syncingPageSelection = true;
+        try
+        {
+            if (_pageSelectionCheckBoxes.TryGetValue(pageIndex, out System.Windows.Controls.CheckBox? checkBox))
+            {
+                checkBox.IsChecked = pending;
+            }
+        }
+        finally
+        {
+            _syncingPageSelection = false;
+        }
+
+        UpdatePageSelectionSummary();
+        UpdateCbzExportSelectionCaption();
     }
 
     private void UpdateResponsiveCbzProgress(int position, int total, int failed)
@@ -344,7 +384,13 @@ public partial class MainWindow
             {
                 var image = RenderComicPageForCbz(pageIndex, page, localFallbacks);
                 SavePngAtomically(image, attemptPath, CancellationToken.None);
-                completion.TrySetResult(new CbzStaPageResult(attemptPath, localFallbacks));
+                var result = new CbzStaPageResult(attemptPath, localFallbacks);
+
+                if (!completion.TrySetResult(result))
+                {
+                    TryDeleteTemporaryCbz(attemptPath);
+                    TryDeleteTemporaryCbz(attemptPath + ".tmp");
+                }
             }
             catch (Exception exception)
             {
@@ -360,30 +406,24 @@ public partial class MainWindow
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
 
-        Task timeout = Task.Delay(CbzPageTimeout, cancellationToken);
-        Task completed = await Task.WhenAny(completion.Task, timeout);
-        if (!ReferenceEquals(completed, completion.Task))
-        {
-            _ = completion.Task.ContinueWith(
-                _ =>
-                {
-                    TryDeleteTemporaryCbz(attemptPath);
-                    TryDeleteTemporaryCbz(attemptPath + ".tmp");
-                },
-                CancellationToken.None,
-                TaskContinuationOptions.ExecuteSynchronously,
-                TaskScheduler.Default);
+        using var timeoutTimer = new System.Threading.Timer(
+            _ => completion.TrySetException(
+                new TimeoutException("superó el límite real de 4 minutos")),
+            state: null,
+            dueTime: CbzPageTimeout,
+            period: Timeout.InfiniteTimeSpan);
 
-            cancellationToken.ThrowIfCancellationRequested();
-            throw new TimeoutException("superó el límite de 4 minutos");
-        }
+        using CancellationTokenRegistration cancellationRegistration = cancellationToken.Register(
+            () => completion.TrySetCanceled(cancellationToken));
 
-        CbzStaPageResult result = await completion.Task;
+        CbzStaPageResult completedResult = await completion.Task.ConfigureAwait(false);
         cancellationToken.ThrowIfCancellationRequested();
+
         await Task.Run(
-            () => File.Move(result.AttemptPath, stagePath, overwrite: true),
-            cancellationToken);
-        return result;
+            () => File.Move(completedResult.AttemptPath, stagePath, overwrite: true),
+            cancellationToken).ConfigureAwait(false);
+
+        return completedResult;
     }
 
     private sealed record CbzStaPageResult(
