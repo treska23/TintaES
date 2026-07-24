@@ -14,6 +14,7 @@ public partial class MainWindow
 {
     private static readonly bool ManualTextRegressionFixRegistered = RegisterManualTextRegressionFix();
     private bool _manualTextRegressionFixInstalled;
+    private bool _manualCleanupRefreshPending;
 
     private static bool RegisterManualTextRegressionFix()
     {
@@ -111,7 +112,7 @@ public partial class MainWindow
 
         if (cleanupChanged)
         {
-            UpdateCleanedPreview();
+            QueueManualCleanupRefresh();
         }
     }
 
@@ -142,7 +143,7 @@ public partial class MainWindow
 
             if (cleanupChanged)
             {
-                UpdateCleanedPreview();
+                QueueManualCleanupRefresh();
             }
             return;
         }
@@ -165,6 +166,7 @@ public partial class MainWindow
         }
 
         MigrateLegacyManualScale(region);
+        bool cleanupChanged = region.IsManual && EnsureManualDialogueCleanup(region);
         double scale = region.IsManual && region.Type != "sfx"
             ? region.ManualFontScale
             : region.FontScale;
@@ -182,6 +184,12 @@ public partial class MainWindow
         {
             _syncingEditor = false;
         }
+
+        if (cleanupChanged)
+        {
+            QueueManualCleanupRefresh();
+        }
+        QueueFastCanvasTextRefresh(forceLayout: false);
     }
 
     private void MigrateLegacyManualScale(ComicRegion region)
@@ -239,5 +247,26 @@ public partial class MainWindow
             }
         }
         return true;
+    }
+
+    private void QueueManualCleanupRefresh()
+    {
+        if (_manualCleanupRefreshPending || Dispatcher.HasShutdownStarted)
+        {
+            return;
+        }
+
+        _manualCleanupRefreshPending = true;
+        Dispatcher.BeginInvoke(
+            () =>
+            {
+                _manualCleanupRefreshPending = false;
+                if (_originalBitmap is not null && !_pageNavigationBusy && !_comicBatchBusy)
+                {
+                    UpdateCleanedPreview();
+                    QueueFastCanvasTextRefresh(forceLayout: true);
+                }
+            },
+            DispatcherPriority.ContextIdle);
     }
 }
