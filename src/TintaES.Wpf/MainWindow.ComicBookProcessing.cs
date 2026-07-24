@@ -95,13 +95,27 @@ public partial class MainWindow
                         cancellationToken);
 
                     var analysis = new ComicAnalysis(organic.Analysis.SourceLanguage, filtered.Regions);
+                    string processedDirectory = Path.Combine(_comicWorkspace!, "processed");
+                    string cleanedPath = Path.Combine(processedDirectory, $"{pageIndex + 1:D4}-clean.png");
+                    string maskPath = Path.Combine(processedDirectory, $"{pageIndex + 1:D4}-mask.png");
+
+                    // El fondo y la máscara ya están congelados y pueden codificarse fuera del hilo
+                    // de interfaz. Los guardamos a la vez que Ollama traduce: mismo resultado y menos
+                    // tiempo muerto entre páginas.
+                    Task persistImages = Task.WhenAll(
+                        Task.Run(() => SaveBitmap(filtered.CleanedBitmap, cleanedPath), cancellationToken),
+                        Task.Run(() => SaveBitmap(filtered.MaskBitmap, maskPath), cancellationToken));
+
+                    Task translate = Task.CompletedTask;
                     if (analysis.Regions.Count > 0)
                     {
                         BusyTitleText.Text = $"Página {humanPage}/{_comicPages.Count} · traduciendo {analysis.Regions.Count} bocadillos…";
                         FooterStatusText.Text = $"Traduciendo página {humanPage} con {model}…";
                         await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Render);
-                        await _ollama.TranslateRegionsAsync(analysis.Regions, model, cancellationToken);
+                        translate = _ollama.TranslateRegionsAsync(analysis.Regions, model, cancellationToken);
                     }
+
+                    await Task.WhenAll(translate, persistImages);
 
                     foreach (ComicRegion region in analysis.Regions)
                     {
@@ -111,12 +125,6 @@ public partial class MainWindow
                         region.ManualBaseFontSize = 0;
                         region.ManualLayoutSeedText = string.Empty;
                     }
-
-                    string processedDirectory = Path.Combine(_comicWorkspace!, "processed");
-                    string cleanedPath = Path.Combine(processedDirectory, $"{pageIndex + 1:D4}-clean.png");
-                    string maskPath = Path.Combine(processedDirectory, $"{pageIndex + 1:D4}-mask.png");
-                    SaveBitmap(filtered.CleanedBitmap, cleanedPath);
-                    SaveBitmap(filtered.MaskBitmap, maskPath);
 
                     page.Regions.Clear();
                     page.Regions.AddRange(analysis.Regions);
@@ -159,7 +167,7 @@ public partial class MainWindow
             UpdateComicControls();
         }
 
-        ShowComicPage(Math.Clamp(_comicPageIndex, 0, _comicPages.Count - 1));
+        await ShowComicPageFastAsync(Math.Clamp(_comicPageIndex, 0, _comicPages.Count - 1));
         if (cancelled)
         {
             SetFooterStatus("Traducción del cómic cancelada. Las páginas ya terminadas se conservan.", "#C99A35");
