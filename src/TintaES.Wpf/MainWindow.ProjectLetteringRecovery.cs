@@ -1,3 +1,4 @@
+using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -9,8 +10,8 @@ namespace TintaES.Wpf;
 
 /// <summary>
 /// Guardar y abrir un proyecto puede provocar un nuevo ciclo completo de layout. Esta capa
-/// reconstruye e invalida expresamente la rotulación visible cuando termina la operación para
-/// que las traducciones conservadas en las regiones vuelvan a dibujarse inmediatamente.
+/// reconstruye e invalida expresamente la rotulación visible cuando cambia el archivo .tinta,
+/// sin repetir ese trabajo durante la navegación normal entre páginas.
 /// </summary>
 public partial class MainWindow
 {
@@ -18,6 +19,8 @@ public partial class MainWindow
 
     private bool _projectLetteringRecoveryInstalled;
     private bool _restoringProjectLettering;
+    private string? _lastRecoveredProjectPath;
+    private long _lastRecoveredProjectWriteTicks;
 
     private static bool RegisterProjectLetteringRecovery()
     {
@@ -54,11 +57,25 @@ public partial class MainWindow
 
     private void BusyOverlay_ProjectLetteringIsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e)
     {
-        if (BusyOverlay.IsVisible || _comicBatchBusy || _pageNavigationBusy)
+        if (BusyOverlay.IsVisible
+            || _comicBatchBusy
+            || _pageNavigationBusy
+            || string.IsNullOrWhiteSpace(_currentProjectPath)
+            || !File.Exists(_currentProjectPath))
         {
             return;
         }
 
+        string projectPath = Path.GetFullPath(_currentProjectPath);
+        long writeTicks = File.GetLastWriteTimeUtc(projectPath).Ticks;
+        if (string.Equals(projectPath, _lastRecoveredProjectPath, StringComparison.OrdinalIgnoreCase)
+            && writeTicks == _lastRecoveredProjectWriteTicks)
+        {
+            return;
+        }
+
+        _lastRecoveredProjectPath = projectPath;
+        _lastRecoveredProjectWriteTicks = writeTicks;
         Dispatcher.BeginInvoke(
             RestoreVisibleProjectLettering,
             DispatcherPriority.Loaded);
