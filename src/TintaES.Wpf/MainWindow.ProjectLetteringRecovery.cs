@@ -52,34 +52,25 @@ public partial class MainWindow
 
         _projectLetteringRecoveryInstalled = true;
         BusyOverlay.IsVisibleChanged += BusyOverlay_ProjectLetteringIsVisibleChanged;
-        OverlayCanvas.LayoutUpdated += OverlayCanvas_ProjectLetteringLayoutUpdated;
     }
 
     private void BusyOverlay_ProjectLetteringIsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e)
     {
-        if (BusyOverlay.IsVisible || _comicBatchBusy || _pageNavigationBusy)
-        {
-            return;
-        }
-
-        QueueProjectLetteringRestore(rebuildOverlay: true);
-    }
-
-    private void OverlayCanvas_ProjectLetteringLayoutUpdated(object? sender, EventArgs e)
-    {
-        if (string.IsNullOrWhiteSpace(_currentProjectPath)
+        // ShowComicPageFastAsync oculta el overlay al terminar cada página. Ese es el punto
+        // estable para organizar los elementos restaurados sin entrar en ciclos de LayoutUpdated.
+        if (BusyOverlay.IsVisible
             || _comicBatchBusy
             || _pageNavigationBusy
-            || _regions.Count == 0
-            || !string.Equals(_previewMode, "result", StringComparison.Ordinal))
+            || string.IsNullOrWhiteSpace(_currentProjectPath)
+            || _regions.Count == 0)
         {
             return;
         }
 
-        QueueProjectLetteringRestore(rebuildOverlay: false);
+        QueueProjectLetteringRestore();
     }
 
-    private void QueueProjectLetteringRestore(bool rebuildOverlay)
+    private void QueueProjectLetteringRestore()
     {
         if (_projectLetteringRefreshPending)
         {
@@ -91,12 +82,12 @@ public partial class MainWindow
             () =>
             {
                 _projectLetteringRefreshPending = false;
-                RestoreVisibleProjectLettering(rebuildOverlay);
+                RestoreVisibleProjectLettering();
             },
             DispatcherPriority.Render);
     }
 
-    private void RestoreVisibleProjectLettering(bool rebuildOverlay = true)
+    private void RestoreVisibleProjectLettering()
     {
         if (_restoringProjectLettering
             || string.IsNullOrWhiteSpace(_currentProjectPath)
@@ -117,17 +108,14 @@ public partial class MainWindow
                 region.PropertyChanged += Region_PropertyChanged;
             }
 
-            if (rebuildOverlay || OverlayCanvas.Children.Count == 0)
-            {
-                RebuildOverlay();
-            }
-
+            RebuildOverlay();
             OverlayCanvas.Visibility = Visibility.Visible;
             OverlayCanvas.Width = _originalBitmap.PixelWidth;
             OverlayCanvas.Height = _originalBitmap.PixelHeight;
 
-            // Ejecutamos la misma preparación que usa la vista normal: oculta los marcos de
-            // diagnóstico, conecta el arrastre rápido y crea el renderizador manual si procede.
+            // Ejecutamos la preparación normal y luego forzamos Measure/Arrange. La versión
+            // anterior solo llamaba a InvalidateVisual, pero un control con tamaño real 0 no
+            // puede dibujar nada por muchas invalidaciones que reciba.
             OverlayCanvas_PresentationLayoutUpdated(OverlayCanvas, EventArgs.Empty);
 
             foreach (Grid layer in OverlayCanvas.Children.OfType<Grid>())
@@ -184,8 +172,6 @@ public partial class MainWindow
                 layer.Arrange(new Rect(0, 0, width, height));
                 renderer?.Measure(new Size(width, height));
                 renderer?.Arrange(new Rect(0, 0, width, height));
-                renderer?.InvalidateMeasure();
-                renderer?.InvalidateArrange();
                 renderer?.InvalidateVisual();
             }
 
