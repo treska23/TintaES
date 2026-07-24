@@ -8,7 +8,8 @@ namespace TintaES.Wpf;
 
 /// <summary>
 /// Separa claramente las dos acciones del panel izquierdo: pulsar la fila visualiza la página
-/// y pulsar únicamente el cuadrado del CheckBox la incluye o excluye de la exportación.
+/// y pulsar únicamente el cuadrado del CheckBox la incluye o excluye de la exportación. La fila
+/// nunca representa el estado de exportación: ese estado pertenece exclusivamente al CheckBox.
 /// </summary>
 public partial class MainWindow
 {
@@ -112,6 +113,8 @@ public partial class MainWindow
                 Padding = new Thickness(0),
                 CornerRadius = new CornerRadius(5),
                 BorderThickness = new Thickness(1),
+                BorderBrush = Brushes.Transparent,
+                Background = Brushes.Transparent,
                 Cursor = Cursors.Hand,
                 Tag = index,
                 ToolTip = "Pulsa en el nombre o en el fondo para visualizar la página. Solo el cuadrado cambia la selección de exportación."
@@ -240,14 +243,20 @@ public partial class MainWindow
             _syncingPageSelection = false;
         }
 
-        Brush accent = FindResource("AccentBrush") as Brush ?? Brushes.IndianRed;
-        Brush teal = FindResource("TealBrush") as Brush ?? Brushes.Teal;
-        row.BorderBrush = current ? accent : selected ? teal : Brushes.Transparent;
-        row.Background = current
-            ? new SolidColorBrush(Color.FromArgb(42, 238, 89, 75))
-            : selected
-                ? new SolidColorBrush(Color.FromArgb(24, 76, 178, 187))
-                : Brushes.Transparent;
+        // La inclusión en la exportación se comunica solo con el CheckBox. La fila nunca se
+        // ilumina ni cambia de borde por estar marcada. La página visible se distingue únicamente
+        // con el texto de su nombre, evitando confundir navegación y selección de exportación.
+        row.BorderBrush = Brushes.Transparent;
+        row.Background = Brushes.Transparent;
+
+        if (_interactivePageSelectionLabels.TryGetValue(index, out TextBlock? label))
+        {
+            Brush accent = FindResource("AccentBrush") as Brush ?? Brushes.IndianRed;
+            Brush ink = FindResource("InkBrush") as Brush ?? Brushes.White;
+            label.FontWeight = current ? FontWeights.Bold : FontWeights.Normal;
+            label.Foreground = current ? accent : ink;
+        }
+
         row.Opacity = enabled ? 1 : 0.58;
         row.Cursor = enabled ? Cursors.Hand : Cursors.Arrow;
         checkBox.IsEnabled = enabled;
