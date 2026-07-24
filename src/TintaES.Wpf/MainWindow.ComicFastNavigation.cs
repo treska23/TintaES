@@ -165,8 +165,8 @@ public partial class MainWindow
         UpdateComicControls();
         SyncDirectPageSelector();
 
-        // La imagen ya está lista. Quitamos el velo antes de construir la rotulación para que
-        // mover o redimensionar la ventana no quede bloqueado por todos los ComicTextElement.
+        // La imagen se muestra primero. Las zonas se añaden en lotes, pero cada lote termina
+        // también su Measure/Arrange: no volvemos a dejar cajas sin letras.
         BusyOverlay.Visibility = Visibility.Collapsed;
         BusyProgressBar.IsIndeterminate = false;
         FooterProgressBar.IsIndeterminate = false;
@@ -184,14 +184,18 @@ public partial class MainWindow
             bool endOfBatch = (regionIndex + 1) % OverlayLoadBatchSize == 0;
             if (endOfBatch || regionIndex == visibleRegions.Length - 1)
             {
+                FinalizeProgressiveOverlayTextLayout(finalPass: false);
+
                 double fraction = visibleRegions.Length == 0
                     ? 1
                     : (regionIndex + 1d) / visibleRegions.Length;
                 FooterProgressBar.Value = 20 + fraction * 75;
                 FooterStatusText.Text = $"Preparando textos {regionIndex + 1}/{visibleRegions.Length}…";
-                await Dispatcher.Yield(DispatcherPriority.Background);
+                await Dispatcher.Yield(DispatcherPriority.Render);
             }
         }
+
+        FinalizeProgressiveOverlayTextLayout(finalPass: true);
 
         if (_regions.Count > 0)
         {
