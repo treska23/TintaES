@@ -14,6 +14,7 @@ public partial class MainWindow
 
     private bool _pageSelectionDefaultsInstalled;
     private string? _pageSelectionDefaultsSessionKey;
+    private int _lastObservedExportedPageCount;
 
     private static bool RegisterPageSelectionDefaults()
     {
@@ -54,6 +55,7 @@ public partial class MainWindow
         if (_comicPages.Count == 0)
         {
             _pageSelectionDefaultsSessionKey = null;
+            _lastObservedExportedPageCount = 0;
             UpdateCbzExportSelectionCaption();
             return;
         }
@@ -62,6 +64,7 @@ public partial class MainWindow
         if (!string.Equals(sessionKey, _pageSelectionDefaultsSessionKey, StringComparison.OrdinalIgnoreCase))
         {
             _pageSelectionDefaultsSessionKey = sessionKey;
+            _lastObservedExportedPageCount = 0;
 
             // SyncPageSelectionPanel puede estar terminando de crear sus checkboxes y de marcar
             // provisionalmente el primer bloque. Ejecutamos después de ese ciclo para que el
@@ -80,6 +83,24 @@ public partial class MainWindow
                 },
                 DispatcherPriority.ContextIdle);
             return;
+        }
+
+        // El flujo antiguo seleccionaba automáticamente "las 20 siguientes" al terminar. Si se
+        // acababa de exportar el cómic completo, eso dejaba cero páginas marcadas. Detectamos ese
+        // caso una sola vez y conservamos la selección completa. No interfiere con que el usuario
+        // pulse después Ninguna de forma intencionada.
+        if (!_comicBatchBusy
+            && _comicPages.Count > 0
+            && _exportedComicPageIndices.Count == _comicPages.Count
+            && _lastObservedExportedPageCount < _comicPages.Count
+            && _selectedComicPageIndices.Count == 0)
+        {
+            _lastObservedExportedPageCount = _exportedComicPageIndices.Count;
+            SelectAllComicPages();
+        }
+        else if (!_comicBatchBusy)
+        {
+            _lastObservedExportedPageCount = _exportedComicPageIndices.Count;
         }
 
         UpdateCbzExportSelectionCaption();
