@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Globalization;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Media;
 using TintaES.Core;
 
@@ -13,6 +14,7 @@ namespace TintaES.Wpf.Controls;
 /// </summary>
 public sealed class FastComicTextPreviewElement : FrameworkElement
 {
+    private const string NativeTextBlockTag = "tinta-native-text-frame";
     private bool _subscribed;
 
     public required ComicRegion Region { get; init; }
@@ -83,8 +85,7 @@ public sealed class FastComicTextPreviewElement : FrameworkElement
             pixelsPerDip);
 
         // Igual que una caja de texto de Word/Photoshop: el ancho envuelve palabras, pero la altura
-        // no reduce la fuente. Si el bloque supera la caja, permanece visible para que el usuario
-        // redimensione la caja o reduzca el tamaño conscientemente.
+        // no reduce la fuente. El Grid padre recorta cualquier exceso vertical.
         double y = (ActualHeight - formatted.Height) / 2;
         drawingContext.DrawText(formatted, new Point(padding, y));
     }
@@ -260,7 +261,18 @@ public sealed class FastComicTextPreviewElement : FrameworkElement
 
     private void SynchronizeVisualState()
     {
-        Visibility = Region.IsEnabled ? Visibility.Visible : Visibility.Collapsed;
+        // Cuando la caja seleccionada está usando el TextBlock nativo, este preview debe seguir
+        // colapsado incluso si PropertyChanged vuelve a dispararse. Antes se reactivaba y dejaba dos
+        // copias del mismo texto superpuestas.
+        bool nativeEditorVisible = Parent is Panel panel
+            && panel.Children
+                .OfType<TextBlock>()
+                .Any(textBlock => Equals(textBlock.Tag, NativeTextBlockTag)
+                    && textBlock.Visibility == Visibility.Visible);
+
+        Visibility = Region.IsEnabled && !nativeEditorVisible
+            ? Visibility.Visible
+            : Visibility.Collapsed;
         RenderTransform = Transform.Identity;
     }
 }
