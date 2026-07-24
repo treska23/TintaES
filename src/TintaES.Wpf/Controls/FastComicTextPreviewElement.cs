@@ -7,9 +7,9 @@ using TintaES.Core;
 namespace TintaES.Wpf.Controls;
 
 /// <summary>
-/// Renderizador ligero para el lienzo de edición. No busca la composición óptima dentro del
-/// polígono ni construye geometrías de glifos: mide el texto una o dos veces y lo dibuja con
-/// DrawText. La exportación continúa usando ComicTextElement para conservar la calidad final.
+/// Renderizador ligero para el lienzo de edición. El modo automático puede ajustar el texto para
+/// mostrar una aproximación rápida, pero el modo manual conserva exactamente los saltos y el tamaño
+/// congelado por el usuario: nunca vuelve a encoger para entrar en la caja.
 /// </summary>
 public sealed class FastComicTextPreviewElement : FrameworkElement
 {
@@ -22,6 +22,8 @@ public sealed class FastComicTextPreviewElement : FrameworkElement
     public FastComicTextPreviewElement()
     {
         IsHitTestVisible = false;
+        TextOptions.SetTextFormattingMode(this, TextFormattingMode.Display);
+        TextOptions.SetTextRenderingMode(this, TextRenderingMode.Grayscale);
         Loaded += FastComicTextPreviewElement_Loaded;
         Unloaded += FastComicTextPreviewElement_Unloaded;
     }
@@ -36,6 +38,7 @@ public sealed class FastComicTextPreviewElement : FrameworkElement
             return;
         }
 
+        text = NormalizeNewLines(text);
         if (Region.Style.Uppercase)
         {
             text = text.ToUpper(CultureInfo.GetCultureInfo("es-ES"));
@@ -48,12 +51,29 @@ public sealed class FastComicTextPreviewElement : FrameworkElement
         double pixelsPerDip = VisualTreeHelper.GetDpi(this).PixelsPerDip;
         Brush fill = ParseBrush(Region.Style.TextColor, Brushes.Black);
         Typeface typeface = CreatePreviewTypeface(Region);
+
+        if (Region.IsManual && Region.Type != "sfx")
+        {
+            DrawManualText(drawingContext, text, typeface, fill, pixelsPerDip);
+            return;
+        }
+
+        DrawAutomaticText(drawingContext, text, typeface, fill, pixelsPerDip);
+    }
+
+    private void DrawAutomaticText(
+        DrawingContext drawingContext,
+        string text,
+        Typeface typeface,
+        Brush fill,
+        double pixelsPerDip)
+    {
         double padding = Math.Max(2, Math.Min(ActualWidth, ActualHeight) * 0.055);
         double availableWidth = Math.Max(2, ActualWidth - padding * 2);
         double availableHeight = Math.Max(2, ActualHeight - padding * 2);
-        double fontSize = GetInitialFontSize(text, availableWidth, availableHeight);
+        double fontSize = GetAutomaticFontSize(text, availableWidth, availableHeight);
 
-        FormattedText formatted = CreateFormattedText(
+        FormattedText formatted = CreateWrappedText(
             text,
             typeface,
             fontSize,
@@ -65,7 +85,7 @@ public sealed class FastComicTextPreviewElement : FrameworkElement
         {
             double ratio = Math.Clamp(availableHeight / Math.Max(1, formatted.Height), 0.18, 1);
             fontSize = Math.Max(2.5, fontSize * ratio * 0.96);
-            formatted = CreateFormattedText(
+            formatted = CreateWrappedText(
                 text,
                 typeface,
                 fontSize,
@@ -75,14 +95,114 @@ public sealed class FastComicTextPreviewElement : FrameworkElement
         }
 
         double y = padding + Math.Max(0, (availableHeight - formatted.Height) / 2);
-
-        // Durante la edición el usuario tiene que ver el texto completo al desplazarlo o
-        // ampliarlo. El renderer anterior recortaba por el rectángulo original y daba la falsa
-        // impresión de que faltaban letras. El recorte preciso sigue aplicándose al exportar.
         drawingContext.DrawText(formatted, new Point(padding, y));
     }
 
-    private double GetInitialFontSize(string text, double availableWidth, double availableHeight)
+    private void DrawManualText(
+        DrawingContext drawingContext,
+        string text,
+        Typeface typeface,
+        Brush fill,
+        double pixelsPerDip)
+    {
+        string[] lines = text.Split('\n', StringSplitOptions.None)
+            .Select(line => line.TrimEnd())
+            .ToArray();
+        if (lines.Length == 0)
+        {
+            return;
+        }
+
+        double baseSize = GetOrCreateManualBaseFontSize(lines, typeface, fill, pixelsPerDip);
+        double fontSize = Math.Max(1.2, baseSize * Math.Clamp(Region.ManualFontScale, 0.25, 2.5));
+        double lineHeight = fontSize * Math.Clamp(Region.Style.LineHeightRatio, 0.82, 1.8);
+        double blockHeight = lines.Length * lineHeight;
+        double y = (ActualHeight - blockHeight) / 2;
+
+        foreach (string line in lines)
+        {
+            if (!string.IsNullOrEmpty(line))
+            {
+                FormattedText formatted = CreateSingleLineText(line, typeface, fontSize, fill, pixelsPerDip);
+                double width = formatted.WidthIncludingTrailingWhitespace;
+                double x = Region.Style.Alignment switch
+                {
+                    "left" => 0,
+                    "right" => ActualWidth - width,
+                    _ => (ActualWidth - width) / 2
+                };
+                drawingContext.DrawText(formatted, new Point(x, y));
+            }
+            y += lineHeight;
+        }
+    }
+
+    private double GetOrCreateManualBaseFontSize(
+        IReadOnlyList<string> currentLines,
+        Typeface typeface,
+        Brush fill,
+        double pixelsPerDip)
+    {
+        if (Region.ManualBaseFontSize > 0)
+        {
+            return Region.ManualBaseFontSize;
+        }
+
+        string seedText = NormalizeNewLines(
+            string.IsNullOrWhiteSpace(Region.ManualLayoutSeedText)
+                ? string.Join("\n", currentLines)
+                : Region.ManualLayoutSeedText!);
+        if (Region.Style.Uppercase)
+        {
+            seedText = seedText.ToUpper(CultureInfo.GetCultureInfo("es-ES"));
+        }
+
+        string[] seedLines = seedText.Split('\n', StringSplitOptions.None)
+            .Select(line => line.TrimEnd())
+            .ToArray();
+        if (seedLines.Length == 0)
+        {
+            seedLines = currentLines.ToArray();
+        }
+
+        const double minimum = 1.2;
+        double padding = Math.Max(2.5, Math.Min(ActualWidth, ActualHeight) * 0.045);
+        double availableWidth = Math.Max(2, ActualWidth - padding * 2);
+        double availableHeight = Math.Max(2, ActualHeight - padding * 2);
+        double automaticMaximum = Math.Max(6, Math.Min(ActualHeight * 0.9, Math.Max(ActualWidth * 0.48, 16)));
+        double preferred = Region.Style.FontSize > 0 && PageHeight > 0
+            ? Region.Style.FontSize / 1000 * PageHeight * Math.Clamp(Region.FontScale, 0.35, 1.6)
+            : automaticMaximum;
+        double high = Math.Max(minimum, Math.Min(automaticMaximum, preferred * 1.03));
+        double low = minimum;
+        double best = minimum;
+        double lineHeightRatio = Math.Clamp(Region.Style.LineHeightRatio, 0.82, 1.8);
+
+        for (int iteration = 0; iteration < 14; iteration++)
+        {
+            double candidate = (low + high) / 2;
+            bool fitsHeight = seedLines.Length * candidate * lineHeightRatio <= availableHeight + 0.25;
+            bool fitsWidth = seedLines.All(line =>
+                string.IsNullOrEmpty(line)
+                || CreateSingleLineText(line, typeface, candidate, fill, pixelsPerDip)
+                    .WidthIncludingTrailingWhitespace <= availableWidth + 0.25);
+
+            if (fitsHeight && fitsWidth)
+            {
+                best = candidate;
+                low = candidate;
+            }
+            else
+            {
+                high = candidate;
+            }
+        }
+
+        Region.ManualBaseFontSize = Math.Max(minimum, best);
+        return Region.ManualBaseFontSize;
+    }
+
+    private double GetAutomaticFontSize(string text, double availableWidth, double availableHeight)
     {
         double preferred = Region.Style.FontSize > 0 && PageHeight > 0
             ? Region.Style.FontSize / 1000 * PageHeight
@@ -93,12 +213,24 @@ public sealed class FastComicTextPreviewElement : FrameworkElement
         return Math.Clamp(preferred * scale, 2.5, maximum);
     }
 
-    private FormattedText CreateFormattedText(
+    private FormattedText CreateWrappedText(
         string text,
         Typeface typeface,
         double fontSize,
         Brush fill,
         double availableWidth,
+        double pixelsPerDip)
+    {
+        var formatted = CreateSingleLineText(text, typeface, fontSize, fill, pixelsPerDip);
+        formatted.MaxTextWidth = availableWidth;
+        return formatted;
+    }
+
+    private FormattedText CreateSingleLineText(
+        string text,
+        Typeface typeface,
+        double fontSize,
+        Brush fill,
         double pixelsPerDip)
     {
         var formatted = new FormattedText(
@@ -110,7 +242,6 @@ public sealed class FastComicTextPreviewElement : FrameworkElement
             fill,
             pixelsPerDip)
         {
-            MaxTextWidth = availableWidth,
             TextAlignment = Region.Style.Alignment switch
             {
                 "left" => TextAlignment.Left,
@@ -159,6 +290,9 @@ public sealed class FastComicTextPreviewElement : FrameworkElement
         }
     }
 
+    private static string NormalizeNewLines(string text) =>
+        text.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n');
+
     private void FastComicTextPreviewElement_Loaded(object sender, RoutedEventArgs e)
     {
         if (_subscribed)
@@ -189,8 +323,6 @@ public sealed class FastComicTextPreviewElement : FrameworkElement
     private void SynchronizeVisualState()
     {
         Visibility = Region.IsEnabled ? Visibility.Visible : Visibility.Collapsed;
-        RenderTransformOrigin = new Point(0.5, 0.5);
-        double scale = Math.Clamp(Region.ManualFontScale, 0.25, 2.5);
-        RenderTransform = new ScaleTransform(scale, scale);
+        RenderTransform = Transform.Identity;
     }
 }
