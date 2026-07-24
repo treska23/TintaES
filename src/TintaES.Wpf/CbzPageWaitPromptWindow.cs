@@ -78,8 +78,7 @@ internal sealed class CbzPageWaitPromptWindow : Window
             Content = "Saltar página",
             MinWidth = 125,
             Height = 34,
-            Margin = new Thickness(0, 0, 10, 0),
-            IsCancel = true
+            Margin = new Thickness(0, 0, 10, 0)
         };
         skipButton.Click += (_, _) => Finish(continueWaiting: false);
 
@@ -136,6 +135,5 @@ internal sealed class CbzPageWaitPromptWindow : Window
     {
         _countdownTimer.Stop();
         DialogResult = continueWaiting;
-        Close();
     }
 }
