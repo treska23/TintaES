@@ -8,6 +8,8 @@ namespace TintaES.Wpf;
 
 public partial class MainWindow
 {
+    private const int OverlayLoadBatchSize = 3;
+
     private readonly Dictionary<int, ComicPageBitmapCache> _comicPageBitmapCache = [];
     private readonly object _comicPageBitmapCacheLock = new();
     private bool _pageNavigationBusy;
@@ -36,7 +38,7 @@ public partial class MainWindow
         try
         {
             ComicPageBitmapCache cache = await GetComicPageBitmapCacheAsync(index, page);
-            ApplyComicPage(index, page, cache);
+            await ApplyComicPageAsync(index, page, cache);
             PruneComicPageBitmapCache(index);
             _ = PreloadComicPageNeighborsAsync(index);
         }
@@ -59,6 +61,7 @@ public partial class MainWindow
             FooterProgressBar.IsIndeterminate = false;
             UpdateComicControls();
             SyncDirectPageSelector();
+            RefreshEditorToolAvailability();
         }
     }
 
@@ -106,7 +109,7 @@ public partial class MainWindow
             mask);
     }
 
-    private void ApplyComicPage(int index, ComicBookPageState page, ComicPageBitmapCache cache)
+    private async Task ApplyComicPageAsync(int index, ComicBookPageState page, ComicPageBitmapCache cache)
     {
         _comicPageIndex = index;
         _visibleComicPageIndex = -1;
@@ -128,11 +131,17 @@ public partial class MainWindow
         ImageScrollViewer.Visibility = Visibility.Visible;
         OverlayCanvas.Visibility = Visibility.Visible;
 
+        foreach (ComicRegion current in _regions)
+        {
+            current.PropertyChanged -= Region_PropertyChanged;
+        }
         _regions.Clear();
         if (page.Processed)
         {
             foreach (ComicRegion region in page.Regions)
             {
+                region.PropertyChanged -= Region_PropertyChanged;
+                region.PropertyChanged += Region_PropertyChanged;
                 _regions.Add(region);
             }
         }
@@ -147,12 +156,8 @@ public partial class MainWindow
         LanguageText.Text = page.Processed ? $"{page.SourceLanguage.ToUpperInvariant()} → ES" : "— → ES";
 
         ShowPreviewMode("result");
-        RebuildOverlay();
+        OverlayCanvas.Children.Clear();
         UpdateRegionCount();
-        if (_regions.Count > 0)
-        {
-            RegionListBox.SelectedIndex = 0;
-        }
 
         _visibleComicPageIndex = index;
         PageNameText.Text = page.DisplayName;
@@ -160,6 +165,50 @@ public partial class MainWindow
         UpdateComicControls();
         SyncDirectPageSelector();
 
+        // La imagen ya está lista. Quitamos el velo antes de construir la rotulación para que
+        // mover o redimensionar la ventana no quede bloqueado por todos los ComicTextElement.
+        BusyOverlay.Visibility = Visibility.Collapsed;
+        BusyProgressBar.IsIndeterminate = false;
+        FooterProgressBar.IsIndeterminate = false;
+        FooterProgressBar.Value = 20;
+        FooterStatusText.Text = page.Processed && _regions.Count > 0
+            ? $"Mostrando página; preparando {_regions.Count} zonas…"
+            : $"Mostrando página {index + 1}…";
+        await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Render);
+
+        ComicRegion[] visibleRegions = _regions.Where(region => region.IsEnabled).ToArray();
+        for (int regionIndex = 0; regionIndex < visibleRegions.Length; regionIndex++)
+        {
+            AddRegionVisual(visibleRegions[regionIndex]);
+
+            bool endOfBatch = (regionIndex + 1) % OverlayLoadBatchSize == 0;
+            if (endOfBatch || regionIndex == visibleRegions.Length - 1)
+            {
+                double fraction = visibleRegions.Length == 0
+                    ? 1
+                    : (regionIndex + 1d) / visibleRegions.Length;
+                FooterProgressBar.Value = 20 + fraction * 75;
+                FooterStatusText.Text = $"Preparando textos {regionIndex + 1}/{visibleRegions.Length}…";
+                await Dispatcher.Yield(DispatcherPriority.Background);
+            }
+        }
+
+        if (_regions.Count > 0)
+        {
+            _suppressSelectionRebuild = true;
+            try
+            {
+                _selectedRegion = _regions[0];
+                RegionListBox.SelectedIndex = 0;
+                ShowRegionEditor(_selectedRegion);
+            }
+            finally
+            {
+                _suppressSelectionRebuild = false;
+            }
+        }
+
+        FooterProgressBar.Value = 100;
         string state = page.Error is not null ? "con error" : page.Processed ? "traducida" : "pendiente";
         SetFooterStatus($"Página {index + 1}/{_comicPages.Count} · {state}", page.Error is null ? "#58A77D" : "#C99A35");
     }
