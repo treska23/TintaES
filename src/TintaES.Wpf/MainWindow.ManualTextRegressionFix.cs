@@ -7,8 +7,8 @@ namespace TintaES.Wpf;
 
 /// <summary>
 /// Unifica el editor lateral con el modelo manual. El preview ligero escucha directamente los
-/// cambios de ComicRegion, por lo que escribir o mover el slider no debe reconstruir el overlay
-/// ni despertar los renderizadores tipográficos precisos reservados para la exportación.
+/// cambios de ComicRegion, por lo que escribir, seleccionar o mover el slider no debe reconstruir
+/// el overlay ni despertar los renderizadores tipográficos precisos reservados para exportación.
 /// </summary>
 public partial class MainWindow
 {
@@ -62,9 +62,10 @@ public partial class MainWindow
         TranslationTextBox.TextChanged += TranslationTextBox_TextChanged_FixedManual;
         TranslationTextBox.GotKeyboardFocus += TranslationTextBox_GotKeyboardFocus_CaptureManualSeed;
 
-        // El handler auxiliar antiguo volvía a mostrar ManualComicTextElement al seleccionar una
-        // zona. Ese renderer construye geometrías completas y hacía que el primer movimiento del
-        // slider arrancase ya bloqueado. La selección usa exclusivamente el preview ligero.
+        // Seleccionar una tarjeta también reconstruía todas las capas por el handler XAML original,
+        // aunque en la vista rápida los bordes de diagnóstico están ocultos. Cargamos únicamente el
+        // editor derecho y garantizamos que siga activo el preview ligero.
+        RegionListBox.SelectionChanged -= RegionListBox_SelectionChanged;
         RegionListBox.SelectionChanged -= RegionListBox_SelectionChanged_LineLayout;
         RegionListBox.SelectionChanged += RegionListBox_SelectionChanged_FixedManualScale;
 
@@ -167,6 +168,8 @@ public partial class MainWindow
 
     private void RegionListBox_SelectionChanged_FixedManualScale(object sender, SelectionChangedEventArgs e)
     {
+        _selectedRegion = RegionListBox.SelectedItem as ComicRegion;
+        ShowRegionEditor(_selectedRegion);
         SynchronizeFixedManualScaleSlider();
         QueueFastCanvasTextRefresh(forceLayout: false);
     }
