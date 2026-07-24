@@ -61,8 +61,6 @@ public sealed class FastComicTextPreviewElement : FrameworkElement
             availableWidth,
             pixelsPerDip);
 
-        // Una única corrección proporcional sustituye las 18 iteraciones y el algoritmo de
-        // partición por polígonos del renderer final.
         if (formatted.Height > availableHeight + 0.5)
         {
             double ratio = Math.Clamp(availableHeight / Math.Max(1, formatted.Height), 0.18, 1);
@@ -77,9 +75,11 @@ public sealed class FastComicTextPreviewElement : FrameworkElement
         }
 
         double y = padding + Math.Max(0, (availableHeight - formatted.Height) / 2);
-        drawingContext.PushClip(new RectangleGeometry(new Rect(0, 0, ActualWidth, ActualHeight)));
+
+        // Durante la edición el usuario tiene que ver el texto completo al desplazarlo o
+        // ampliarlo. El renderer anterior recortaba por el rectángulo original y daba la falsa
+        // impresión de que faltaban letras. El recorte preciso sigue aplicándose al exportar.
         drawingContext.DrawText(formatted, new Point(padding, y));
-        drawingContext.Pop();
     }
 
     private double GetInitialFontSize(string text, double availableWidth, double availableHeight)
