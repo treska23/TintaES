@@ -46,7 +46,9 @@ public partial class MainWindow
         }
 
         _pageSelectionDefaultsInstalled = true;
-        LayoutUpdated += (_, _) => ApplyPageSelectionDefaults();
+
+        // SyncPageSelectionPanel ya detecta cada sesión nueva y selecciona todas sus páginas.
+        // Ejecutar esto en LayoutUpdated repetía recuentos y textos continuamente.
         ApplyPageSelectionDefaults();
     }
 
@@ -65,10 +67,6 @@ public partial class MainWindow
         {
             _pageSelectionDefaultsSessionKey = sessionKey;
             _lastObservedExportedPageCount = 0;
-
-            // SyncPageSelectionPanel puede estar terminando de crear sus checkboxes y de marcar
-            // provisionalmente el primer bloque. Ejecutamos después de ese ciclo para que el
-            // estado inicial definitivo sea siempre "todas".
             Dispatcher.BeginInvoke(
                 () =>
                 {
@@ -85,10 +83,6 @@ public partial class MainWindow
             return;
         }
 
-        // El flujo antiguo seleccionaba automáticamente "las 20 siguientes" al terminar. Si se
-        // acababa de exportar el cómic completo, eso dejaba cero páginas marcadas. Detectamos ese
-        // caso una sola vez y conservamos la selección completa. No interfiere con que el usuario
-        // pulse después Ninguna de forma intencionada.
         if (!_comicBatchBusy
             && _comicPages.Count > 0
             && _exportedComicPageIndices.Count == _comicPages.Count
@@ -115,13 +109,22 @@ public partial class MainWindow
 
         int total = _comicPages.Count;
         int selected = _selectedComicPageIndices.Count;
-        _exportComicButton.Content = total == 0
+        string content = total == 0
             ? "Exportar CBZ"
             : selected == total
                 ? $"Exportar CBZ ({total})"
                 : $"Exportar CBZ ({selected}/{total})";
-        _exportComicButton.ToolTip = total == 0
+        string toolTip = total == 0
             ? "Exportar páginas a un archivo CBZ"
             : $"Se exportarán {selected} de {total} páginas. La selección se controla en el panel izquierdo.";
+
+        if (!Equals(_exportComicButton.Content, content))
+        {
+            _exportComicButton.Content = content;
+        }
+        if (!Equals(_exportComicButton.ToolTip, toolTip))
+        {
+            _exportComicButton.ToolTip = toolTip;
+        }
     }
 }
