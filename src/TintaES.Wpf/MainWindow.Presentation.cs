@@ -5,6 +5,7 @@ using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Threading;
 using TintaES.Core;
 using TintaES.Wpf.Controls;
 
@@ -12,12 +13,32 @@ namespace TintaES.Wpf;
 
 public partial class MainWindow
 {
+    private const int WmDpiChanged = 0x02E0;
+    private const uint MonitorDefaultToNearest = 2;
+    private const double PreferredMinimumWidth = 840;
+    private const double PreferredMinimumHeight = 600;
+
     private readonly ConditionalWeakTable<Grid, object> _preparedOverlayLayers = new();
     private bool _presentationHooksAttached;
+    private bool _monitorLayoutRefreshPending;
+    private HwndSource? _presentationHwndSource;
 
     protected override void OnSourceInitialized(EventArgs e)
     {
         base.OnSourceInitialized(e);
+
+        nint handle = new WindowInteropHelper(this).Handle;
+        _presentationHwndSource = HwndSource.FromHwnd(handle);
+        _presentationHwndSource?.AddHook(PresentationWindowProc);
+
+        DpiChanged += MainWindow_DpiChanged;
+        LocationChanged += MainWindow_MonitorLocationChanged;
+        SizeChanged += MainWindow_MonitorSizeChanged;
+        Closed += MainWindow_PresentationClosed;
+
+        UseLayoutRounding = true;
+        SnapsToDevicePixels = true;
+
         FitWindowToCurrentMonitor();
         AttachPresentationHooks();
     }
@@ -45,6 +66,49 @@ public partial class MainWindow
         OverlayCanvas.LayoutUpdated += OverlayCanvas_PresentationLayoutUpdated;
     }
 
+    private IntPtr PresentationWindowProc(
+        IntPtr hwnd,
+        int message,
+        IntPtr wParam,
+        IntPtr lParam,
+        ref bool handled)
+    {
+        if (message == WmDpiChanged)
+        {
+            // Dejamos que WPF procese el rectángulo sugerido por Windows y recalculamos el
+            // layout después. Marcarlo como tratado impediría el comportamiento Per-Monitor V2.
+            QueueMonitorLayoutRefresh(DispatcherPriority.Render);
+        }
+
+        return IntPtr.Zero;
+    }
+
+    private void MainWindow_DpiChanged(object sender, DpiChangedEventArgs e) =>
+        QueueMonitorLayoutRefresh(DispatcherPriority.Render);
+
+    private void MainWindow_MonitorLocationChanged(object? sender, EventArgs e) =>
+        QueueMonitorLayoutRefresh(DispatcherPriority.Background);
+
+    private void MainWindow_MonitorSizeChanged(object sender, SizeChangedEventArgs e) =>
+        QueueMonitorLayoutRefresh(DispatcherPriority.Background);
+
+    private void QueueMonitorLayoutRefresh(DispatcherPriority priority)
+    {
+        if (_monitorLayoutRefreshPending || Dispatcher.HasShutdownStarted)
+        {
+            return;
+        }
+
+        _monitorLayoutRefreshPending = true;
+        Dispatcher.BeginInvoke(
+            () =>
+            {
+                _monitorLayoutRefreshPending = false;
+                FitWindowToCurrentMonitor();
+            },
+            priority);
+    }
+
     private void FitWindowToCurrentMonitor()
     {
         nint handle = new WindowInteropHelper(this).Handle;
@@ -67,17 +131,88 @@ public partial class MainWindow
         double workWidth = Math.Max(640, bottomRight.X - topLeft.X);
         double workHeight = Math.Max(460, bottomRight.Y - topLeft.Y);
 
-        MinWidth = Math.Min(MinWidth, workWidth);
-        MinHeight = Math.Min(MinHeight, workHeight);
+        MinWidth = Math.Min(PreferredMinimumWidth, workWidth);
+        MinHeight = Math.Min(PreferredMinimumHeight, workHeight);
         MaxWidth = workWidth;
         MaxHeight = workHeight;
-        Width = Math.Min(Width, workWidth);
-        Height = Math.Min(Height, workHeight);
 
-        double maxLeft = topLeft.X + Math.Max(0, workWidth - Width);
-        double maxTop = topLeft.Y + Math.Max(0, workHeight - Height);
-        Left = Math.Clamp(Left, topLeft.X, maxLeft);
-        Top = Math.Clamp(Top, topLeft.Y, maxTop);
+        if (WindowState == WindowState.Normal)
+        {
+            Width = Math.Min(Width, workWidth);
+            Height = Math.Min(Height, workHeight);
+
+            double currentLeft = double.IsFinite(Left) ? Left : topLeft.X;
+            double currentTop = double.IsFinite(Top) ? Top : topLeft.Y;
+            double maxLeft = topLeft.X + Math.Max(0, workWidth - Width);
+            double maxTop = topLeft.Y + Math.Max(0, workHeight - Height);
+            Left = Math.Clamp(currentLeft, topLeft.X, maxLeft);
+            Top = Math.Clamp(currentTop, topLeft.Y, maxTop);
+        }
+
+        ApplyResponsiveWorkspaceColumns();
+
+        if (Content is FrameworkElement root)
+        {
+            root.InvalidateMeasure();
+            root.InvalidateArrange();
+            root.InvalidateVisual();
+        }
+
+        ImageScrollViewer.InvalidateMeasure();
+        ImageStage.InvalidateMeasure();
+        OverlayCanvas.InvalidateMeasure();
+        OverlayCanvas.InvalidateVisual();
+    }
+
+    private void ApplyResponsiveWorkspaceColumns()
+    {
+        double availableWidth = ActualWidth > 0 ? ActualWidth : Width;
+
+        double selectorWidth = availableWidth switch
+        {
+            < 980 => 190,
+            < 1180 => 215,
+            < 1380 => 232,
+            _ => 252
+        };
+
+        if (_pageSelectionColumn is not null)
+        {
+            bool selectorVisible = _pageSelectionPanel?.Visibility == Visibility.Visible;
+            _pageSelectionColumn.Width = selectorVisible
+                ? new GridLength(selectorWidth)
+                : new GridLength(0);
+        }
+
+        if (ImageScrollViewer.Parent is Grid imageViewportGrid
+            && imageViewportGrid.Parent is Grid pageAreaGrid
+            && pageAreaGrid.Parent is Border pageBorder
+            && pageBorder.Parent is Grid contentGrid
+            && contentGrid.ColumnDefinitions.Count >= 2)
+        {
+            double editorWidth = availableWidth switch
+            {
+                < 980 => 285,
+                < 1180 => 315,
+                < 1380 => 350,
+                _ => 390
+            };
+
+            contentGrid.ColumnDefinitions[^1].Width = new GridLength(editorWidth);
+        }
+    }
+
+    private void MainWindow_PresentationClosed(object? sender, EventArgs e)
+    {
+        DpiChanged -= MainWindow_DpiChanged;
+        LocationChanged -= MainWindow_MonitorLocationChanged;
+        SizeChanged -= MainWindow_MonitorSizeChanged;
+
+        if (_presentationHwndSource is not null)
+        {
+            _presentationHwndSource.RemoveHook(PresentationWindowProc);
+            _presentationHwndSource = null;
+        }
     }
 
     private void OverlayCanvas_PresentationLayoutUpdated(object? sender, EventArgs e)
@@ -142,8 +277,6 @@ public partial class MainWindow
             }
         }
     }
-
-    private const uint MonitorDefaultToNearest = 2;
 
     [DllImport("user32.dll")]
     private static extern nint MonitorFromWindow(nint hwnd, uint flags);
