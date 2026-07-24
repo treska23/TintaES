@@ -8,8 +8,6 @@ namespace TintaES.Wpf;
 
 public partial class MainWindow
 {
-    private const int OverlayLoadBatchSize = 3;
-
     private readonly Dictionary<int, ComicPageBitmapCache> _comicPageBitmapCache = [];
     private readonly object _comicPageBitmapCacheLock = new();
     private bool _pageNavigationBusy;
@@ -165,37 +163,24 @@ public partial class MainWindow
         UpdateComicControls();
         SyncDirectPageSelector();
 
-        // La imagen se muestra primero. Las zonas se añaden en lotes, pero cada lote termina
-        // también su Measure/Arrange: no volvemos a dejar cajas sin letras.
+        // La imagen se muestra primero. El renderer ligero permite crear todas las capas en un
+        // único pase; ya no hay una pausa artificial cada tres textos.
         BusyOverlay.Visibility = Visibility.Collapsed;
         BusyProgressBar.IsIndeterminate = false;
         FooterProgressBar.IsIndeterminate = false;
-        FooterProgressBar.Value = 20;
+        FooterProgressBar.Value = 45;
         FooterStatusText.Text = page.Processed && _regions.Count > 0
-            ? $"Mostrando página; preparando {_regions.Count} zonas…"
+            ? $"Mostrando {_regions.Count} textos…"
             : $"Mostrando página {index + 1}…";
         await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Render);
 
-        ComicRegion[] visibleRegions = _regions.Where(region => region.IsEnabled).ToArray();
-        for (int regionIndex = 0; regionIndex < visibleRegions.Length; regionIndex++)
+        foreach (ComicRegion region in _regions.Where(region => region.IsEnabled))
         {
-            AddRegionVisual(visibleRegions[regionIndex]);
-
-            bool endOfBatch = (regionIndex + 1) % OverlayLoadBatchSize == 0;
-            if (endOfBatch || regionIndex == visibleRegions.Length - 1)
-            {
-                FinalizeProgressiveOverlayTextLayout(finalPass: false);
-
-                double fraction = visibleRegions.Length == 0
-                    ? 1
-                    : (regionIndex + 1d) / visibleRegions.Length;
-                FooterProgressBar.Value = 20 + fraction * 75;
-                FooterStatusText.Text = $"Preparando textos {regionIndex + 1}/{visibleRegions.Length}…";
-                await Dispatcher.Yield(DispatcherPriority.Render);
-            }
+            AddRegionVisual(region);
         }
 
         FinalizeProgressiveOverlayTextLayout(finalPass: true);
+        await Dispatcher.Yield(DispatcherPriority.Render);
 
         if (_regions.Count > 0)
         {
