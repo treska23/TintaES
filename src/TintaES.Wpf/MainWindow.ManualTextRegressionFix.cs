@@ -6,9 +6,9 @@ using TintaES.Core;
 namespace TintaES.Wpf;
 
 /// <summary>
-/// Unifica el editor lateral con el modelo manual. La implementación original del slider seguía
-/// escribiendo FontScale (ajuste automático), aunque ComicRegion reserva ManualFontScale para los
-/// cambios hechos por el usuario. También captura la composición anterior antes del primer Enter.
+/// Unifica el editor lateral con el modelo manual. El preview ligero escucha directamente los
+/// cambios de ComicRegion, por lo que escribir o mover el slider no debe reconstruir el overlay
+/// ni despertar los renderizadores tipográficos precisos reservados para la exportación.
 /// </summary>
 public partial class MainWindow
 {
@@ -46,7 +46,7 @@ public partial class MainWindow
 
         _manualTextRegressionFixInstalled = true;
 
-        // Garantiza que los handlers auxiliares existen antes de sustituir los dos que quedaron
+        // Garantiza que los handlers auxiliares existen antes de sustituir los que quedaron
         // conectados al comportamiento antiguo.
         InstallTextLayoutHooks();
 
@@ -54,6 +54,10 @@ public partial class MainWindow
         FontScaleSlider.ValueChanged -= FontScaleSlider_ValueChanged_ManualLineLayout;
         FontScaleSlider.ValueChanged += FontScaleSlider_ValueChanged_FixedManual;
 
+        // El handler XAML original llamaba RebuildOverlay en cada carácter. Lo retiramos junto al
+        // auxiliar anterior y dejamos una única ruta que modifica el modelo; FastComicTextPreview
+        // recibe PropertyChanged y repinta solo la zona afectada.
+        TranslationTextBox.TextChanged -= TranslationTextBox_TextChanged;
         TranslationTextBox.TextChanged -= TranslationTextBox_TextChanged_LineLayout;
         TranslationTextBox.TextChanged += TranslationTextBox_TextChanged_FixedManual;
         TranslationTextBox.GotKeyboardFocus += TranslationTextBox_GotKeyboardFocus_CaptureManualSeed;
@@ -80,12 +84,19 @@ public partial class MainWindow
 
     private void TranslationTextBox_TextChanged_FixedManual(object sender, TextChangedEventArgs e)
     {
-        if (_syncingEditor || _selectedRegion is null || _selectedRegion.Type == "sfx")
+        if (_syncingEditor || _selectedRegion is null)
         {
             return;
         }
 
         ComicRegion region = _selectedRegion;
+        region.Translation = TranslationTextBox.Text;
+
+        if (region.Type == "sfx")
+        {
+            return;
+        }
+
         if (!region.IsManual)
         {
             // GotKeyboardFocus se ejecuta antes de que el TextBox cambie. El fallback solo cubre
@@ -106,10 +117,9 @@ public partial class MainWindow
 
         region.Vertical = false;
         bool cleanupChanged = EnsureManualDialogueCleanup(region);
-        region.NotifyVisualChange();
-        RefreshManualLineVisual(region);
-        QueueFastCanvasTextRefresh(forceLayout: false);
 
+        // No RefreshManualLineVisual, RebuildOverlay ni QueueFastCanvasTextRefresh: la vista rápida
+        // está suscrita a PropertyChanged y WPF agrupa sus InvalidateVisual en el siguiente frame.
         if (cleanupChanged)
         {
             QueueManualCleanupRefresh();
@@ -137,10 +147,6 @@ public partial class MainWindow
         {
             region.ManualFontScale = scale;
             bool cleanupChanged = EnsureManualDialogueCleanup(region);
-            region.NotifyVisualChange();
-            RefreshManualLineVisual(region);
-            QueueFastCanvasTextRefresh(forceLayout: false);
-
             if (cleanupChanged)
             {
                 QueueManualCleanupRefresh();
@@ -149,9 +155,9 @@ public partial class MainWindow
         }
 
         region.FontScale = scale;
-        region.NotifyVisualChange();
-        RebuildOverlay();
-        QueueFastCanvasTextRefresh(forceLayout: false);
+
+        // Cambiar FontScale/ManualFontScale ya provoca PropertyChanged. El renderer ligero repinta
+        // únicamente este texto; no reconstruimos todas las cajas ni activamos el renderer final.
     }
 
     private void RegionListBox_SelectionChanged_FixedManualScale(object sender, SelectionChangedEventArgs e) =>
@@ -189,7 +195,6 @@ public partial class MainWindow
         {
             QueueManualCleanupRefresh();
         }
-        QueueFastCanvasTextRefresh(forceLayout: false);
     }
 
     private void MigrateLegacyManualScale(ComicRegion region)
@@ -218,8 +223,6 @@ public partial class MainWindow
         {
             region.ManualBaseFontSize = 0;
         }
-
-        region.NotifyVisualChange();
     }
 
     private bool EnsureManualDialogueCleanup(ComicRegion region)
