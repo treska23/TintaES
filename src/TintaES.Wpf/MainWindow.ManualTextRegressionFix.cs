@@ -61,6 +61,11 @@ public partial class MainWindow
         TranslationTextBox.TextChanged -= TranslationTextBox_TextChanged_LineLayout;
         TranslationTextBox.TextChanged += TranslationTextBox_TextChanged_FixedManual;
         TranslationTextBox.GotKeyboardFocus += TranslationTextBox_GotKeyboardFocus_CaptureManualSeed;
+
+        // El handler auxiliar antiguo volvía a mostrar ManualComicTextElement al seleccionar una
+        // zona. Ese renderer construye geometrías completas y hacía que el primer movimiento del
+        // slider arrancase ya bloqueado. La selección usa exclusivamente el preview ligero.
+        RegionListBox.SelectionChanged -= RegionListBox_SelectionChanged_LineLayout;
         RegionListBox.SelectionChanged += RegionListBox_SelectionChanged_FixedManualScale;
 
         SynchronizeFixedManualScaleSlider();
@@ -160,8 +165,11 @@ public partial class MainWindow
         // únicamente este texto; no reconstruimos todas las cajas ni activamos el renderer final.
     }
 
-    private void RegionListBox_SelectionChanged_FixedManualScale(object sender, SelectionChangedEventArgs e) =>
+    private void RegionListBox_SelectionChanged_FixedManualScale(object sender, SelectionChangedEventArgs e)
+    {
         SynchronizeFixedManualScaleSlider();
+        QueueFastCanvasTextRefresh(forceLayout: false);
+    }
 
     private void SynchronizeFixedManualScaleSlider()
     {
