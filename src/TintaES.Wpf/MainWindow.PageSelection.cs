@@ -329,7 +329,7 @@ public partial class MainWindow
         _pageSelectionSummary.Text = _comicPages.Count == 0
             ? "No hay páginas cargadas."
             : $"{_selectedComicPageIndices.Count} de {_comicPages.Count} seleccionadas. " +
-              $"La exportación se confirma en lotes seguros de {SafeExportBatchSize}.";
+              "Las páginas se preparan una sola vez y una exportación interrumpida puede reanudarse sin dañar el CBZ anterior.";
     }
 
     private void SetPageSelectionPanelVisible(bool visible)
