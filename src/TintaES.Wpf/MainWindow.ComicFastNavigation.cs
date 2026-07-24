@@ -37,8 +37,11 @@ public partial class MainWindow
         {
             ComicPageBitmapCache cache = await GetComicPageBitmapCacheAsync(index, page);
             await ApplyComicPageAsync(index, page, cache);
+
+            // Una página de 1800 x 2700 puede ocupar decenas de MB por cada bitmap. Antes se
+            // decodificaban además original, fondo y máscara de las dos páginas vecinas. Ese
+            // trabajo seguía ejecutándose después de mostrar la página y provocaba los picones.
             PruneComicPageBitmapCache(index);
-            _ = PreloadComicPageNeighborsAsync(index);
         }
         catch (Exception exception)
         {
@@ -60,6 +63,9 @@ public partial class MainWindow
             UpdateComicControls();
             SyncDirectPageSelector();
             RefreshEditorToolAvailability();
+            RefreshManualMaskAvailability();
+            RefreshPageSaveAvailability();
+            UpdatePsdExportAvailability();
         }
     }
 
@@ -163,8 +169,6 @@ public partial class MainWindow
         UpdateComicControls();
         SyncDirectPageSelector();
 
-        // La imagen se muestra primero. El renderer ligero permite crear todas las capas en un
-        // único pase; ya no hay una pausa artificial cada tres textos.
         BusyOverlay.Visibility = Visibility.Collapsed;
         BusyProgressBar.IsIndeterminate = false;
         FooterProgressBar.IsIndeterminate = false;
@@ -202,45 +206,12 @@ public partial class MainWindow
         SetFooterStatus($"Página {index + 1}/{_comicPages.Count} · {state}", page.Error is null ? "#58A77D" : "#C99A35");
     }
 
-    private async Task PreloadComicPageNeighborsAsync(int centerIndex)
-    {
-        foreach (int index in new[] { centerIndex - 1, centerIndex + 1 })
-        {
-            if (index < 0 || index >= _comicPages.Count)
-            {
-                continue;
-            }
-
-            lock (_comicPageBitmapCacheLock)
-            {
-                if (_comicPageBitmapCache.ContainsKey(index))
-                {
-                    continue;
-                }
-            }
-
-            try
-            {
-                ComicBookPageState page = _comicPages[index];
-                ComicPageBitmapCache cache = await Task.Run(() => LoadComicPageBitmapCache(page));
-                lock (_comicPageBitmapCacheLock)
-                {
-                    _comicPageBitmapCache[index] = cache;
-                }
-            }
-            catch
-            {
-                // La precarga es una optimización. Si falla, la carga normal mostrará el error.
-            }
-        }
-    }
-
     private void PruneComicPageBitmapCache(int centerIndex)
     {
         lock (_comicPageBitmapCacheLock)
         {
             int[] removable = _comicPageBitmapCache.Keys
-                .Where(index => Math.Abs(index - centerIndex) > 1)
+                .Where(index => index != centerIndex)
                 .ToArray();
             foreach (int index in removable)
             {
