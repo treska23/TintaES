@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
 
@@ -19,7 +20,6 @@ public partial class MainWindow
     private bool _initialPageZoomInstalled;
     private string? _lastAutoFitPageIdentity;
     private int _verticalFitRequestVersion;
-    private bool _applyingVerticalFit;
 
     private static bool RegisterInitialPageZoom()
     {
@@ -54,6 +54,7 @@ public partial class MainWindow
         sourceDescriptor?.AddValueChanged(PageImage, PageImage_SourceChanged_AutoVerticalFit);
 
         ZoomSlider.ValueChanged += ZoomSlider_ValueChanged_ExactPercentage;
+        PreviewKeyDown += MainWindow_InitialPageZoomPreviewKeyDown;
         SynchronizeZoomPercentageWithActualScale();
     }
 
@@ -74,9 +75,13 @@ public partial class MainWindow
 
         _lastAutoFitPageIdentity = identity;
         int requestVersion = ++_verticalFitRequestVersion;
+
+        // La carga antigua todavía programa FitImageToViewport con prioridad Loaded. Ejecutamos
+        // después de ella para que el encaje vertical sea el resultado definitivo y no pueda ser
+        // pisado por el zoom heredado o por el antiguo ajuste simultáneo de ancho y alto.
         Dispatcher.BeginInvoke(
-            async () => await FitCurrentPageVerticallyAsync(requestVersion),
-            DispatcherPriority.Loaded);
+            () => _ = FitCurrentPageVerticallyAsync(requestVersion),
+            DispatcherPriority.ContextIdle);
     }
 
     internal Task FitCurrentPageVerticallyAsync() =>
@@ -100,51 +105,56 @@ public partial class MainWindow
             }
         }
 
-        _applyingVerticalFit = true;
-        try
+        // Dos pasadas: la primera puede hacer aparecer la barra horizontal en una página doble;
+        // la segunda usa la altura definitiva que queda sobre esa barra.
+        for (int pass = 0; pass < 2; pass++)
         {
-            // Dos pasadas: la primera puede hacer aparecer la barra horizontal en una página
-            // doble; la segunda usa la altura definitiva que queda sobre esa barra.
-            for (int pass = 0; pass < 2; pass++)
+            if (requestVersion != _verticalFitRequestVersion || _originalBitmap is null)
             {
-                if (requestVersion != _verticalFitRequestVersion || _originalBitmap is null)
-                {
-                    return;
-                }
-
-                double viewportHeight = ImageScrollViewer.ViewportHeight;
-                if (viewportHeight <= 1)
-                {
-                    viewportHeight = Math.Max(
-                        1,
-                        ImageScrollViewer.ActualHeight
-                        - ImageScrollViewer.Padding.Top
-                        - ImageScrollViewer.Padding.Bottom);
-                }
-
-                double targetPercent = viewportHeight / Math.Max(1, _originalBitmap.PixelHeight) * 100;
-                targetPercent = Math.Clamp(targetPercent, ZoomSlider.Minimum, ZoomSlider.Maximum);
-
-                if (Math.Abs(ZoomSlider.Value - targetPercent) > 0.001)
-                {
-                    ZoomSlider.Value = targetPercent;
-                }
-                else
-                {
-                    ApplyExactZoomTransform(targetPercent);
-                }
-
-                SynchronizeZoomPercentageWithActualScale();
-                await Dispatcher.Yield(DispatcherPriority.Render);
+                return;
             }
 
-            ImageScrollViewer.ScrollToTop();
+            double viewportHeight = ImageScrollViewer.ViewportHeight;
+            if (viewportHeight <= 1)
+            {
+                viewportHeight = Math.Max(
+                    1,
+                    ImageScrollViewer.ActualHeight
+                    - ImageScrollViewer.Padding.Top
+                    - ImageScrollViewer.Padding.Bottom);
+            }
+
+            double targetPercent = viewportHeight / Math.Max(1, _originalBitmap.PixelHeight) * 100;
+            targetPercent = Math.Clamp(targetPercent, ZoomSlider.Minimum, ZoomSlider.Maximum);
+
+            if (Math.Abs(ZoomSlider.Value - targetPercent) > 0.001)
+            {
+                ZoomSlider.Value = targetPercent;
+            }
+            else
+            {
+                ApplyExactZoomTransform(targetPercent);
+            }
+
             SynchronizeZoomPercentageWithActualScale();
+            await Dispatcher.Yield(DispatcherPriority.Render);
         }
-        finally
+
+        ImageScrollViewer.ScrollToTop();
+        SynchronizeZoomPercentageWithActualScale();
+    }
+
+    private void MainWindow_InitialPageZoomPreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (!Keyboard.Modifiers.HasFlag(ModifierKeys.Control)
+            || e.Key is not (Key.D0 or Key.NumPad0))
         {
-            _applyingVerticalFit = false;
+            return;
         }
+
+        // Interceptamos antes del atajo antiguo, que ajustaba simultáneamente por ancho y alto.
+        e.Handled = true;
+        _ = FitCurrentPageVerticallyAsync();
     }
 
     private void ZoomSlider_ValueChanged_ExactPercentage(
