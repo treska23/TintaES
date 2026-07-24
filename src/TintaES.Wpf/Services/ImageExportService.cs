@@ -39,7 +39,7 @@ public sealed class ImageExportService
             {
                 Width = elementWidth,
                 Height = elementHeight,
-                ClipToBounds = true,
+                ClipToBounds = false,
                 RenderTransformOrigin = new Point(0.5, 0.5),
                 RenderTransform = new RotateTransform(region.Rotation)
             };
@@ -47,7 +47,7 @@ public sealed class ImageExportService
             FrameworkElement text;
             if (region.Type != "sfx" && region.IsManual)
             {
-                text = new ManualComicTextElement
+                text = new TextFrameComicTextElement
                 {
                     Region = region,
                     PageWidth = width,
