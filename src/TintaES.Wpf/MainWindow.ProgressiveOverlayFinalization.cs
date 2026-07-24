@@ -1,3 +1,4 @@
+using System.Collections.Specialized;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -9,15 +10,15 @@ using TintaES.Wpf.Controls;
 namespace TintaES.Wpf;
 
 /// <summary>
-/// Mantiene en el lienzo un renderer ligero. ComicTextElement y ManualComicTextElement siguen
-/// presentes para reutilizar la edición existente, pero permanecen colapsados: la composición
-/// tipográfica precisa se reserva para las exportaciones.
+/// Mantiene en el lienzo un renderer ligero. La preparación se ejecuta cuando cambia la lista
+/// de zonas o al cargar una página; nunca en cada LayoutUpdated de WPF.
 /// </summary>
 public partial class MainWindow
 {
     private static readonly bool FastCanvasTextRegistered = RegisterFastCanvasText();
     private bool _fastCanvasTextInstalled;
     private bool _applyingFastCanvasText;
+    private bool _fastCanvasTextRefreshPending;
 
     private static bool RegisterFastCanvasText()
     {
@@ -47,13 +48,28 @@ public partial class MainWindow
         }
 
         _fastCanvasTextInstalled = true;
-        OverlayCanvas.LayoutUpdated += OverlayCanvas_FastCanvasTextLayoutUpdated;
-        EnsureFastCanvasTextPreviews(forceLayout: false);
+        _regions.CollectionChanged += Regions_FastCanvasTextCollectionChanged;
+        QueueFastCanvasTextRefresh(forceLayout: false);
     }
 
-    private void OverlayCanvas_FastCanvasTextLayoutUpdated(object? sender, EventArgs e)
+    private void Regions_FastCanvasTextCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e) =>
+        QueueFastCanvasTextRefresh(forceLayout: true);
+
+    private void QueueFastCanvasTextRefresh(bool forceLayout)
     {
-        EnsureFastCanvasTextPreviews(forceLayout: false);
+        if (_fastCanvasTextRefreshPending || Dispatcher.HasShutdownStarted)
+        {
+            return;
+        }
+
+        _fastCanvasTextRefreshPending = true;
+        Dispatcher.BeginInvoke(
+            () =>
+            {
+                _fastCanvasTextRefreshPending = false;
+                EnsureFastCanvasTextPreviews(forceLayout);
+            },
+            DispatcherPriority.Render);
     }
 
     private void FinalizeProgressiveOverlayTextLayout(bool finalPass)
@@ -67,8 +83,6 @@ public partial class MainWindow
         OverlayCanvas.Width = _originalBitmap.PixelWidth;
         OverlayCanvas.Height = _originalBitmap.PixelHeight;
 
-        // Conservamos la preparación de los thumbs y la selección, pero sustituimos los dos
-        // renderizadores costosos antes del siguiente ciclo de pintura.
         OverlayCanvas_PresentationLayoutUpdated(OverlayCanvas, EventArgs.Empty);
         EnsureFastCanvasTextPreviews(forceLayout: true);
 
@@ -78,8 +92,6 @@ public partial class MainWindow
 
         if (finalPass)
         {
-            // Una sola actualización final. Los renderizadores precisos están Collapsed y por
-            // tanto no participan en Measure ni ejecutan su algoritmo de ajuste tipográfico.
             OverlayCanvas.Measure(new Size(_originalBitmap.PixelWidth, _originalBitmap.PixelHeight));
             OverlayCanvas.Arrange(new Rect(0, 0, _originalBitmap.PixelWidth, _originalBitmap.PixelHeight));
             OverlayCanvas.UpdateLayout();
