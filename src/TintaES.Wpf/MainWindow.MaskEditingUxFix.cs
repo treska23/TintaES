@@ -1,23 +1,20 @@
-using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
-using TintaES.Core;
 
 namespace TintaES.Wpf;
 
 /// <summary>
-/// Corrige el flujo visual de las herramientas de máscara. Pincel y Borrador trabajan sobre la
-/// máscara visible, no sobre el resultado traducido, y el control inferior se identifica como
-/// diámetro del pincel.
+/// El pincel y el borrador trabajan sobre la página visible. La máscara en blanco y negro sigue
+/// disponible como vista de diagnóstico, pero no se fuerza durante la edición porque el usuario
+/// necesita ver exactamente qué texto original está borrando o recuperando.
 /// </summary>
 public partial class MainWindow
 {
     private static readonly bool MaskEditingUxFixRegistered = RegisterMaskEditingUxFix();
     private bool _maskEditingUxFixInstalled;
-    private bool _maskViewCorrectionPending;
 
     private static bool RegisterMaskEditingUxFix()
     {
@@ -57,7 +54,7 @@ public partial class MainWindow
         ManualMaskTool requested = ReferenceEquals(button, window._maskPaintButton)
             ? ManualMaskTool.Paint
             : ManualMaskTool.Erase;
-        window.ToggleManualMaskToolInMaskView(requested);
+        window.ToggleManualMaskToolOverPage(requested);
         e.Handled = true;
     }
 
@@ -71,11 +68,6 @@ public partial class MainWindow
 
         _maskEditingUxFixInstalled = true;
         ClarifyMaskBrushSizeControl();
-
-        DependencyPropertyDescriptor? sourceDescriptor = DependencyPropertyDescriptor.FromProperty(
-            Image.SourceProperty,
-            typeof(Image));
-        sourceDescriptor?.AddValueChanged(PageImage, PageImage_SourceChanged_KeepMaskView);
     }
 
     private void ClarifyMaskBrushSizeControl()
@@ -116,7 +108,7 @@ public partial class MainWindow
         }
     }
 
-    private void ToggleManualMaskToolInMaskView(ManualMaskTool requested)
+    private void ToggleManualMaskToolOverPage(ManualMaskTool requested)
     {
         if (_maskEditorBusy || _originalBitmap is null)
         {
@@ -125,13 +117,13 @@ public partial class MainWindow
 
         if (_manualMaskTool == requested)
         {
-            LeaveManualMaskView();
+            LeaveManualMaskEditingOverPage();
             return;
         }
 
         if (requested == ManualMaskTool.Erase && _maskBitmap is null)
         {
-            SetFooterStatus("Todavía no hay máscara que borrar. Usa primero el Pincel.", "#C99A35");
+            SetFooterStatus("Todavía no hay nada que recuperar. Usa primero el Pincel.", "#C99A35");
             return;
         }
 
@@ -145,7 +137,10 @@ public partial class MainWindow
         _maskBitmap ??= CreateEmptyEditableMask();
         MaskPreviewButton.IsEnabled = true;
 
-        ShowPreviewMode("mask");
+        // Se muestra el fondo que se está corrigiendo, no la máscara binaria. Las traducciones se
+        // ocultan para que el texto inglés y el resultado del pincel queden totalmente visibles.
+        _previewMode = "result";
+        PageImage.Source = _cleanedBitmap ?? _cleanedBaseBitmap ?? _originalBitmap;
         OverlayCanvas.Visibility = Visibility.Visible;
         SetMaskEditingRegionLayersVisible(false);
         OverlayCanvas.Cursor = System.Windows.Input.Cursors.Cross;
@@ -153,12 +148,12 @@ public partial class MainWindow
 
         SetFooterStatus(
             requested == ManualMaskTool.Paint
-                ? $"Pincel activo · tamaño {Math.Round(CurrentMaskBrushSize)} px. Arrastra para añadir máscara."
-                : $"Borrador activo · tamaño {Math.Round(CurrentMaskBrushSize)} px. Arrastra para recuperar el original.",
+                ? $"Pincel activo · {Math.Round(CurrentMaskBrushSize)} px. Pinta directamente sobre el texto original que quieras borrar."
+                : $"Borrador activo · {Math.Round(CurrentMaskBrushSize)} px. Pinta para recuperar la imagen original.",
             "#4CB2BB");
     }
 
-    private void LeaveManualMaskView()
+    private void LeaveManualMaskEditingOverPage()
     {
         CancelManualMaskStroke();
         _manualMaskTool = ManualMaskTool.None;
@@ -169,42 +164,14 @@ public partial class MainWindow
         ShowPreviewMode("result");
         UpdateManualMaskButtonState();
         QueueFastCanvasTextRefresh(forceLayout: false);
-        SetFooterStatus("Edición de máscara finalizada.", "#6C747A");
-    }
-
-    private void PageImage_SourceChanged_KeepMaskView(object? sender, EventArgs e)
-    {
-        if (_manualMaskTool == ManualMaskTool.None
-            || _maskBitmap is null
-            || ReferenceEquals(PageImage.Source, _maskBitmap)
-            || _maskViewCorrectionPending)
-        {
-            return;
-        }
-
-        _maskViewCorrectionPending = true;
-        Dispatcher.BeginInvoke(
-            () =>
-            {
-                _maskViewCorrectionPending = false;
-                if (_manualMaskTool == ManualMaskTool.None || _maskBitmap is null)
-                {
-                    return;
-                }
-
-                _previewMode = "mask";
-                PageImage.Source = _maskBitmap;
-                OverlayCanvas.Visibility = Visibility.Visible;
-                SetMaskEditingRegionLayersVisible(false);
-            },
-            DispatcherPriority.Render);
+        SetFooterStatus("Edición del fondo finalizada.", "#6C747A");
     }
 
     private void SetMaskEditingRegionLayersVisible(bool visible)
     {
         foreach (Grid layer in OverlayCanvas.Children.OfType<Grid>())
         {
-            if (layer.Tag is ComicRegion)
+            if (layer.Tag is TintaES.Core.ComicRegion)
             {
                 layer.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
             }
