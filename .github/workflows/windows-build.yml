@@ -30,7 +30,12 @@ jobs:
         run: dotnet restore src/TintaES.Wpf/TintaES.Wpf.csproj
 
       - name: Build WPF project
-        run: dotnet build src/TintaES.Wpf/TintaES.Wpf.csproj --configuration Release --no-restore
+        shell: pwsh
+        run: |
+          dotnet build src/TintaES.Wpf/TintaES.Wpf.csproj --configuration Release --no-restore *> wpf-build.log
+          $exitCode = $LASTEXITCODE
+          Get-Content wpf-build.log | Select-String -Pattern "error (CS|MC|XDG|NETSDK)"
+          if ($exitCode -ne 0) { exit $exitCode }
 
       - name: Build core tests
         run: dotnet build tests/TintaES.Core.Tests/TintaES.Core.Tests.csproj --configuration Release
