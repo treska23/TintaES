@@ -10,7 +10,7 @@ namespace TintaES.Wpf;
 /// </summary>
 public partial class MainWindow
 {
-    private const string CurrentUiBuildStamp = "UI 2026.07.25-r2";
+    private const string CurrentUiBuildStamp = "UI 2026.07.25-r3";
     private const int CurrentUiBootstrapMaxAttempts = 3;
 
     private static readonly bool CurrentUiBootstrapRegistered = RegisterCurrentUiBootstrap();
@@ -83,6 +83,8 @@ public partial class MainWindow
         RunCurrentUiInstaller(TryInstallEditorMenuCommands, "menú de edición", failures);
         RunCurrentUiInstaller(InstallContextualBrushOptions, "opciones del pincel", failures);
         RunCurrentUiInstaller(TryInstallFloatingEditorPalette, "paleta flotante", failures);
+        RunCurrentUiInstaller(InstallIconOnlyFloatingPalette, "iconos de la paleta", failures);
+        RunCurrentUiInstaller(InstallResponsiveTopBars, "barras superiores adaptables", failures);
         RunCurrentUiInstaller(UpdateClassicMenuAvailability, "estado del menú", failures);
 
         if (failures.Count == 0)
