@@ -1,4 +1,3 @@
-using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -7,18 +6,15 @@ using System.Windows.Threading;
 namespace TintaES.Wpf;
 
 /// <summary>
-/// La paleta sobre el lienzo nunca muestra rótulos. Algunos manejadores antiguos todavía cambian
-/// Content a "Pincel" o "Borrador" al activar una herramienta; este módulo sustituye inmediatamente
-/// esos valores por símbolos de interfaz nativos y mantiene el estado activo únicamente en el borde.
+/// La paleta sobre el lienzo muestra exclusivamente iconos. Los botones de máscara conservan
+/// manejadores antiguos que modifican Content durante LayoutUpdated; por eso cada botón recibe una
+/// DataTemplate fija que ignora por completo ese contenido y dibuja siempre el glifo correspondiente.
 /// </summary>
 public partial class MainWindow
 {
     private static readonly bool IconOnlyFloatingPaletteRegistered = RegisterIconOnlyFloatingPalette();
-    private static readonly DependencyPropertyDescriptor? FloatingToolContentDescriptor =
-        DependencyPropertyDescriptor.FromProperty(ContentControl.ContentProperty, typeof(Button));
 
     private bool _iconOnlyFloatingPaletteInstalled;
-    private bool _applyingIconOnlyFloatingPalette;
 
     private static bool RegisterIconOnlyFloatingPalette()
     {
@@ -52,78 +48,30 @@ public partial class MainWindow
             return;
         }
 
-        if (!_iconOnlyFloatingPaletteInstalled)
-        {
-            _iconOnlyFloatingPaletteInstalled = true;
-            if (FloatingToolContentDescriptor is not null)
-            {
-                foreach (Button button in new[]
-                {
-                    _selectCanvasToolButton,
-                    AddRegionButton,
-                    _maskPaintButton,
-                    _maskEraseButton
-                })
-                {
-                    FloatingToolContentDescriptor.AddValueChanged(
-                        button,
-                        FloatingCanvasToolContentChanged);
-                }
-            }
-        }
+        SetIconOnlyCanvasButton(
+            _selectCanvasToolButton,
+            "↖",
+            "Seleccionar y mover textos (Esc)",
+            !_drawingRegion && _manualMaskTool == ManualMaskTool.None);
+        SetIconOnlyCanvasButton(
+            AddRegionButton,
+            "▭",
+            _drawingRegion
+                ? "Dibujar zona activo · pulsa de nuevo o Esc para cancelar"
+                : "Dibujar una zona de texto",
+            _drawingRegion);
+        SetIconOnlyCanvasButton(
+            _maskPaintButton,
+            "✎",
+            "Pincel: borrar el texto original",
+            _manualMaskTool == ManualMaskTool.Paint);
+        SetIconOnlyCanvasButton(
+            _maskEraseButton,
+            "⌫",
+            "Borrador: recuperar la imagen original",
+            _manualMaskTool == ManualMaskTool.Erase);
 
-        ApplyIconOnlyFloatingPalette();
-    }
-
-    private void FloatingCanvasToolContentChanged(object? sender, EventArgs e)
-    {
-        if (!_applyingIconOnlyFloatingPalette)
-        {
-            Dispatcher.BeginInvoke(ApplyIconOnlyFloatingPalette, DispatcherPriority.Input);
-        }
-    }
-
-    private void ApplyIconOnlyFloatingPalette()
-    {
-        if (!_iconOnlyFloatingPaletteInstalled
-            || _applyingIconOnlyFloatingPalette
-            || _selectCanvasToolButton is null
-            || _maskPaintButton is null
-            || _maskEraseButton is null)
-        {
-            return;
-        }
-
-        _applyingIconOnlyFloatingPalette = true;
-        try
-        {
-            SetIconOnlyCanvasButton(
-                _selectCanvasToolButton,
-                "↖",
-                "Seleccionar y mover textos (Esc)",
-                !_drawingRegion && _manualMaskTool == ManualMaskTool.None);
-            SetIconOnlyCanvasButton(
-                AddRegionButton,
-                "▭",
-                _drawingRegion
-                    ? "Dibujar zona activo · pulsa de nuevo o Esc para cancelar"
-                    : "Dibujar una zona de texto",
-                _drawingRegion);
-            SetIconOnlyCanvasButton(
-                _maskPaintButton,
-                "✎",
-                "Pincel: borrar el texto original",
-                _manualMaskTool == ManualMaskTool.Paint);
-            SetIconOnlyCanvasButton(
-                _maskEraseButton,
-                "⌫",
-                "Borrador: recuperar la imagen original",
-                _manualMaskTool == ManualMaskTool.Erase);
-        }
-        finally
-        {
-            _applyingIconOnlyFloatingPalette = false;
-        }
+        _iconOnlyFloatingPaletteInstalled = true;
     }
 
     private void SetIconOnlyCanvasButton(
@@ -132,18 +80,10 @@ public partial class MainWindow
         string toolTip,
         bool active)
     {
-        button.Content = new TextBlock
-        {
-            Text = glyph,
-            FontFamily = new FontFamily("Segoe UI Symbol"),
-            FontSize = glyph == "✎" ? 19 : 18,
-            FontWeight = FontWeights.SemiBold,
-            Foreground = FindResource("InkBrush") as Brush ?? Brushes.White,
-            HorizontalAlignment = HorizontalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Center,
-            TextAlignment = TextAlignment.Center,
-            IsHitTestVisible = false
-        };
+        // Content puede seguir cambiando internamente a "Pincel" o "Borrador". La plantilla no
+        // enlaza ese valor, así que esos textos nunca vuelven a dibujarse ni fuerzan otro refresco.
+        button.ContentTemplate = CreateFixedGlyphTemplate(glyph);
+        button.Content = string.Empty;
         button.ToolTip = toolTip;
         button.Width = 34;
         button.Height = 32;
@@ -154,5 +94,24 @@ public partial class MainWindow
         button.BorderBrush = active
             ? FindResource("AccentBrush") as Brush
             : FindResource("LineBrush") as Brush;
+    }
+
+    private DataTemplate CreateFixedGlyphTemplate(string glyph)
+    {
+        var text = new FrameworkElementFactory(typeof(TextBlock));
+        text.SetValue(TextBlock.TextProperty, glyph);
+        text.SetValue(TextBlock.FontFamilyProperty, new FontFamily("Segoe UI Symbol"));
+        text.SetValue(TextBlock.FontSizeProperty, glyph == "✎" ? 19d : 18d);
+        text.SetValue(TextBlock.FontWeightProperty, FontWeights.SemiBold);
+        text.SetValue(TextBlock.ForegroundProperty, FindResource("InkBrush") as Brush ?? Brushes.White);
+        text.SetValue(TextBlock.HorizontalAlignmentProperty, HorizontalAlignment.Center);
+        text.SetValue(TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center);
+        text.SetValue(TextBlock.TextAlignmentProperty, TextAlignment.Center);
+        text.SetValue(TextBlock.IsHitTestVisibleProperty, false);
+
+        return new DataTemplate
+        {
+            VisualTree = text
+        };
     }
 }
