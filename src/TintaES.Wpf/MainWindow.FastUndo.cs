@@ -14,11 +14,6 @@ public partial class MainWindow
 {
     private static readonly bool FastUndoRegistered = RegisterFastUndo();
 
-    // Se conservan para compatibilidad con la capa de respuesta instantánea. El historial ya no
-    // arranca ninguna compresión automática.
-    private bool _fastUndoSaveLoopRunning = true;
-    private EditorUndoSaveRequest? _pendingEditorUndoSave;
-
     private static bool RegisterFastUndo()
     {
         EventManager.RegisterClassHandler(
@@ -197,8 +192,6 @@ public partial class MainWindow
             }
 
             // No se comprime ni se escribe nada aquí. Guardar página es el único punto de escritura.
-            _pendingEditorUndoSave = null;
-            _fastUndoSaveLoopRunning = true;
         }
         finally
         {
@@ -321,10 +314,4 @@ public partial class MainWindow
         && left.Alignment == right.Alignment
         && left.BackgroundColor == right.BackgroundColor
         && left.Shadow == right.Shadow;
-
-    private sealed record EditorUndoSaveRequest(
-        ComicBookPageState Page,
-        System.Windows.Media.Imaging.BitmapSource Cleaned,
-        System.Windows.Media.Imaging.BitmapSource? Mask,
-        int PageIndex);
 }
