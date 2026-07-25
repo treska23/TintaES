@@ -10,7 +10,7 @@ namespace TintaES.Wpf;
 /// </summary>
 public partial class MainWindow
 {
-    private const string CurrentUiBuildStamp = "UI 2026.07.25-r5";
+    private const string CurrentUiBuildStamp = "UI 2026.07.25-r6";
     private const int CurrentUiBootstrapMaxAttempts = 3;
 
     private static readonly bool CurrentUiBootstrapRegistered = RegisterCurrentUiBootstrap();
@@ -75,6 +75,7 @@ public partial class MainWindow
         RunCurrentUiInstaller(InstallPageSelectionPanel, "selector de páginas", failures);
         RunCurrentUiInstaller(InstallEditorTools, "herramientas de edición", failures);
         RunCurrentUiInstaller(InstallManualMaskEditing, "edición de máscara", failures);
+        RunCurrentUiInstaller(InstallSimpleWhiteMaskPainting, "pincel blanco simple", failures);
         RunCurrentUiInstaller(InstallPageSaveAndShortcuts, "guardado de página", failures);
         RunCurrentUiInstaller(InstallClassicMenu, "menú superior", failures);
         RunCurrentUiInstaller(InstallAddImagePagesCommand, "agregar páginas", failures);
