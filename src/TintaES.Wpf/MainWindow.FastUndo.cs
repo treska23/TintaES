@@ -2,19 +2,21 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
-using System.Windows.Media.Imaging;
 using TintaES.Core;
 
 namespace TintaES.Wpf;
 
 /// <summary>
-/// Deshacer y rehacer primero restauran el estado visible en memoria. La compresión de los PNG se
-/// serializa después en segundo plano, de modo que el botón nunca parece quedarse sin responder.
+/// Deshacer y rehacer restauran primero el estado visible en memoria. Las capas de texto que no han
+/// cambiado se conservan y no se vuelve a generar el PNG hasta que el usuario pulsa Guardar.
 /// </summary>
 public partial class MainWindow
 {
     private static readonly bool FastUndoRegistered = RegisterFastUndo();
-    private bool _fastUndoSaveLoopRunning;
+
+    // Se conservan para compatibilidad con la capa de respuesta instantánea. El historial ya no
+    // arranca ninguna compresión automática.
+    private bool _fastUndoSaveLoopRunning = true;
     private EditorUndoSaveRequest? _pendingEditorUndoSave;
 
     private static bool RegisterFastUndo()
@@ -96,7 +98,7 @@ public partial class MainWindow
         history.Redo.Push(CaptureEditorSnapshot());
         EditorSnapshot target = history.Undo.Pop();
         ApplyEditorSnapshotImmediately(target);
-        SetFooterStatus("Cambio deshecho. Guardando la página en segundo plano…", "#4CB2BB");
+        SetFooterStatus("Cambio deshecho. Guarda la página cuando termines.", "#4CB2BB");
     }
 
     private void FastRedoEditorChange()
@@ -125,7 +127,7 @@ public partial class MainWindow
         history.Undo.Push(CaptureEditorSnapshot());
         EditorSnapshot target = history.Redo.Pop();
         ApplyEditorSnapshotImmediately(target);
-        SetFooterStatus("Cambio rehecho. Guardando la página en segundo plano…", "#4CB2BB");
+        SetFooterStatus("Cambio rehecho. Guarda la página cuando termines.", "#4CB2BB");
     }
 
     private void ApplyEditorSnapshotImmediately(EditorSnapshot snapshot)
@@ -140,20 +142,16 @@ public partial class MainWindow
         _applyingEditorSnapshot = true;
         try
         {
-            bool regionsChanged = !FastUndoRegionsEqual(snapshot.Regions, _regions);
-            if (regionsChanged)
+            bool structureChanged = !FastUndoStructureMatches(snapshot.Regions, _regions);
+            if (structureChanged)
             {
-                foreach (ComicRegion region in _regions)
-                {
-                    region.PropertyChanged -= Region_PropertyChanged;
-                }
-                _regions.Clear();
-                foreach (ComicRegion stored in snapshot.Regions)
-                {
-                    ComicRegion region = CloneEditorRegion(stored);
-                    region.PropertyChanged += Region_PropertyChanged;
-                    _regions.Add(region);
-                }
+                ReplaceAllUndoRegions(snapshot.Regions);
+                RebuildOverlay();
+                UpdateRegionCount();
+            }
+            else
+            {
+                ReplaceOnlyChangedUndoRegions(snapshot.Regions);
             }
 
             _cleanedBaseBitmap = snapshot.CleanedBaseBitmap ?? _originalBitmap;
@@ -187,29 +185,20 @@ public partial class MainWindow
             CleanPreviewButton.IsEnabled = snapshot.Processed;
             ResultPreviewButton.IsEnabled = snapshot.Processed;
 
-            if (regionsChanged)
-            {
-                RebuildOverlay();
-                UpdateRegionCount();
-            }
-            else
-            {
-                QueueFastCanvasTextRefresh(forceLayout: false);
-            }
-
             RegionListBox.SelectedItem = _selectedRegion;
             ShowRegionEditor(_selectedRegion);
+            QueueFastCanvasTextRefresh(forceLayout: false);
+            SyncSelectedTextFrameChrome();
+
             if (_manualMaskTool != ManualMaskTool.None)
             {
                 OverlayCanvas.Visibility = Visibility.Visible;
                 SetMaskEditingRegionLayersVisible(false);
             }
 
-            QueueEditorUndoSnapshotSave(
-                page,
-                _cleanedBaseBitmap ?? _originalBitmap,
-                _maskBitmap,
-                _comicPageIndex);
+            // No se comprime ni se escribe nada aquí. Guardar página es el único punto de escritura.
+            _pendingEditorUndoSave = null;
+            _fastUndoSaveLoopRunning = true;
         }
         finally
         {
@@ -220,53 +209,61 @@ public partial class MainWindow
         }
     }
 
-    private void QueueEditorUndoSnapshotSave(
-        ComicBookPageState page,
-        BitmapSource cleaned,
-        BitmapSource? mask,
-        int pageIndex)
+    private void ReplaceAllUndoRegions(IReadOnlyList<ComicRegion> storedRegions)
     {
-        _pendingEditorUndoSave = new EditorUndoSaveRequest(page, cleaned, mask, pageIndex);
-        if (!_fastUndoSaveLoopRunning)
+        foreach (ComicRegion region in _regions)
         {
-            _ = RunEditorUndoSaveLoopAsync();
+            region.PropertyChanged -= Region_PropertyChanged;
+        }
+        _regions.Clear();
+        foreach (ComicRegion stored in storedRegions)
+        {
+            ComicRegion region = CloneEditorRegion(stored);
+            region.PropertyChanged += Region_PropertyChanged;
+            _regions.Add(region);
         }
     }
 
-    private async Task RunEditorUndoSaveLoopAsync()
+    private void ReplaceOnlyChangedUndoRegions(IReadOnlyList<ComicRegion> storedRegions)
     {
-        _fastUndoSaveLoopRunning = true;
-        try
+        bool anyChanged = false;
+        for (int index = 0; index < storedRegions.Count; index++)
         {
-            while (_pendingEditorUndoSave is EditorUndoSaveRequest request)
+            ComicRegion current = _regions[index];
+            ComicRegion stored = storedRegions[index];
+            if (FastUndoRegionEqual(stored, current))
             {
-                _pendingEditorUndoSave = null;
-                try
-                {
-                    await SaveFastDeletionBitmapsAsync(request.Page, request.Cleaned, request.Mask);
-                }
-                catch (Exception exception)
-                {
-                    if (request.PageIndex == _comicPageIndex)
-                    {
-                        SetFooterStatus($"El cambio está aplicado, pero no se pudo guardar: {exception.Message}", "#EE594B");
-                    }
-                }
+                continue;
             }
 
-            SetFooterStatus("Cambio aplicado y guardado.", "#58A77D");
-        }
-        finally
-        {
-            _fastUndoSaveLoopRunning = false;
-            if (_pendingEditorUndoSave is not null)
+            anyChanged = true;
+            current.PropertyChanged -= Region_PropertyChanged;
+            ComicRegion replacement = CloneEditorRegion(stored);
+            replacement.PropertyChanged += Region_PropertyChanged;
+            _regions[index] = replacement;
+
+            Grid[] oldLayers = OverlayCanvas.Children
+                .OfType<Grid>()
+                .Where(layer => layer.Tag is ComicRegion tagged && tagged.Id == current.Id)
+                .ToArray();
+            foreach (Grid layer in oldLayers)
             {
-                _ = RunEditorUndoSaveLoopAsync();
+                OverlayCanvas.Children.Remove(layer);
             }
+            if (replacement.IsEnabled)
+            {
+                AddRegionVisual(replacement);
+            }
+        }
+
+        if (anyChanged)
+        {
+            RegionListBox.Items.Refresh();
+            UpdateRegionCount();
         }
     }
 
-    private static bool FastUndoRegionsEqual(
+    private static bool FastUndoStructureMatches(
         IReadOnlyList<ComicRegion> stored,
         IReadOnlyCollection<ComicRegion> current)
     {
@@ -278,34 +275,35 @@ public partial class MainWindow
         ComicRegion[] currentArray = current.ToArray();
         for (int index = 0; index < stored.Count; index++)
         {
-            ComicRegion left = stored[index];
-            ComicRegion right = currentArray[index];
-            if (left.Id != right.Id
-                || left.Order != right.Order
-                || left.Original != right.Original
-                || left.Translation != right.Translation
-                || left.Type != right.Type
-                || left.IsEnabled != right.IsEnabled
-                || left.CleanupMode != right.CleanupMode
-                || left.TextBox != right.TextBox
-                || left.RenderBox != right.RenderBox
-                || left.Rotation != right.Rotation
-                || left.Vertical != right.Vertical
-                || left.FontScale != right.FontScale
-                || left.ManualFontScale != right.ManualFontScale
-                || left.TextOffsetX != right.TextOffsetX
-                || left.TextOffsetY != right.TextOffsetY
-                || left.IsManual != right.IsManual
-                || left.ManualLayoutSeedText != right.ManualLayoutSeedText
-                || left.ManualBaseFontSize != right.ManualBaseFontSize
-                || !left.SafePolygon.SequenceEqual(right.SafePolygon)
-                || !FastUndoStylesEqual(left.Style, right.Style))
+            if (stored[index].Id != currentArray[index].Id)
             {
                 return false;
             }
         }
         return true;
     }
+
+    private static bool FastUndoRegionEqual(ComicRegion left, ComicRegion right) =>
+        left.Id == right.Id
+        && left.Order == right.Order
+        && left.Original == right.Original
+        && left.Translation == right.Translation
+        && left.Type == right.Type
+        && left.IsEnabled == right.IsEnabled
+        && left.CleanupMode == right.CleanupMode
+        && left.TextBox == right.TextBox
+        && left.RenderBox == right.RenderBox
+        && left.Rotation == right.Rotation
+        && left.Vertical == right.Vertical
+        && left.FontScale == right.FontScale
+        && left.ManualFontScale == right.ManualFontScale
+        && left.TextOffsetX == right.TextOffsetX
+        && left.TextOffsetY == right.TextOffsetY
+        && left.IsManual == right.IsManual
+        && left.ManualLayoutSeedText == right.ManualLayoutSeedText
+        && left.ManualBaseFontSize == right.ManualBaseFontSize
+        && left.SafePolygon.SequenceEqual(right.SafePolygon)
+        && FastUndoStylesEqual(left.Style, right.Style);
 
     private static bool FastUndoStylesEqual(ComicTextStyle left, ComicTextStyle right) =>
         left.FontCategory == right.FontCategory
@@ -326,7 +324,7 @@ public partial class MainWindow
 
     private sealed record EditorUndoSaveRequest(
         ComicBookPageState Page,
-        BitmapSource Cleaned,
-        BitmapSource? Mask,
+        System.Windows.Media.Imaging.BitmapSource Cleaned,
+        System.Windows.Media.Imaging.BitmapSource? Mask,
         int PageIndex);
 }
