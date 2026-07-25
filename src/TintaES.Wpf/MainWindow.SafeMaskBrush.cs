@@ -51,7 +51,7 @@ public partial class MainWindow
         Point[] points = window._maskStrokePoints.ToArray();
         ManualMaskTool tool = window._manualMaskTool;
         double brushSize = window.CurrentMaskBrushSize;
-        window._ = window.ApplySafeManualMaskStrokeAsync(points, tool, brushSize);
+        _ = window.ApplySafeManualMaskStrokeAsync(points, tool, brushSize);
     }
 
     private async Task ApplySafeManualMaskStrokeAsync(
