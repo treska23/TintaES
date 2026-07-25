@@ -1,0 +1,36 @@
+name: Windows build
+
+on:
+  push:
+    branches:
+      - main
+      - agent/preserve-original-lettering
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restore WPF project
+        run: dotnet restore src/TintaES.Wpf/TintaES.Wpf.csproj
+
+      - name: Build WPF project
+        run: dotnet build src/TintaES.Wpf/TintaES.Wpf.csproj --configuration Release --no-restore
+
+      - name: Build core tests
+        run: dotnet build tests/TintaES.Core.Tests/TintaES.Core.Tests.csproj --configuration Release
