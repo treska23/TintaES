@@ -29,12 +29,6 @@ public partial class MainWindow
         return true;
     }
 
-    protected override void OnInitialized(EventArgs e)
-    {
-        base.OnInitialized(e);
-        QueueCurrentUiBootstrap(DispatcherPriority.Loaded);
-    }
-
     private static void MainWindow_CurrentUiBootstrapClassLoaded(object sender, RoutedEventArgs e)
     {
         if (sender is MainWindow window)
