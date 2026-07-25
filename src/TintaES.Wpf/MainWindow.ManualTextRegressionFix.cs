@@ -89,7 +89,7 @@ public partial class MainWindow
         // Esta operación se ejecuta una sola vez al empezar el gesto, nunca en cada punto del slider.
         if (_manualMaskTool != ManualMaskTool.None)
         {
-            LeaveManualMaskView();
+            LeaveManualMaskEditingOverPage();
         }
         else if (!string.Equals(_previewMode, "result", StringComparison.Ordinal))
         {
