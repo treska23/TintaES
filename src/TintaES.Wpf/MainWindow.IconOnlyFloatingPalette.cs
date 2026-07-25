@@ -193,7 +193,6 @@ public partial class MainWindow
                 {
                     Data = Geometry.Parse("M3,16 L13,6 C14,5 15,5 16,6 L21,11 C22,12 22,13 21,14 L13,22 L7,22 L3,18 C2,17 2,17 3,16 Z M8,21 L13,21 L18,16 L13,11 L6,18 Z"),
                     Fill = ink,
-                    FillRule = FillRule.EvenOdd,
                     Stretch = Stretch.Uniform
                 });
                 break;
