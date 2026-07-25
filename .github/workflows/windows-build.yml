@@ -20,19 +20,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Set up .NET 10
-        uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 10.0.x
-
-      - name: Restore WPF project
-        run: dotnet restore src/TintaES.Wpf/TintaES.Wpf.csproj
+          show-progress: false
+          persist-credentials: false
 
       - name: Build WPF project
         shell: pwsh
         run: |
-          dotnet build src/TintaES.Wpf/TintaES.Wpf.csproj --configuration Release --no-restore *> wpf-build.log
+          dotnet build src/TintaES.Wpf/TintaES.Wpf.csproj --configuration Release *> wpf-build.log
           $exitCode = $LASTEXITCODE
           Get-Content wpf-build.log | Select-String -Pattern "error (CS|MC|XDG|NETSDK)"
           if ($exitCode -ne 0) { exit $exitCode }
