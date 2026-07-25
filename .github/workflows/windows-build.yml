@@ -32,5 +32,14 @@ jobs:
           Get-Content wpf-build.log | Select-String -Pattern "error (CS|MC|XDG|NETSDK)"
           if ($exitCode -ne 0) { exit $exitCode }
 
+      - name: Upload WPF build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wpf-build-log
+          path: wpf-build.log
+          if-no-files-found: error
+          retention-days: 1
+
       - name: Build core tests
         run: dotnet build tests/TintaES.Core.Tests/TintaES.Core.Tests.csproj --configuration Release
