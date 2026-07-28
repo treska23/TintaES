@@ -19,14 +19,18 @@ public sealed record OrganicAnalysisResult(
 public sealed class OrganicEngineService
 {
     // Cambiar esta versión invalida únicamente la caché del análisis orgánico.
-    // Es intencionado: la geometría de los bocadillos y la máscara de borrado
-    // forman parte del resultado cacheado y no deben sobrevivir a cambios del algoritmo.
-    private const string CacheVersion = "organic-layout-v7-lettering";
+    private const string CacheVersion = "organic-layout-v8-responsive-worker";
+
+    private static readonly TimeSpan WorkerHeartbeatInterval = TimeSpan.FromSeconds(15);
+    private static readonly TimeSpan WorkerSilenceTimeout = TimeSpan.FromMinutes(12);
+    private static readonly TimeSpan WorkerTotalTimeout = TimeSpan.FromMinutes(30);
+    private static readonly TimeSpan WorkerStartupTimeout = TimeSpan.FromMinutes(3);
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         PropertyNameCaseInsensitive = true
     };
+
     private static readonly SemaphoreSlim WorkerGate = new(1, 1);
     private static readonly object WorkerStateLock = new();
     private static readonly StringBuilder WorkerErrors = new();
@@ -34,11 +38,13 @@ public sealed class OrganicEngineService
     private static Task? _residentErrorReader;
     private static string? _residentWorkerPath;
     private static string? _residentPythonPath;
+    private static DateTimeOffset _lastWorkerActivityUtc = DateTimeOffset.MinValue;
 
     public async Task WarmUpAsync(CancellationToken cancellationToken = default)
     {
         string projectRoot = FindProjectRoot();
-        string workerPath = Path.Combine(projectRoot, "engine", "tinta_worker.py");
+        string workerPath = Path.Combine(projectRoot, "engine", "tinta_worker_responsive.py");
+        string originalWorkerPath = Path.Combine(projectRoot, "engine", "tinta_worker.py");
         string pythonPath = Path.Combine(
             projectRoot,
             "engine",
@@ -46,7 +52,7 @@ public sealed class OrganicEngineService
             ".venv",
             "Scripts",
             "python.exe");
-        if (!File.Exists(workerPath) || !File.Exists(pythonPath))
+        if (!File.Exists(workerPath) || !File.Exists(originalWorkerPath) || !File.Exists(pythonPath))
         {
             return;
         }
@@ -82,7 +88,8 @@ public sealed class OrganicEngineService
         }
 
         string projectRoot = FindProjectRoot();
-        string workerPath = Path.Combine(projectRoot, "engine", "tinta_worker.py");
+        string workerPath = Path.Combine(projectRoot, "engine", "tinta_worker_responsive.py");
+        string originalWorkerPath = Path.Combine(projectRoot, "engine", "tinta_worker.py");
         string brightDetectorPath = Path.Combine(projectRoot, "engine", "bright_text_candidates.py");
         string configPath = Path.Combine(projectRoot, "engine", "organic-engine-config.json");
         string pythonPath = Path.Combine(
@@ -97,8 +104,18 @@ public sealed class OrganicEngineService
             throw new InvalidOperationException(
                 "Falta el entorno del motor orgánico. Ejecuta la preparación local del proyecto antes de analizar.");
         }
+        if (!File.Exists(workerPath) || !File.Exists(originalWorkerPath))
+        {
+            throw new InvalidOperationException(
+                "El motor local está incompleto. Faltan los archivos del worker residente.");
+        }
 
-        string cacheKey = CreateCacheKey(sourcePath, workerPath, brightDetectorPath, configPath);
+        string cacheKey = CreateCacheKey(
+            sourcePath,
+            workerPath,
+            originalWorkerPath,
+            brightDetectorPath,
+            configPath);
         string cacheRoot = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "TintaES",
@@ -149,17 +166,21 @@ public sealed class OrganicEngineService
         CancellationToken cancellationToken)
     {
         await WorkerGate.WaitAsync(cancellationToken);
+        using var totalCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        totalCancellation.CancelAfter(WorkerTotalTimeout);
+        CancellationToken workerToken = totalCancellation.Token;
+        var elapsed = Stopwatch.StartNew();
+
         try
         {
+            progress?.Report(new AnalysisProgress(8, 100, "Iniciando el motor orgánico residente…"));
             Process worker = await EnsureResidentWorkerAsync(
                 projectRoot,
                 workerPath,
                 pythonPath,
-                cancellationToken);
-            lock (WorkerStateLock)
-            {
-                WorkerErrors.Clear();
-            }
+                workerToken);
+            ClearWorkerErrors();
+            MarkWorkerActivity();
 
             string request = JsonSerializer.Serialize(new
             {
@@ -169,51 +190,93 @@ public sealed class OrganicEngineService
                 config = configPath,
                 cpu = false
             }, JsonOptions);
-            await worker.StandardInput.WriteLineAsync(request.AsMemory(), cancellationToken);
-            await worker.StandardInput.FlushAsync(cancellationToken);
+            await worker.StandardInput.WriteLineAsync(request.AsMemory(), workerToken);
+            await worker.StandardInput.FlushAsync(workerToken);
 
-            while (await worker.StandardOutput.ReadLineAsync(cancellationToken) is { } line)
+            int lastPercent = 8;
+            string lastMessage = "Preparando el análisis orgánico";
+            Task<string?> pendingRead = worker.StandardOutput.ReadLineAsync(workerToken).AsTask();
+
+            while (true)
             {
-                if (!TryReadMessage(line, out EngineMessage? message) || message is null)
+                using var pulseCancellation = CancellationTokenSource.CreateLinkedTokenSource(workerToken);
+                Task pulse = Task.Delay(WorkerHeartbeatInterval, pulseCancellation.Token);
+                Task completed = await Task.WhenAny(pendingRead, pulse);
+
+                if (completed == pendingRead)
                 {
+                    pulseCancellation.Cancel();
+                    string? line = await pendingRead;
+                    if (line is null)
+                    {
+                        break;
+                    }
+
+                    MarkWorkerActivity();
+                    if (TryReadMessage(line, out EngineMessage? message) && message is not null)
+                    {
+                        if (message.Type == "progress" && message.Percent > 0)
+                        {
+                            lastPercent = Math.Clamp(message.Percent, 1, 99);
+                            lastMessage = string.IsNullOrWhiteSpace(message.Message)
+                                ? "Procesando la página…"
+                                : message.Message;
+                            progress?.Report(new AnalysisProgress(lastPercent, 100, lastMessage));
+                        }
+                        else if (message.Type == "complete")
+                        {
+                            return !string.IsNullOrWhiteSpace(message.Manifest)
+                                ? message.Manifest
+                                : fallbackManifest;
+                        }
+                        else if (message.Type == "error")
+                        {
+                            string detail = !string.IsNullOrWhiteSpace(message.Message)
+                                ? message.Message
+                                : GetWorkerErrors();
+                            throw new InvalidOperationException(
+                                string.IsNullOrWhiteSpace(detail)
+                                    ? "El motor orgánico no pudo terminar."
+                                    : $"El motor orgánico no pudo terminar: {detail}");
+                        }
+                    }
+
+                    pendingRead = worker.StandardOutput.ReadLineAsync(workerToken).AsTask();
                     continue;
                 }
 
-                if (message.Type == "progress" && message.Percent > 0)
+                TimeSpan silence = DateTimeOffset.UtcNow - GetLastWorkerActivity();
+                if (silence >= WorkerSilenceTimeout)
                 {
-                    progress?.Report(new AnalysisProgress(
-                        Math.Clamp(message.Percent, 0, 100),
-                        100,
-                        string.IsNullOrWhiteSpace(message.Message)
-                            ? "Procesando la página…"
-                            : message.Message));
+                    throw new TimeoutException(
+                        $"El motor no produjo actividad durante 12 minutos mientras estaba en: {lastMessage}. " +
+                        "Se ha detenido para evitar que la aplicación quede paralizada.");
                 }
-                else if (message.Type == "complete")
-                {
-                    return !string.IsNullOrWhiteSpace(message.Manifest)
-                        ? message.Manifest
-                        : fallbackManifest;
-                }
-                else if (message.Type == "error")
-                {
-                    string detail = !string.IsNullOrWhiteSpace(message.Message)
-                        ? message.Message
-                        : GetWorkerErrors();
-                    throw new InvalidOperationException(
-                        string.IsNullOrWhiteSpace(detail)
-                            ? "El motor orgánico no pudo terminar."
-                            : $"El motor orgánico no pudo terminar: {detail}");
-                }
+
+                progress?.Report(new AnalysisProgress(
+                    lastPercent,
+                    100,
+                    $"{lastMessage} · {FormatElapsed(elapsed.Elapsed)}"));
             }
 
             string errors = GetWorkerErrors();
-            ResetResidentWorker();
             throw new InvalidOperationException(
                 string.IsNullOrWhiteSpace(errors)
                     ? "El motor orgánico local se cerró de forma inesperada."
                     : $"El motor orgánico local se cerró: {errors}");
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            ResetResidentWorker();
+            throw;
+        }
         catch (OperationCanceledException)
+        {
+            ResetResidentWorker();
+            throw new TimeoutException(
+                "El análisis superó 30 minutos y se detuvo para que la aplicación no quedara bloqueada.");
+        }
+        catch
         {
             ResetResidentWorker();
             throw;
@@ -266,15 +329,28 @@ public sealed class OrganicEngineService
         _residentWorker = worker;
         _residentWorkerPath = workerPath;
         _residentPythonPath = pythonPath;
+        MarkWorkerActivity();
         _residentErrorReader = ReadWorkerErrorsAsync(worker);
 
-        while (await worker.StandardOutput.ReadLineAsync(cancellationToken) is { } line)
+        using var startupCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        startupCancellation.CancelAfter(WorkerStartupTimeout);
+        try
         {
-            if (TryReadMessage(line, out EngineMessage? message)
-                && message?.Type == "ready")
+            while (await worker.StandardOutput.ReadLineAsync(startupCancellation.Token) is { } line)
             {
-                return worker;
+                MarkWorkerActivity();
+                if (TryReadMessage(line, out EngineMessage? message)
+                    && message?.Type == "ready")
+                {
+                    return worker;
+                }
             }
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            ResetResidentWorker();
+            throw new TimeoutException(
+                "El motor orgánico tardó más de tres minutos en arrancar y se detuvo.");
         }
 
         string errors = GetWorkerErrors();
@@ -293,6 +369,7 @@ public sealed class OrganicEngineService
             {
                 lock (WorkerStateLock)
                 {
+                    _lastWorkerActivityUtc = DateTimeOffset.UtcNow;
                     if (WorkerErrors.Length < 12_000)
                     {
                         WorkerErrors.AppendLine(line);
@@ -306,12 +383,46 @@ public sealed class OrganicEngineService
         }
     }
 
+    private static void MarkWorkerActivity()
+    {
+        lock (WorkerStateLock)
+        {
+            _lastWorkerActivityUtc = DateTimeOffset.UtcNow;
+        }
+    }
+
+    private static DateTimeOffset GetLastWorkerActivity()
+    {
+        lock (WorkerStateLock)
+        {
+            return _lastWorkerActivityUtc == DateTimeOffset.MinValue
+                ? DateTimeOffset.UtcNow
+                : _lastWorkerActivityUtc;
+        }
+    }
+
+    private static void ClearWorkerErrors()
+    {
+        lock (WorkerStateLock)
+        {
+            WorkerErrors.Clear();
+            _lastWorkerActivityUtc = DateTimeOffset.UtcNow;
+        }
+    }
+
     private static string GetWorkerErrors()
     {
         lock (WorkerStateLock)
         {
             return WorkerErrors.ToString().Trim();
         }
+    }
+
+    private static string FormatElapsed(TimeSpan elapsed)
+    {
+        return elapsed.TotalMinutes >= 1
+            ? $"{(int)elapsed.TotalMinutes} min {elapsed.Seconds:00} s"
+            : $"{elapsed.Seconds} s";
     }
 
     private static void ResetResidentWorker()
@@ -325,6 +436,7 @@ public sealed class OrganicEngineService
         {
             return;
         }
+
         try
         {
             if (!worker.HasExited)
@@ -437,10 +549,6 @@ public sealed class OrganicEngineService
 
         double median = glyphHeights[glyphHeights.Length / 2];
         double lineSlot = source.TextBox.Height / lineCount;
-
-        // El contorno OCR mide el glifo visible, no el cuadrado em completo de WPF.
-        // Combinamos ambas observaciones para mantener el tamaño editorial original sin
-        // permitir que una línea ruidosa infle todo el bocadillo.
         double estimated = Math.Max(median * 1.18, lineSlot * 0.88);
         return Math.Clamp(estimated, 5, Math.Max(5, lineSlot * 1.08));
     }
