@@ -10,8 +10,8 @@ using TintaES.Wpf.Controls;
 namespace TintaES.Wpf;
 
 /// <summary>
-/// Mantiene en el lienzo un renderer ligero. La preparación se ejecuta cuando cambia la lista
-/// de zonas o al cargar una página; nunca en cada LayoutUpdated de WPF.
+/// Mantiene el lienzo interactivo ligero y evita cualquier Measure, Arrange o UpdateLayout
+/// síncrono. El render editorial preciso se utiliza únicamente al exportar.
 /// </summary>
 public partial class MainWindow
 {
@@ -36,7 +36,7 @@ public partial class MainWindow
         {
             window.Dispatcher.BeginInvoke(
                 window.InstallFastCanvasText,
-                DispatcherPriority.SystemIdle);
+                DispatcherPriority.Loaded);
         }
     }
 
@@ -47,13 +47,16 @@ public partial class MainWindow
             return;
         }
 
+        // Instala primero el estilo que mantiene colapsado ComicTextElement. Antes se hacía al
+        // revés y este archivo volvía a mostrarlo para las zonas automáticas.
+        InstallNonBlockingCanvasText();
         _fastCanvasTextInstalled = true;
         _regions.CollectionChanged += Regions_FastCanvasTextCollectionChanged;
         QueueFastCanvasTextRefresh(forceLayout: false);
     }
 
     private void Regions_FastCanvasTextCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e) =>
-        QueueFastCanvasTextRefresh(forceLayout: true);
+        QueueFastCanvasTextRefresh(forceLayout: false);
 
     private void QueueFastCanvasTextRefresh(bool forceLayout)
     {
@@ -69,7 +72,7 @@ public partial class MainWindow
                 _fastCanvasTextRefreshPending = false;
                 EnsureFastCanvasTextPreviews(forceLayout);
             },
-            DispatcherPriority.Render);
+            DispatcherPriority.Background);
     }
 
     private void FinalizeProgressiveOverlayTextLayout(bool finalPass)
@@ -83,18 +86,23 @@ public partial class MainWindow
         OverlayCanvas.Width = _originalBitmap.PixelWidth;
         OverlayCanvas.Height = _originalBitmap.PixelHeight;
 
-        OverlayCanvas_PresentationLayoutUpdated(OverlayCanvas, EventArgs.Empty);
-        EnsureFastCanvasTextPreviews(forceLayout: true);
-
+        EnsureFastCanvasTextPreviews(forceLayout: false);
         OverlayCanvas.InvalidateMeasure();
         OverlayCanvas.InvalidateArrange();
         OverlayCanvas.InvalidateVisual();
 
+        // Nunca forzamos UpdateLayout en el hilo de interfaz. Incluso el pase final se programa
+        // para después de atender entrada, movimiento de ventana y repintado del marco.
         if (finalPass)
         {
-            OverlayCanvas.Measure(new Size(_originalBitmap.PixelWidth, _originalBitmap.PixelHeight));
-            OverlayCanvas.Arrange(new Rect(0, 0, _originalBitmap.PixelWidth, _originalBitmap.PixelHeight));
-            OverlayCanvas.UpdateLayout();
+            Dispatcher.BeginInvoke(
+                () =>
+                {
+                    OverlayCanvas.InvalidateMeasure();
+                    OverlayCanvas.InvalidateArrange();
+                    OverlayCanvas.InvalidateVisual();
+                },
+                DispatcherPriority.Background);
         }
     }
 
@@ -128,28 +136,19 @@ public partial class MainWindow
                 Canvas.SetLeft(layer, (box.X + region.TextOffsetX) / 1000 * _originalBitmap.PixelWidth);
                 Canvas.SetTop(layer, (box.Y + region.TextOffsetY) / 1000 * _originalBitmap.PixelHeight);
 
-                ComicTextElement? automatic = layer.Children
-                    .OfType<ComicTextElement>()
-                    .FirstOrDefault();
+                // Esta era la regresión: automatic.Visibility se volvía a poner en Visible y WPF
+                // ejecutaba el ajuste exhaustivo dentro de OnRender. Ahora permanece siempre fuera
+                // del lienzo interactivo.
+                foreach (ComicTextElement accurate in layer.Children.OfType<ComicTextElement>())
+                {
+                    accurate.Visibility = Visibility.Collapsed;
+                    accurate.Opacity = 0;
+                    accurate.IsEnabled = false;
+                    accurate.IsHitTestVisible = false;
+                }
                 foreach (ManualComicTextElement manual in layer.Children.OfType<ManualComicTextElement>())
                 {
                     manual.Visibility = Visibility.Collapsed;
-                }
-
-                FastComicTextPreviewElement? preview = layer.Children
-                    .OfType<FastComicTextPreviewElement>()
-                    .FirstOrDefault();
-                if (preview is null)
-                {
-                    preview = new FastComicTextPreviewElement
-                    {
-                        Region = region,
-                        PageWidth = _originalBitmap.PixelWidth,
-                        PageHeight = _originalBitmap.PixelHeight,
-                        IsHitTestVisible = false
-                    };
-                    Panel.SetZIndex(preview, 12);
-                    layer.Children.Add(preview);
                 }
 
                 bool nativeEditorVisible = ReferenceEquals(region, _selectedRegion)
@@ -158,30 +157,65 @@ public partial class MainWindow
                         .Any(text => Equals(text.Tag, NativeTextBlockTag)
                             && text.Visibility == Visibility.Visible);
 
-                bool useAccurateAutomaticRenderer = !region.IsManual && automatic is not null;
-                if (automatic is not null)
+                bool usesInteractivePreview = !region.IsManual || region.Type == "sfx";
+                InteractiveComicTextElement? interactive = layer.Children
+                    .OfType<InteractiveComicTextElement>()
+                    .FirstOrDefault();
+                if (usesInteractivePreview && interactive is null)
                 {
-                    automatic.Width = width;
-                    automatic.Height = height;
-                    automatic.RenderTransform = Transform.Identity;
-                    automatic.Visibility = region.IsEnabled && useAccurateAutomaticRenderer
-                        ? Visibility.Visible
-                        : Visibility.Collapsed;
-                    if (useAccurateAutomaticRenderer)
+                    interactive = new InteractiveComicTextElement
                     {
-                        automatic.InvalidateVisual();
-                    }
+                        Region = region,
+                        PageWidth = _originalBitmap.PixelWidth,
+                        PageHeight = _originalBitmap.PixelHeight,
+                        IsHitTestVisible = false
+                    };
+                    Panel.SetZIndex(interactive, 1);
+                    layer.Children.Insert(0, interactive);
                 }
 
-                preview.Width = width;
-                preview.Height = height;
-                preview.Visibility = region.IsEnabled
-                    && !useAccurateAutomaticRenderer
-                    && !nativeEditorVisible
-                    ? Visibility.Visible
-                    : Visibility.Collapsed;
-                preview.RenderTransform = Transform.Identity;
-                preview.InvalidateVisual();
+                if (interactive is not null)
+                {
+                    interactive.Width = width;
+                    interactive.Height = height;
+                    interactive.RenderTransform = Transform.Identity;
+                    interactive.Visibility = region.IsEnabled
+                        && usesInteractivePreview
+                        && !nativeEditorVisible
+                            ? Visibility.Visible
+                            : Visibility.Collapsed;
+                    interactive.InvalidateVisual();
+                }
+
+                bool usesManualPreview = region.IsManual && region.Type != "sfx";
+                FastComicTextPreviewElement? preview = layer.Children
+                    .OfType<FastComicTextPreviewElement>()
+                    .FirstOrDefault();
+                if (usesManualPreview && preview is null)
+                {
+                    preview = new FastComicTextPreviewElement
+                    {
+                        Region = region,
+                        PageWidth = _originalBitmap.PixelWidth,
+                        PageHeight = _originalBitmap.PixelHeight,
+                        IsHitTestVisible = false
+                    };
+                    Panel.SetZIndex(preview, 1);
+                    layer.Children.Insert(0, preview);
+                }
+
+                if (preview is not null)
+                {
+                    preview.Width = width;
+                    preview.Height = height;
+                    preview.RenderTransform = Transform.Identity;
+                    preview.Visibility = region.IsEnabled
+                        && usesManualPreview
+                        && !nativeEditorVisible
+                            ? Visibility.Visible
+                            : Visibility.Collapsed;
+                    preview.InvalidateVisual();
+                }
 
                 foreach (Border border in layer.Children.OfType<Border>())
                 {
@@ -197,10 +231,10 @@ public partial class MainWindow
 
                 if (forceLayout)
                 {
-                    layer.Measure(new Size(width, height));
-                    layer.Arrange(new Rect(0, 0, width, height));
-                    preview.Measure(new Size(width, height));
-                    preview.Arrange(new Rect(0, 0, width, height));
+                    // Solo invalidamos; WPF hará el layout cuando el dispatcher esté libre.
+                    layer.InvalidateMeasure();
+                    layer.InvalidateArrange();
+                    layer.InvalidateVisual();
                 }
             }
         }
