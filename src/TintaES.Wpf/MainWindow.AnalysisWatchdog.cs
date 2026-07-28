@@ -29,7 +29,7 @@ public partial class MainWindow
         long lastProgressAt = startedAt;
         long lastHeartbeatAt = startedAt;
         int receivedProgress = 0;
-        int lastPercentage = 0;
+        double lastPercentage = 0;
         string lastMessage = "Iniciando el motor local";
         object stateLock = new();
 
@@ -94,7 +94,7 @@ public partial class MainWindow
             {
                 lastHeartbeatAt = now;
                 string stage;
-                int percentage;
+                double percentage;
                 lock (stateLock)
                 {
                     stage = lastMessage;
@@ -104,7 +104,7 @@ public partial class MainWindow
                 string elapsed = FormatDuration(totalElapsed.TotalSeconds);
                 BusyTitleText.Text = $"{stage} · {elapsed}";
                 FooterStatusText.Text = percentage > 0
-                    ? $"{stage} · {percentage}% · {elapsed}"
+                    ? $"{stage} · {percentage:0.#}% · {elapsed}"
                     : $"Esperando respuesta del motor local · {elapsed}";
             }
         }
