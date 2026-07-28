@@ -83,34 +83,26 @@ public partial class MainWindow
         DependencyPropertyChangedEventArgs e) =>
         UpdateAddImagePagesAvailability();
 
-    private bool CanAddImagePagesNow() =>
-        !_addingImagePages
-        && !_switchingDocument
-        && !_documentOpenPending
-        && !_comicBatchBusy
-        && !_pageNavigationBusy
-        && !_pageSaveBusy
-        && !_maskEditorBusy
-        && !_fastRegionDeletionBusy
-        && BusyOverlay.Visibility != Visibility.Visible;
-
     private void UpdateAddImagePagesAvailability()
     {
-        bool available = CanAddImagePagesNow();
+        // Añadir páginas es una orden de apertura, no una acción dependiente del documento visible.
+        // Debe seguir disponible incluso durante navegación, análisis o guardado. El manejador espera
+        // de forma segura a que termine la operación actual antes de modificar la colección.
         if (_addImagePagesButton is not null)
         {
-            _addImagePagesButton.IsEnabled = available;
+            _addImagePagesButton.IsEnabled = true;
         }
         if (_menuAddImagePages is not null)
         {
-            _menuAddImagePages.IsEnabled = available;
+            _menuAddImagePages.IsEnabled = true;
         }
     }
 
     private async void AddImagePagesButton_Click(object sender, RoutedEventArgs e)
     {
-        if (!CanAddImagePagesNow())
+        if (_addingImagePages)
         {
+            SetFooterStatus("Ya se están añadiendo páginas…", "#C99A35");
             return;
         }
 
@@ -146,12 +138,9 @@ public partial class MainWindow
             return;
         }
 
-        // El diálogo puede permanecer abierto mientras comienza otra operación.
-        if (!CanAddImagePagesNow())
-        {
-            SetFooterStatus("Espera a que termine la operación actual antes de añadir páginas.", "#C99A35");
-            return;
-        }
+        // La orden ya ha sido aceptada. Si existe una operación breve en curso, se espera a que
+        // termine en vez de desactivar el botón o descartar silenciosamente la selección.
+        await AwaitCurrentDocumentReadyForOpenAsync();
 
         PersistVisibleComicPageRegions();
         int firstAddedIndex = _comicPages.Count;
