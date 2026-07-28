@@ -16,9 +16,15 @@ No usa servicios de pago, suscripciones ni claves de API. Las imágenes permanec
 
 1. Abre Ollama si no se inició con Windows.
 2. Haz doble clic en `iniciar.bat` o abre `TintaES.sln` en Visual Studio.
-3. Carga una página PNG, JPG o WEBP.
+3. Carga una página PNG, JPEG, WEBP, TIFF o BMP, una carpeta o un CBZ.
 4. Pulsa **Analizar y traducir**.
-5. Revisa las zonas y pulsa **Exportar PNG**.
+5. Revisa las zonas y pulsa **Exportar imagen**, **Exportar PSD** o **Exportar CBZ**.
+   La página puede guardarse como PNG, JPEG, WebP, TIFF, BMP o PDF.
+
+La edición del lienzo conserva el autoajuste al corregir una traducción. Arrastrar o
+redimensionar una caja activa el modo manual, que mantiene el texto dentro de sus límites.
+La paleta flotante reúne las herramientas de selección y máscara; `Ctrl+Z` y `Ctrl+Y`
+deshacen y rehacen los cambios.
 
 También se puede ejecutar desde una terminal:
 
@@ -55,6 +61,9 @@ La prueba de integración acepta la ruta de una imagen y genera una vista previa
 ```powershell
 dotnet run --project tests\TintaES.IntegrationTests\TintaES.IntegrationTests.csproj --configuration Debug -- "C:\ruta\pagina.jpg"
 ```
+
+Esta prueba valida la traducción, las referencias tipográficas, el ajuste seguro de una
+caja manual y las exportaciones PNG, JPEG, WebP, TIFF, BMP y PDF.
 
 ## Privacidad
 

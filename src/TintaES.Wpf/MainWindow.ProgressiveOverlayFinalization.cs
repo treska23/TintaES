@@ -128,10 +128,9 @@ public partial class MainWindow
                 Canvas.SetLeft(layer, (box.X + region.TextOffsetX) / 1000 * _originalBitmap.PixelWidth);
                 Canvas.SetTop(layer, (box.Y + region.TextOffsetY) / 1000 * _originalBitmap.PixelHeight);
 
-                foreach (ComicTextElement automatic in layer.Children.OfType<ComicTextElement>())
-                {
-                    automatic.Visibility = Visibility.Collapsed;
-                }
+                ComicTextElement? automatic = layer.Children
+                    .OfType<ComicTextElement>()
+                    .FirstOrDefault();
                 foreach (ManualComicTextElement manual in layer.Children.OfType<ManualComicTextElement>())
                 {
                     manual.Visibility = Visibility.Collapsed;
@@ -159,9 +158,26 @@ public partial class MainWindow
                         .Any(text => Equals(text.Tag, NativeTextBlockTag)
                             && text.Visibility == Visibility.Visible);
 
+                bool useAccurateAutomaticRenderer = !region.IsManual && automatic is not null;
+                if (automatic is not null)
+                {
+                    automatic.Width = width;
+                    automatic.Height = height;
+                    automatic.RenderTransform = Transform.Identity;
+                    automatic.Visibility = region.IsEnabled && useAccurateAutomaticRenderer
+                        ? Visibility.Visible
+                        : Visibility.Collapsed;
+                    if (useAccurateAutomaticRenderer)
+                    {
+                        automatic.InvalidateVisual();
+                    }
+                }
+
                 preview.Width = width;
                 preview.Height = height;
-                preview.Visibility = region.IsEnabled && !nativeEditorVisible
+                preview.Visibility = region.IsEnabled
+                    && !useAccurateAutomaticRenderer
+                    && !nativeEditorVisible
                     ? Visibility.Visible
                     : Visibility.Collapsed;
                 preview.RenderTransform = Transform.Identity;

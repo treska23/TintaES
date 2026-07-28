@@ -21,7 +21,8 @@ public sealed class DialogueOnlyResultService
         BitmapSource original,
         BitmapSource cleaned,
         BitmapSource mask,
-        IReadOnlyList<ComicRegion> regions)
+        IReadOnlyList<ComicRegion> regions,
+        bool includeAllDetectedText = false)
     {
         BitmapSource originalBgra = ConvertTo(original, PixelFormats.Bgra32);
         BitmapSource cleanedBgra = ConvertTo(cleaned, PixelFormats.Bgra32);
@@ -47,7 +48,9 @@ public sealed class DialogueOnlyResultService
         maskGray.CopyPixels(maskPixels, maskStride, 0);
 
         ComicRegion[] kept = regions
-            .Where(region => IsSpeechBubbleCandidate(region, originalPixels, width, height))
+            .Where(region => includeAllDetectedText
+                ? region.Confidence >= 0.30
+                : IsSpeechBubbleCandidate(region, originalPixels, width, height))
             .ToArray();
         for (int index = 0; index < kept.Length; index++)
         {

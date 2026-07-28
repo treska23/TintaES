@@ -155,6 +155,7 @@ public partial class MainWindow
         try
         {
             await Task.Run(() => WriteIncrementalPageToProject(saveData));
+            MarkActiveDocumentPageSaved(pageIndex);
             SetFooterStatus($"Página {pageIndex + 1} guardada · el resto del proyecto no se ha reempaquetado.", "#58A77D");
         }
         catch (Exception exception)

@@ -173,9 +173,7 @@ public partial class MainWindow
             return;
         }
 
-        string key = _comicPages.Count == 0
-            ? string.Empty
-            : $"{_comicPages.Count}|{_comicPages[0].SourcePath}|{_comicPages[^1].SourcePath}";
+        string key = BuildActiveDocumentSessionKey();
         if (!string.Equals(key, _pageSelectionSessionKey, StringComparison.OrdinalIgnoreCase))
         {
             _pageSelectionSessionKey = key;

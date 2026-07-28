@@ -123,7 +123,7 @@ public partial class MainWindow
                 double height = Math.Max(2, box.Height / 1000 * _originalBitmap.PixelHeight);
                 layer.Width = width;
                 layer.Height = height;
-                layer.ClipToBounds = false;
+                layer.ClipToBounds = true;
                 Canvas.SetLeft(layer, (box.X + region.TextOffsetX) / 1000 * _originalBitmap.PixelWidth);
                 Canvas.SetTop(layer, (box.Y + region.TextOffsetY) / 1000 * _originalBitmap.PixelHeight);
 
@@ -132,9 +132,19 @@ public partial class MainWindow
                     .OfType<FastComicTextPreviewElement>()
                     .FirstOrDefault();
 
+                bool usesManualPreview = region.IsManual && region.Type != "sfx";
                 foreach (ComicTextElement renderer in layer.Children.OfType<ComicTextElement>())
                 {
-                    renderer.Visibility = Visibility.Collapsed;
+                    renderer.Width = width;
+                    renderer.Height = height;
+                    renderer.RenderTransform = System.Windows.Media.Transform.Identity;
+                    renderer.Visibility = region.IsEnabled && !usesManualPreview
+                        ? Visibility.Visible
+                        : Visibility.Collapsed;
+                    if (!usesManualPreview)
+                    {
+                        renderer.InvalidateVisual();
+                    }
                 }
                 foreach (ManualComicTextElement renderer in layer.Children.OfType<ManualComicTextElement>())
                 {
@@ -154,7 +164,9 @@ public partial class MainWindow
                 {
                     preview.Width = width;
                     preview.Height = height;
-                    preview.Visibility = region.IsEnabled ? Visibility.Visible : Visibility.Collapsed;
+                    preview.Visibility = region.IsEnabled && usesManualPreview
+                        ? Visibility.Visible
+                        : Visibility.Collapsed;
                     preview.Measure(new Size(width, height));
                     preview.Arrange(new Rect(0, 0, width, height));
                     preview.InvalidateVisual();

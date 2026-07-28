@@ -10,8 +10,8 @@ namespace TintaES.Wpf;
 
 /// <summary>
 /// Mantiene el desplazamiento con Espacio y la compatibilidad de los antiguos hooks tipográficos.
-/// La edición visible usa exclusivamente FastComicTextPreviewElement; los algoritmos precisos no
-/// participan en escritura, escala, selección ni redimensionado.
+/// Las zonas automáticas usan siempre ComicTextElement, tanto seleccionadas como sin seleccionar.
+/// FastComicTextPreviewElement queda reservado para las cajas manuales durante la edición.
 /// </summary>
 public partial class MainWindow
 {
@@ -85,9 +85,16 @@ public partial class MainWindow
             return;
         }
 
+        bool usesManualPreview = region.IsManual && region.Type != "sfx";
         foreach (ComicTextElement renderer in layer.Children.OfType<ComicTextElement>())
         {
-            renderer.Visibility = Visibility.Collapsed;
+            renderer.Visibility = region.IsEnabled && !usesManualPreview
+                ? Visibility.Visible
+                : Visibility.Collapsed;
+            if (!usesManualPreview && invalidate)
+            {
+                renderer.InvalidateVisual();
+            }
         }
         foreach (ManualComicTextElement renderer in layer.Children.OfType<ManualComicTextElement>())
         {
@@ -97,6 +104,15 @@ public partial class MainWindow
         FastComicTextPreviewElement? preview = layer.Children
             .OfType<FastComicTextPreviewElement>()
             .FirstOrDefault();
+        if (!usesManualPreview)
+        {
+            if (preview is not null)
+            {
+                preview.Visibility = Visibility.Collapsed;
+            }
+            return;
+        }
+
         if (preview is null)
         {
             preview = new FastComicTextPreviewElement

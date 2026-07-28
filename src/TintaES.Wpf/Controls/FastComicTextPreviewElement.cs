@@ -4,6 +4,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
 using TintaES.Core;
+using TintaES.Wpf.Services;
 
 namespace TintaES.Wpf.Controls;
 
@@ -73,6 +74,7 @@ public sealed class FastComicTextPreviewElement : FrameworkElement
     {
         double padding = Math.Max(2, Math.Min(ActualWidth, ActualHeight) * 0.035);
         double availableWidth = Math.Max(2, ActualWidth - padding * 2);
+        double availableHeight = Math.Max(2, ActualHeight - padding * 2);
         double baseSize = GetManualBaseFontSize();
         double fontSize = Math.Max(1.2, baseSize * Math.Clamp(Region.ManualFontScale, 0.25, 2.5));
 
@@ -84,8 +86,42 @@ public sealed class FastComicTextPreviewElement : FrameworkElement
             availableWidth,
             pixelsPerDip);
 
-        // Igual que una caja de texto de Word/Photoshop: el ancho envuelve palabras, pero la altura
-        // no reduce la fuente. El Grid padre recorta cualquier exceso vertical.
+        if (formatted.Height > availableHeight + 0.5)
+        {
+            double low = 1.2;
+            double high = fontSize;
+            double best = low;
+            for (int index = 0; index < 12; index++)
+            {
+                double candidateSize = (low + high) / 2;
+                FormattedText candidate = CreateFormattedText(
+                    text,
+                    typeface,
+                    candidateSize,
+                    fill,
+                    availableWidth,
+                    pixelsPerDip);
+                if (candidate.Height <= availableHeight + 0.5)
+                {
+                    best = candidateSize;
+                    low = candidateSize;
+                }
+                else
+                {
+                    high = candidateSize;
+                }
+            }
+
+            fontSize = best;
+            formatted = CreateFormattedText(
+                text,
+                typeface,
+                fontSize,
+                fill,
+                availableWidth,
+                pixelsPerDip);
+        }
+
         double y = (ActualHeight - formatted.Height) / 2;
         drawingContext.DrawText(formatted, new Point(padding, y));
     }
@@ -195,22 +231,13 @@ public sealed class FastComicTextPreviewElement : FrameworkElement
 
     private static Typeface CreatePreviewTypeface(ComicRegion region)
     {
-        string family = !string.IsNullOrWhiteSpace(region.Style.FontFamily)
-            ? region.Style.FontFamily
-            : region.Style.FontCategory switch
-            {
-                "comic" => "Comic Sans MS",
-                "handwritten" => "Segoe Print",
-                "condensed" => "Arial Narrow",
-                "serif" => "Georgia",
-                "display" => "Impact",
-                "monospace" => "Consolas",
-                _ => "Arial"
-            };
-
         FontStyle style = region.Style.Italic ? FontStyles.Italic : FontStyles.Normal;
         FontWeight weight = FontWeight.FromOpenTypeWeight(Math.Clamp(region.Style.FontWeight, 100, 999));
-        return new Typeface(new FontFamily(family), style, weight, FontStretches.Normal);
+        return new Typeface(
+            ComicFontResolver.Resolve(region.Style.FontFamily, region.Style.FontCategory),
+            style,
+            weight,
+            FontStretches.Normal);
     }
 
     private static Brush ParseBrush(string? value, Brush fallback)
@@ -270,7 +297,11 @@ public sealed class FastComicTextPreviewElement : FrameworkElement
                 .Any(textBlock => Equals(textBlock.Tag, NativeTextBlockTag)
                     && textBlock.Visibility == Visibility.Visible);
 
-        Visibility = Region.IsEnabled && !nativeEditorVisible
+        // Este control existe únicamente para las cajas manuales durante la edición. Las zonas
+        // automáticas usan ComicTextElement tanto seleccionadas como sin seleccionar; mezclar
+        // ambos renderizadores hacía desaparecer cajas o duplicaba el texto con otra escala.
+        bool usesManualPreview = Region.IsManual && Region.Type != "sfx";
+        Visibility = Region.IsEnabled && usesManualPreview && !nativeEditorVisible
             ? Visibility.Visible
             : Visibility.Collapsed;
         RenderTransform = Transform.Identity;

@@ -81,7 +81,22 @@ public partial class MainWindow : Window
 
     private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
     {
+        _ = WarmOrganicEngineAsync();
         await RefreshModelsAsync();
+    }
+
+    private async Task WarmOrganicEngineAsync()
+    {
+        try
+        {
+            await _organicEngine.WarmUpAsync();
+        }
+        catch (Exception exception) when (
+            exception is IOException or InvalidOperationException or TaskCanceledException)
+        {
+            // Analizar volverá a intentarlo y mostrará el error en contexto si el motor
+            // sigue sin estar disponible. La precarga nunca bloquea la ventana.
+        }
     }
 
     private async Task RefreshModelsAsync()
@@ -145,7 +160,7 @@ public partial class MainWindow : Window
         var dialog = new OpenFileDialog
         {
             Title = "Abrir página de cómic",
-            Filter = "Imágenes|*.png;*.jpg;*.jpeg;*.webp;*.bmp|Todos los archivos|*.*",
+            Filter = "Imágenes|*.png;*.jpg;*.jpeg;*.webp;*.bmp;*.tif;*.tiff|Todos los archivos|*.*",
             CheckFileExists = true
         };
         if (dialog.ShowDialog(this) == true)
@@ -285,7 +300,8 @@ public partial class MainWindow : Window
                 await _ollama.TranslateRegionsAsync(
                     analysis.Regions,
                     model,
-                    _analysisCancellation.Token);
+                    _analysisCancellation.Token,
+                    progress);
             }
 
             UpdateCleanedPreview();
@@ -338,7 +354,14 @@ public partial class MainWindow : Window
         FooterProgressBar.IsIndeterminate = busy;
         FooterProgressBar.Value = 0;
         CancelButton.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
-        OpenImageButton.IsEnabled = !busy;
+        // Abrir cómic no sustituye el trabajo actual: crea una pestaña independiente.
+        // Por eso permanece disponible incluso mientras el documento activo termina o cancela
+        // una operación.
+        OpenImageButton.IsEnabled = true;
+        if (_openFolderButton is not null)
+        {
+            _openFolderButton.IsEnabled = true;
+        }
         AnalyzeButton.IsEnabled = !busy && _originalBitmap is not null && ModelComboBox.SelectedItem is not null;
         AddRegionButton.IsEnabled = !busy && _originalBitmap is not null;
         ExportButton.IsEnabled = !busy && _originalBitmap is not null;
@@ -757,6 +780,11 @@ public partial class MainWindow : Window
         {
             RegionListBox.Items.Refresh();
         }
+
+        if (sender is ComicRegion region && !region.IsManual)
+        {
+            InvalidateRegionVisual(region);
+        }
     }
 
     private void UpdateRegionCount()
@@ -764,7 +792,7 @@ public partial class MainWindow : Window
         RegionCountText.Text = $"{_regions.Count} zona{(_regions.Count == 1 ? string.Empty : "s")}";
     }
 
-    private void ExportButton_Click(object sender, RoutedEventArgs e)
+    private async void ExportButton_Click(object sender, RoutedEventArgs e)
     {
         if (_cleanedBitmap is null)
         {
@@ -776,7 +804,14 @@ public partial class MainWindow : Window
             Title = "Exportar página traducida",
             FileName = suggested,
             DefaultExt = ".png",
-            Filter = "Imagen PNG|*.png"
+            AddExtension = true,
+            Filter =
+                "PNG sin pérdida|*.png|" +
+                "JPEG|*.jpg;*.jpeg|" +
+                "WebP|*.webp|" +
+                "TIFF|*.tif;*.tiff|" +
+                "Bitmap de Windows|*.bmp|" +
+                "Documento PDF|*.pdf"
         };
         if (dialog.ShowDialog(this) != true)
         {
@@ -785,13 +820,20 @@ public partial class MainWindow : Window
 
         try
         {
-            BitmapSource result = _exportService.Render(_cleanedBitmap, _regions);
-            _exportService.SavePng(result, dialog.FileName);
+            ExportButton.IsEnabled = false;
+            SetFooterStatus("Preparando la exportación…", "#4CB2BB");
+            await Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.Render);
+            BitmapSource result = await _exportService.RenderAsync(_cleanedBitmap, _regions);
+            await Task.Run(() => _exportService.Save(result, dialog.FileName));
             SetFooterStatus($"Exportado: {Path.GetFileName(dialog.FileName)}", "#58A77D");
         }
         catch (Exception exception)
         {
-            MessageBox.Show(this, $"No se pudo exportar el PNG.\n\n{exception.Message}", "Tinta ES", MessageBoxButton.OK, MessageBoxImage.Error);
+            MessageBox.Show(this, $"No se pudo exportar la imagen.\n\n{exception.Message}", "Tinta ES", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            ExportButton.IsEnabled = _cleanedBitmap is not null;
         }
     }
 

@@ -91,6 +91,7 @@ public partial class MainWindow
             string finalPath = targetPath;
             await Task.Run(() => WriteTintaProject(finalPath));
             _currentProjectPath = finalPath;
+            MarkActiveDocumentSaved();
             SetFooterStatus($"Proyecto guardado · {Path.GetFileName(finalPath)}", "#58A77D");
         }
         catch (Exception exception)
@@ -179,6 +180,7 @@ public partial class MainWindow
 
     private async Task LoadTintaProjectAsync(string projectPath)
     {
+        await AwaitCurrentDocumentReadyForOpenAsync();
         BusyOverlay.Visibility = Visibility.Visible;
         BusyTitleText.Text = "Abriendo proyecto de TintaES…";
         BusyProgressBar.IsIndeterminate = true;
@@ -221,6 +223,7 @@ public partial class MainWindow
             _currentProjectPath = projectPath;
             _comicPageIndex = Math.Clamp(manifest.CurrentPageIndex, 0, _comicPages.Count - 1);
             _visibleComicPageIndex = -1;
+            SynchronizeActiveDocumentState();
             ClearComicPageBitmapCache();
             UpdateComicControls();
             SyncDirectPageSelector();
@@ -229,6 +232,7 @@ public partial class MainWindow
         }
         catch (Exception exception)
         {
+            AbandonEmptyDocumentAfterOpenFailure();
             MessageBox.Show(this, $"No se pudo abrir el proyecto.\n\n{exception.Message}", "Tinta ES",
                 MessageBoxButton.OK, MessageBoxImage.Error);
             SetFooterStatus("No se pudo abrir el proyecto.", "#EE594B");

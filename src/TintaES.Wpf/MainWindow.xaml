@@ -17,6 +17,7 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="66" />
             <RowDefinition Height="58" />
+            <RowDefinition x:Name="DocumentTabsRow" Height="0" />
             <RowDefinition Height="*" />
             <RowDefinition Height="42" />
         </Grid.RowDefinitions>
@@ -92,13 +93,27 @@
                 <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
                     <Button x:Name="AddRegionButton" Content="＋ Añadir zona" Style="{StaticResource ToolbarButton}"
                             Click="AddRegionButton_Click" IsEnabled="False" />
-                    <Button x:Name="ExportButton" Content="Exportar PNG" Style="{StaticResource ToolbarButton}"
+                    <Button x:Name="ExportButton" Content="Exportar imagen" Style="{StaticResource ToolbarButton}"
                             Click="ExportButton_Click" IsEnabled="False" Margin="0" />
                 </StackPanel>
             </Grid>
         </Border>
 
-        <Grid Grid.Row="2">
+        <Border x:Name="DocumentTabsHost"
+                Grid.Row="2"
+                Visibility="Collapsed"
+                Background="#191C1F"
+                BorderBrush="{StaticResource LineBrush}"
+                BorderThickness="0,0,0,1">
+            <ScrollViewer HorizontalScrollBarVisibility="Auto"
+                          VerticalScrollBarVisibility="Disabled">
+                <StackPanel x:Name="DocumentTabsPanel"
+                            Orientation="Horizontal"
+                            Margin="14,4,14,0" />
+            </ScrollViewer>
+        </Border>
+
+        <Grid Grid.Row="3">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*" />
                 <ColumnDefinition Width="390" />
@@ -149,7 +164,7 @@
                                 </Border>
                                 <TextBlock Text="Abre una página de cómic" FontFamily="Georgia" FontWeight="Bold"
                                            FontSize="20" HorizontalAlignment="Center" />
-                                <TextBlock Text="PNG, JPG o WEBP · todo se procesa en este equipo"
+                                <TextBlock Text="PNG, JPEG, WebP, TIFF o BMP · todo se procesa en este equipo"
                                            Foreground="{StaticResource MutedBrush}" Margin="0,8,0,0" />
                             </StackPanel>
                         </Grid>
@@ -335,7 +350,7 @@
             </Border>
         </Grid>
 
-        <Border Grid.Row="3" Background="#151719" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,1,0,0">
+        <Border Grid.Row="4" Background="#151719" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,1,0,0">
             <Grid Margin="18,0">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />

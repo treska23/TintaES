@@ -52,7 +52,7 @@ public partial class MainWindow
                 Content = "＋ Páginas",
                 Style = toolbarStyle,
                 Margin = new Thickness(7, 0, 0, 0),
-                ToolTip = "Agregar uno o varios archivos JPG, PNG, WEBP o BMP al proyecto actual"
+                ToolTip = "Agregar uno o varios archivos JPG, PNG, WEBP, BMP o TIFF al proyecto actual"
             };
             _addImagePagesButton.Click += AddImagePagesButton_Click;
 
@@ -87,24 +87,19 @@ public partial class MainWindow
 
     private void UpdateAddImagePagesAvailability()
     {
-        bool available = !_addingImagePages
-            && !_comicBatchBusy
-            && !_pageNavigationBusy
-            && BusyOverlay.Visibility != Visibility.Visible;
-
         if (_addImagePagesButton is not null)
         {
-            _addImagePagesButton.IsEnabled = available;
+            _addImagePagesButton.IsEnabled = true;
         }
         if (_menuAddImagePages is not null)
         {
-            _menuAddImagePages.IsEnabled = available;
+            _menuAddImagePages.IsEnabled = true;
         }
     }
 
     private async void AddImagePagesButton_Click(object sender, RoutedEventArgs e)
     {
-        if (_addingImagePages || _comicBatchBusy || _pageNavigationBusy)
+        if (_addingImagePages)
         {
             return;
         }
@@ -112,7 +107,7 @@ public partial class MainWindow
         var dialog = new OpenFileDialog
         {
             Title = "Agregar páginas de imagen",
-            Filter = "Imágenes compatibles|*.png;*.jpg;*.jpeg;*.webp;*.bmp|PNG|*.png|JPEG|*.jpg;*.jpeg|WEBP|*.webp|BMP|*.bmp|Todos los archivos|*.*",
+            Filter = "Imágenes compatibles|*.png;*.jpg;*.jpeg;*.webp;*.bmp;*.tif;*.tiff|PNG|*.png|JPEG|*.jpg;*.jpeg|WEBP|*.webp|BMP|*.bmp|TIFF|*.tif;*.tiff|Todos los archivos|*.*",
             FilterIndex = 1,
             Multiselect = true,
             CheckFileExists = true
@@ -134,13 +129,14 @@ public partial class MainWindow
         {
             MessageBox.Show(
                 this,
-                "Selecciona una o varias imágenes JPG, PNG, WEBP o BMP.",
+                "Selecciona una o varias imágenes JPG, PNG, WEBP, BMP o TIFF.",
                 "Tinta ES",
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);
             return;
         }
 
+        await AwaitCurrentDocumentReadyForOpenAsync();
         PersistVisibleComicPageRegions();
         int firstAddedIndex = _comicPages.Count;
         bool wasEmpty = firstAddedIndex == 0;
@@ -181,6 +177,14 @@ public partial class MainWindow
             {
                 _comicPages.Add(new ComicBookPageState(page.SourcePath, page.DisplayName));
             }
+            if (!wasEmpty)
+            {
+                foreach (int index in Enumerable.Range(firstAddedIndex, imported.Count))
+                {
+                    MarkActiveDocumentDirty(index);
+                }
+            }
+            SynchronizeActiveDocumentState();
 
             ClearComicPageBitmapCache();
             SynchronizeSelectorsAfterAddingPages(firstAddedIndex);
@@ -292,9 +296,7 @@ public partial class MainWindow
     }
 
     private string BuildCurrentPageSelectionSessionKey() =>
-        _comicPages.Count == 0
-            ? string.Empty
-            : $"{_comicPages.Count}|{_comicPages[0].SourcePath}|{_comicPages[^1].SourcePath}";
+        BuildActiveDocumentSessionKey();
 
     private static string ResolveAddedPagesTitle(IReadOnlyList<string> images)
     {

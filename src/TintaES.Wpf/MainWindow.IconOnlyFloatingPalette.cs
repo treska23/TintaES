@@ -14,8 +14,6 @@ public partial class MainWindow
 {
     private static readonly bool IconOnlyFloatingPaletteRegistered = RegisterIconOnlyFloatingPalette();
 
-    private bool _iconOnlyFloatingPaletteInstalled;
-
     private static bool RegisterIconOnlyFloatingPalette()
     {
         EventManager.RegisterClassHandler(
@@ -71,7 +69,6 @@ public partial class MainWindow
             "Borrador: recuperar la imagen original",
             _manualMaskTool == ManualMaskTool.Erase);
 
-        _iconOnlyFloatingPaletteInstalled = true;
     }
 
     private void SetIconOnlyCanvasButton(

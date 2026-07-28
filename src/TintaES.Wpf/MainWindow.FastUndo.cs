@@ -93,6 +93,7 @@ public partial class MainWindow
         history.Redo.Push(CaptureEditorSnapshot());
         EditorSnapshot target = history.Undo.Pop();
         ApplyEditorSnapshotImmediately(target);
+        MarkActiveDocumentDirty();
         SetFooterStatus("Cambio deshecho. Guarda la página cuando termines.", "#4CB2BB");
     }
 
@@ -122,6 +123,7 @@ public partial class MainWindow
         history.Undo.Push(CaptureEditorSnapshot());
         EditorSnapshot target = history.Redo.Pop();
         ApplyEditorSnapshotImmediately(target);
+        MarkActiveDocumentDirty();
         SetFooterStatus("Cambio rehecho. Guarda la página cuando termines.", "#4CB2BB");
     }
 

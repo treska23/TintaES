@@ -243,6 +243,7 @@ public partial class MainWindow
         EditorPageHistory history = GetCurrentEditorHistory(create: true)!;
         history.Undo.Push(snapshot);
         history.Redo.Clear();
+        MarkActiveDocumentDirty();
     }
 
     private void PrepareFastDeletionPaths(int pageIndex, ComicBookPageState page, bool hasMask)

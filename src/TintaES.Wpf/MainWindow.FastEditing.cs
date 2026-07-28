@@ -182,28 +182,40 @@ public partial class MainWindow
                 progress,
                 cancellationToken);
 
-            BusyTitleText.Text = "Conservando solo el texto de bocadillos…";
-            FooterStatusText.Text = "Restaurando onomatopeyas y textos exteriores…";
+            BusyTitleText.Text = "Preparando todo el texto detectado…";
+            FooterStatusText.Text = "Aplicando la limpieza solo sobre letras verificadas…";
             DialogueOnlyResult filtered = await Task.Run(
                 () => _dialogueOnlyResultService.Build(
                     _originalBitmap,
                     organic.CleanedBitmap,
                     organic.MaskBitmap,
-                    organic.Analysis.Regions),
+                    organic.Analysis.Regions,
+                    includeAllDetectedText: true),
                 cancellationToken);
 
             var analysis = new ComicAnalysis(organic.Analysis.SourceLanguage, filtered.Regions);
 
             if (analysis.Regions.Count > 0)
             {
-                BusyTitleText.Text = $"Traduciendo {analysis.Regions.Count} bocadillos de una vez…";
+                BusyTitleText.Text = $"Traduciendo {analysis.Regions.Count} textos con contexto…";
                 BusyProgressBar.Value = 96;
                 FooterProgressBar.Value = 96;
                 FooterStatusText.Text = $"Traduciendo {analysis.Regions.Count} bocadillos con {model}…";
                 await _ollama.TranslateRegionsAsync(
                     analysis.Regions,
                     model,
-                    cancellationToken);
+                    cancellationToken,
+                    progress);
+
+                ComicRegion[] incomplete = analysis.Regions
+                    .Where(region => string.IsNullOrWhiteSpace(region.Translation))
+                    .ToArray();
+                if (incomplete.Length > 0)
+                {
+                    throw new InvalidOperationException(
+                        $"La traducción no devolvió texto para {incomplete.Length} de " +
+                        $"{analysis.Regions.Count} zonas. No se aplicará un resultado incompleto.");
+                }
             }
 
             _cleanedBaseBitmap = filtered.CleanedBitmap;
@@ -227,6 +239,7 @@ public partial class MainWindow
             PageImage.Source = _cleanedBitmap;
             ShowPreviewMode("result");
             RebuildOverlay();
+            FinalizeProgressiveOverlayTextLayout(finalPass: true);
             UpdateRegionCount();
 
             if (_regions.Count > 0)
@@ -235,11 +248,11 @@ public partial class MainWindow
                 string timing = organic.FromCache
                     ? "análisis recuperado de la caché"
                     : $"fondo reconstruido en {organic.ElapsedSeconds:0.#} s";
-                SetFooterStatus($"Listo · {_regions.Count} bocadillos · {timing}", "#58A77D");
+                SetFooterStatus($"Listo · {_regions.Count} textos · {timing}", "#58A77D");
             }
             else
             {
-                SetFooterStatus("No se encontraron bocadillos de diálogo. El resto de textos se ha conservado sin cambios.", "#C99A35");
+                SetFooterStatus("No se encontró texto legible. Puedes añadir una zona manual.", "#C99A35");
             }
         }
         catch (OperationCanceledException)
@@ -548,11 +561,10 @@ public partial class MainWindow
 
     private static void ApplyTextTransform(ComicTextElement text, ComicRegion region)
     {
-        // La posición se aplica al contenedor completo para que el área de arrastre siga al
-        // texto. El texto solo recibe escala, por lo que moverlo jamás altera su tamaño.
-        double scale = Math.Clamp(region.ManualFontScale, 0.25, 2.5);
+        // El autoajuste calcula el tamaño dentro del polígono. Una escala externa podría
+        // sacar letras fuera del bocadillo aunque el cálculo interno fuese correcto.
         text.RenderTransformOrigin = new Point(0.5, 0.5);
-        text.RenderTransform = new ScaleTransform(scale, scale);
+        text.RenderTransform = Transform.Identity;
     }
 
     private void InvalidateRegionVisual(ComicRegion region)

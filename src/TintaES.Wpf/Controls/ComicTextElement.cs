@@ -1,15 +1,26 @@
+using System.ComponentModel;
 using System.Globalization;
 using System.Windows;
 using System.Windows.Media;
 using TintaES.Core;
+using TintaES.Wpf.Services;
 
 namespace TintaES.Wpf.Controls;
 
 public sealed class ComicTextElement : FrameworkElement
 {
+    private bool _subscribed;
+
     public required ComicRegion Region { get; init; }
     public double PageWidth { get; init; } = 1000;
     public double PageHeight { get; init; } = 1000;
+
+    public ComicTextElement()
+    {
+        IsHitTestVisible = false;
+        Loaded += ComicTextElement_Loaded;
+        Unloaded += ComicTextElement_Unloaded;
+    }
 
     protected override void OnRender(DrawingContext drawingContext)
     {
@@ -144,8 +155,8 @@ public sealed class ComicTextElement : FrameworkElement
         double lineHeight = fontSize * lineHeightRatio;
         double outlinePixels = Region.Style.OutlineWidth / 1000 * PageWidth;
         double edgePadding = Math.Max(
-            Math.Max(2.5, Math.Min(ActualWidth, ActualHeight) * 0.045),
-            outlinePixels + fontSize * 0.10);
+            Math.Max(3.5, Math.Min(ActualWidth, ActualHeight) * 0.07),
+            outlinePixels + fontSize * 0.14);
 
         Rect bounds = GetPolygonBounds(polygon);
         double usableTop = Math.Max(edgePadding, bounds.Top + edgePadding);
@@ -393,14 +404,15 @@ public sealed class ComicTextElement : FrameworkElement
         foreach (LinePlacement line in layout.Lines)
         {
             FormattedText formatted = CreateLineFormatted(line.Text, typeface, layout.FontSize, fill, pixelsPerDip);
-            double width = formatted.WidthIncludingTrailingWhitespace;
-            double x = Region.Style.Alignment switch
+            Geometry unpositioned = formatted.BuildGeometry(new Point());
+            Rect ink = unpositioned.Bounds;
+            double originX = Region.Style.Alignment switch
             {
-                "left" => line.X,
-                "right" => line.X + line.Width - width,
-                _ => line.X + (line.Width - width) / 2
+                "left" => line.X - ink.Left,
+                "right" => line.X + line.Width - ink.Right,
+                _ => line.X + line.Width / 2 - (ink.Left + ink.Right) / 2
             };
-            group.Children.Add(formatted.BuildGeometry(new Point(x, line.Y)));
+            group.Children.Add(formatted.BuildGeometry(new Point(originX, line.Y)));
         }
 
         group.Freeze();
@@ -615,8 +627,14 @@ public sealed class ComicTextElement : FrameworkElement
         Typeface typeface,
         double size,
         Brush fill,
-        double pixelsPerDip) =>
-        CreateLineFormatted(text, typeface, size, fill, pixelsPerDip).WidthIncludingTrailingWhitespace;
+        double pixelsPerDip)
+    {
+        FormattedText formatted = CreateLineFormatted(text, typeface, size, fill, pixelsPerDip);
+        Rect ink = formatted.BuildGeometry(new Point()).Bounds;
+        return ink.IsEmpty
+            ? formatted.WidthIncludingTrailingWhitespace
+            : ink.Width;
+    }
 
     private static FormattedText CreateLineFormatted(
         string text,
@@ -650,7 +668,7 @@ public sealed class ComicTextElement : FrameworkElement
 
     private static Typeface CreateTypeface(ComicRegion region)
     {
-        FontFamily family = ResolveFontFamily(region.Style.FontFamily, region.Style.FontCategory);
+        FontFamily family = ComicFontResolver.Resolve(region.Style.FontFamily, region.Style.FontCategory);
         FontWeight weight;
         try
         {
@@ -666,31 +684,6 @@ public sealed class ComicTextElement : FrameworkElement
             region.Style.Italic ? FontStyles.Italic : FontStyles.Normal,
             weight,
             ResolveFontStretch(region.Style.FontWidthRatio));
-    }
-
-    private static FontFamily ResolveFontFamily(string? requestedFamily, string category)
-    {
-        if (!string.IsNullOrWhiteSpace(requestedFamily))
-        {
-            FontFamily? installed = Fonts.SystemFontFamilies.FirstOrDefault(font =>
-                string.Equals(font.Source, requestedFamily.Trim(), StringComparison.OrdinalIgnoreCase));
-            if (installed is not null)
-            {
-                return installed;
-            }
-        }
-
-        string fallback = category switch
-        {
-            "handwritten" => "Segoe Print",
-            "sans" => "Arial",
-            "condensed" => "Arial Narrow",
-            "serif" => "Georgia",
-            "display" => "Impact",
-            "monospace" => "Consolas",
-            _ => "Comic Sans MS"
-        };
-        return new FontFamily(fallback);
     }
 
     private static FontStretch ResolveFontStretch(double ratio)
@@ -729,6 +722,44 @@ public sealed class ComicTextElement : FrameworkElement
             // Usa el color de respaldo mientras el usuario termina de escribirlo.
         }
         return fallback;
+    }
+
+    private void ComicTextElement_Loaded(object sender, RoutedEventArgs e)
+    {
+        if (_subscribed)
+        {
+            return;
+        }
+
+        _subscribed = true;
+        Region.PropertyChanged += Region_PropertyChanged;
+        SynchronizeVisibility();
+        InvalidateVisual();
+    }
+
+    private void ComicTextElement_Unloaded(object sender, RoutedEventArgs e)
+    {
+        if (!_subscribed)
+        {
+            return;
+        }
+
+        _subscribed = false;
+        Region.PropertyChanged -= Region_PropertyChanged;
+    }
+
+    private void Region_PropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        SynchronizeVisibility();
+        InvalidateVisual();
+    }
+
+    private void SynchronizeVisibility()
+    {
+        bool usesAccurateAutomaticRenderer = !Region.IsManual || Region.Type == "sfx";
+        Visibility = Region.IsEnabled && usesAccurateAutomaticRenderer
+            ? Visibility.Visible
+            : Visibility.Collapsed;
     }
 
     private readonly record struct HorizontalSpan(double Left, double Right)

@@ -51,8 +51,6 @@ public partial class MainWindow
 
         if (ReferenceEquals(button, window._openFolderButton))
         {
-            window._currentProjectPath = null;
-            window.ClearComicPageBitmapCache();
             return;
         }
 
@@ -129,12 +127,12 @@ public partial class MainWindow
         SyncPageSelectionPanel();
     }
 
-    private void OpenComicFilesButton_Click_Multi(object sender, RoutedEventArgs e)
+    private async void OpenComicFilesButton_Click_Multi(object sender, RoutedEventArgs e)
     {
         var dialog = new OpenFileDialog
         {
             Title = "Abrir proyecto, cómic o seleccionar varias páginas",
-            Filter = "TintaES, CBZ o páginas|*.tinta;*.cbz;*.png;*.jpg;*.jpeg;*.webp;*.bmp|Proyecto TintaES|*.tinta|Cómic CBZ|*.cbz|Imágenes|*.png;*.jpg;*.jpeg;*.webp;*.bmp|Todos los archivos|*.*",
+            Filter = "TintaES, CBZ o páginas|*.tinta;*.cbz;*.png;*.jpg;*.jpeg;*.webp;*.bmp;*.tif;*.tiff|Proyecto TintaES|*.tinta|Cómic CBZ|*.cbz|Imágenes|*.png;*.jpg;*.jpeg;*.webp;*.bmp;*.tif;*.tiff|Todos los archivos|*.*",
             FilterIndex = 1,
             Multiselect = true,
             CheckFileExists = true
@@ -160,6 +158,7 @@ public partial class MainWindow
                     return;
                 }
 
+                await AwaitCurrentDocumentReadyForOpenAsync();
                 _ = LoadTintaProjectAsync(projectFiles[0]);
                 return;
             }
@@ -180,8 +179,7 @@ public partial class MainWindow
                     return;
                 }
 
-                _currentProjectPath = null;
-                ClearComicPageBitmapCache();
+                await AwaitCurrentDocumentReadyForOpenAsync();
                 LoadComicFromCbz(cbzFiles[0]);
                 UpdateProjectCommandAvailability();
                 UpdateClassicMenuAvailability();
@@ -207,8 +205,7 @@ public partial class MainWindow
             string title = images.Length == 1
                 ? Path.GetFileNameWithoutExtension(images[0])
                 : new DirectoryInfo(Path.GetDirectoryName(images[0]) ?? string.Empty).Name;
-            _currentProjectPath = null;
-            ClearComicPageBitmapCache();
+            await AwaitCurrentDocumentReadyForOpenAsync();
             LoadComicSession(images, title);
             UpdateProjectCommandAvailability();
             UpdateClassicMenuAvailability();

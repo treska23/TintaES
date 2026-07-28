@@ -526,7 +526,7 @@ public sealed class ComicTextLineBreakService
 
     private static Typeface CreateTypeface(ComicRegion region)
     {
-        FontFamily family = ResolveFontFamily(region.Style.FontFamily, region.Style.FontCategory);
+        FontFamily family = ComicFontResolver.Resolve(region.Style.FontFamily, region.Style.FontCategory);
         FontWeight weight;
         try
         {
@@ -542,30 +542,6 @@ public sealed class ComicTextLineBreakService
             region.Style.Italic ? FontStyles.Italic : FontStyles.Normal,
             weight,
             ResolveFontStretch(region.Style.FontWidthRatio));
-    }
-
-    private static FontFamily ResolveFontFamily(string? requestedFamily, string category)
-    {
-        if (!string.IsNullOrWhiteSpace(requestedFamily))
-        {
-            FontFamily? installed = Fonts.SystemFontFamilies.FirstOrDefault(font =>
-                string.Equals(font.Source, requestedFamily.Trim(), StringComparison.OrdinalIgnoreCase));
-            if (installed is not null)
-            {
-                return installed;
-            }
-        }
-
-        return new FontFamily(category switch
-        {
-            "handwritten" => "Segoe Print",
-            "sans" => "Arial",
-            "condensed" => "Arial Narrow",
-            "serif" => "Georgia",
-            "display" => "Impact",
-            "monospace" => "Consolas",
-            _ => "Comic Sans MS"
-        });
     }
 
     private static FontStretch ResolveFontStretch(double ratio) => ratio switch

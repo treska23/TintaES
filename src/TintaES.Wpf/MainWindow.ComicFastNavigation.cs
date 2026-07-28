@@ -202,6 +202,7 @@ public partial class MainWindow
         }
 
         FooterProgressBar.Value = 100;
+        SynchronizeActiveDocumentState();
         string state = page.Error is not null ? "con error" : page.Processed ? "traducida" : "pendiente";
         SetFooterStatus($"Página {index + 1}/{_comicPages.Count} · {state}", page.Error is null ? "#58A77D" : "#C99A35");
     }

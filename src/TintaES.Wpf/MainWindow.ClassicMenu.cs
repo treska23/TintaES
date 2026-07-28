@@ -60,7 +60,7 @@ public partial class MainWindow
 
         _menuExportCbz = CreateMenuItem("Exportar páginas seleccionadas a _CBZ…", null, ExportComicButton_Click_Robust);
         _menuExportPsd = CreateMenuItem("Exportar página _PSD…", null, ExportPsdButton_Click);
-        _menuExportPng = CreateMenuItem("Exportar página P_NG…", null, ExportButton_Click);
+        _menuExportPng = CreateMenuItem("Exportar _página…", null, ExportButton_Click);
         file.Items.Add(_menuExportCbz);
         file.Items.Add(_menuExportPsd);
         file.Items.Add(_menuExportPng);
@@ -175,6 +175,7 @@ public partial class MainWindow
             string targetPath = dialog.FileName;
             await Task.Run(() => WriteTintaProject(targetPath));
             _currentProjectPath = targetPath;
+            MarkActiveDocumentSaved();
             SetFooterStatus($"Proyecto guardado · {Path.GetFileName(targetPath)}", "#58A77D");
         }
         catch (Exception exception)

@@ -68,8 +68,16 @@ public sealed class ComicRegion : INotifyPropertyChanged
     public Guid Id { get; set; } = Guid.NewGuid();
     public int Order { get; set; }
     public string Original { get => _original; set => Set(ref _original, value); }
+    // Lecturas del mismo bloque obtenidas por otros OCR. No se muestran ni se exportan:
+    // sirven para que el traductor pueda reconstruir letras dudosas sin mezclar bocadillos.
+    public IReadOnlyList<string> OcrAlternatives { get; set; } = [];
     public string Translation { get => _translation; set => Set(ref _translation, value); }
-    public string DisplayText => string.IsNullOrWhiteSpace(Translation) ? Original : Translation;
+
+    // El lienzo de resultado nunca debe volver a colocar el OCR inglés sobre un fondo ya
+    // reconstruido. Mientras la traducción todavía no exista se muestra una caja vacía; al
+    // terminar, OllamaClient garantiza una traducción o el aviso español "Traducción pendiente".
+    // El original continúa disponible en el inspector mediante Original.
+    public string DisplayText => Translation;
     public string Type { get => _type; set => Set(ref _type, value); }
     public double Confidence { get; set; } = 0.75;
 

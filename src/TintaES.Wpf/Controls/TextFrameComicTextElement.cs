@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Windows;
 using System.Windows.Media;
 using TintaES.Core;
+using TintaES.Wpf.Services;
 
 namespace TintaES.Wpf.Controls;
 
@@ -39,29 +40,52 @@ public sealed class TextFrameComicTextElement : FrameworkElement
 
         double padding = Math.Max(2, Math.Min(ActualWidth, ActualHeight) * 0.035);
         double availableWidth = Math.Max(2, ActualWidth - padding * 2);
+        double availableHeight = Math.Max(2, ActualHeight - padding * 2);
         double baseSize = ResolveBaseSize();
         double fontSize = Math.Max(1.2, baseSize * Math.Clamp(Region.ManualFontScale, 0.25, 2.5));
 
-        var formatted = new FormattedText(
+        FormattedText formatted = CreateFormatted(
             text,
-            CultureInfo.GetCultureInfo("es-ES"),
-            FlowDirection.LeftToRight,
             typeface,
             fontSize,
             fill,
-            pixelsPerDip)
+            availableWidth,
+            pixelsPerDip);
+        if (formatted.Height > availableHeight + 0.5)
         {
-            MaxTextWidth = availableWidth,
-            TextAlignment = Region.Style.Alignment switch
+            double low = 1.2;
+            double high = fontSize;
+            double best = low;
+            for (int index = 0; index < 14; index++)
             {
-                "left" => TextAlignment.Left,
-                "right" => TextAlignment.Right,
-                _ => TextAlignment.Center
-            },
-            Trimming = TextTrimming.None
-        };
-        double lineHeightRatio = Math.Clamp(Region.Style.LineHeightRatio, 0.82, 1.8);
-        formatted.LineHeight = Math.Max(fontSize * 0.9, fontSize * lineHeightRatio);
+                double candidateSize = (low + high) / 2;
+                FormattedText candidate = CreateFormatted(
+                    text,
+                    typeface,
+                    candidateSize,
+                    fill,
+                    availableWidth,
+                    pixelsPerDip);
+                if (candidate.Height <= availableHeight + 0.5)
+                {
+                    best = candidateSize;
+                    low = candidateSize;
+                }
+                else
+                {
+                    high = candidateSize;
+                }
+            }
+
+            fontSize = best;
+            formatted = CreateFormatted(
+                text,
+                typeface,
+                fontSize,
+                fill,
+                availableWidth,
+                pixelsPerDip);
+        }
 
         double y = (ActualHeight - formatted.Height) / 2;
         Geometry geometry = formatted.BuildGeometry(new Point(padding, y));
@@ -86,6 +110,37 @@ public sealed class TextFrameComicTextElement : FrameworkElement
         {
             drawingContext.Pop();
         }
+    }
+
+    private FormattedText CreateFormatted(
+        string text,
+        Typeface typeface,
+        double fontSize,
+        Brush fill,
+        double availableWidth,
+        double pixelsPerDip)
+    {
+        var formatted = new FormattedText(
+            text,
+            CultureInfo.GetCultureInfo("es-ES"),
+            FlowDirection.LeftToRight,
+            typeface,
+            fontSize,
+            fill,
+            pixelsPerDip)
+        {
+            MaxTextWidth = availableWidth,
+            TextAlignment = Region.Style.Alignment switch
+            {
+                "left" => TextAlignment.Left,
+                "right" => TextAlignment.Right,
+                _ => TextAlignment.Center
+            },
+            Trimming = TextTrimming.None
+        };
+        double lineHeightRatio = Math.Clamp(Region.Style.LineHeightRatio, 0.82, 1.8);
+        formatted.LineHeight = Math.Max(fontSize * 0.9, fontSize * lineHeightRatio);
+        return formatted;
     }
 
     private double ResolveBaseSize()
@@ -119,22 +174,13 @@ public sealed class TextFrameComicTextElement : FrameworkElement
 
     private static Typeface CreateTypeface(ComicRegion region)
     {
-        string family = !string.IsNullOrWhiteSpace(region.Style.FontFamily)
-            ? region.Style.FontFamily
-            : region.Style.FontCategory switch
-            {
-                "comic" => "Comic Sans MS",
-                "handwritten" => "Segoe Print",
-                "condensed" => "Arial Narrow",
-                "serif" => "Georgia",
-                "display" => "Impact",
-                "monospace" => "Consolas",
-                _ => "Arial"
-            };
-
         FontStyle style = region.Style.Italic ? FontStyles.Italic : FontStyles.Normal;
         FontWeight weight = FontWeight.FromOpenTypeWeight(Math.Clamp(region.Style.FontWeight, 100, 999));
-        return new Typeface(new FontFamily(family), style, weight, FontStretches.Normal);
+        return new Typeface(
+            ComicFontResolver.Resolve(region.Style.FontFamily, region.Style.FontCategory),
+            style,
+            weight,
+            FontStretches.Normal);
     }
 
     private static Brush? ParseBrush(string? value, Brush? fallback)

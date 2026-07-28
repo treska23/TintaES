@@ -231,24 +231,33 @@ public partial class MainWindow
         ComicBookPageState page,
         List<string> fallbackPages)
     {
-        try
+        _ = fallbackPages;
+        if (!page.Processed || page.Error is not null)
         {
-            if (page.Processed
-                && page.Error is null
-                && !string.IsNullOrWhiteSpace(page.CleanedPath)
-                && File.Exists(page.CleanedPath))
-            {
-                BitmapSource background = LoadBitmapSource(page.CleanedPath);
-                return _exportService.Render(background, page.Regions);
-            }
+            throw new InvalidOperationException(
+                $"La página {index + 1} todavía no tiene una traducción terminada.");
+        }
+        if (string.IsNullOrWhiteSpace(page.CleanedPath)
+            || !File.Exists(page.CleanedPath))
+        {
+            throw new InvalidOperationException(
+                $"La página {index + 1} no conserva su fondo limpio. Vuelve a analizarla.");
+        }
+        int incomplete = page.Regions.Count(region =>
+            region.IsEnabled
+            && (string.IsNullOrWhiteSpace(region.Translation)
+                || string.Equals(
+                    region.Translation,
+                    "Traducción pendiente",
+                    StringComparison.OrdinalIgnoreCase)));
+        if (incomplete > 0)
+        {
+            throw new InvalidOperationException(
+                $"La página {index + 1} tiene {incomplete} texto(s) sin traducción.");
+        }
 
-            return LoadBitmapSource(page.SourcePath);
-        }
-        catch (Exception exception)
-        {
-            fallbackPages.Add($"Página {index + 1}: {exception.Message}");
-            return LoadBitmapSource(page.SourcePath);
-        }
+        BitmapSource background = LoadBitmapSource(page.CleanedPath);
+        return _exportService.Render(background, page.Regions);
     }
 
     private static void SavePngAtomically(BitmapSource image, string targetPath, CancellationToken cancellationToken)

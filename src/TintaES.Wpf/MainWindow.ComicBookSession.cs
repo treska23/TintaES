@@ -16,7 +16,8 @@ namespace TintaES.Wpf;
 /// </summary>
 public partial class MainWindow
 {
-    private static readonly string[] ComicImageExtensions = [".png", ".jpg", ".jpeg", ".webp", ".bmp"];
+    private static readonly string[] ComicImageExtensions =
+        [".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"];
 
     private readonly List<ComicBookPageState> _comicPages = [];
     private int _comicPageIndex = -1;
@@ -57,7 +58,7 @@ public partial class MainWindow
 
         InstallComicToolbarButtons();
         InstallComicNavigationButtons();
-        Closed += (_, _) => CleanupComicWorkspace();
+        Closed += (_, _) => CleanupAllDocumentWorkspaces();
         UpdateComicControls();
     }
 
@@ -80,7 +81,7 @@ public partial class MainWindow
 
         if (ExportButton.Parent is StackPanel exportPanel)
         {
-            ExportButton.Content = "Exportar PNG";
+            ExportButton.Content = "Exportar imagen";
             _exportComicButton = new Button
             {
                 Content = "Exportar CBZ",
@@ -142,12 +143,12 @@ public partial class MainWindow
         previewPanel.Children.Insert(2, _nextPageButton);
     }
 
-    private void OpenComicFilesButton_Click(object sender, RoutedEventArgs e)
+    private async void OpenComicFilesButton_Click(object sender, RoutedEventArgs e)
     {
         var dialog = new OpenFileDialog
         {
             Title = "Abrir cómic o páginas",
-            Filter = "Cómic CBZ|*.cbz|Imágenes|*.png;*.jpg;*.jpeg;*.webp;*.bmp|Todos los archivos|*.*",
+            Filter = "Cómic CBZ|*.cbz|Imágenes|*.png;*.jpg;*.jpeg;*.webp;*.bmp;*.tif;*.tiff|Todos los archivos|*.*",
             Multiselect = true,
             CheckFileExists = true
         };
@@ -159,6 +160,7 @@ public partial class MainWindow
 
         try
         {
+            await AwaitCurrentDocumentReadyForOpenAsync();
             if (dialog.FileNames.Length == 1
                 && string.Equals(Path.GetExtension(dialog.FileName), ".cbz", StringComparison.OrdinalIgnoreCase))
             {
@@ -188,7 +190,7 @@ public partial class MainWindow
         }
     }
 
-    private void OpenComicFolderButton_Click(object sender, RoutedEventArgs e)
+    private async void OpenComicFolderButton_Click(object sender, RoutedEventArgs e)
     {
         var dialog = new OpenFolderDialog
         {
@@ -213,6 +215,7 @@ public partial class MainWindow
                 return;
             }
 
+            await AwaitCurrentDocumentReadyForOpenAsync();
             LoadComicSession(images, new DirectoryInfo(dialog.FolderName).Name);
         }
         catch (Exception exception)
@@ -261,8 +264,7 @@ public partial class MainWindow
     private void PrepareNewComicWorkspace()
     {
         _analysisCancellation?.Cancel();
-        PersistVisibleComicPageRegions();
-        CleanupComicWorkspace();
+        BeginNewDocumentWorkspace();
         _comicWorkspace = Path.Combine(Path.GetTempPath(), "TintaES", "comic-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(_comicWorkspace);
         Directory.CreateDirectory(Path.Combine(_comicWorkspace, "processed"));
@@ -279,6 +281,7 @@ public partial class MainWindow
         _comicTitle = string.IsNullOrWhiteSpace(title) ? "comic" : title;
         _comicPageIndex = 0;
         _visibleComicPageIndex = -1;
+        SynchronizeActiveDocumentState();
         ShowComicPage(0);
         UpdateComicControls();
         SetFooterStatus($"Cómic cargado · {_comicPages.Count} páginas. Pulsa Traducir cómic.", "#4CB2BB");
@@ -333,6 +336,7 @@ public partial class MainWindow
         }
 
         UpdateComicControls();
+        SynchronizeActiveDocumentState();
         string state = page.Error is not null ? "con error" : page.Processed ? "traducida" : "pendiente";
         SetFooterStatus($"Página {index + 1}/{_comicPages.Count} · {state}", page.Error is null ? "#58A77D" : "#C99A35");
     }
@@ -373,14 +377,14 @@ public partial class MainWindow
         }
         if (_openFolderButton is not null)
         {
-            _openFolderButton.IsEnabled = !busy;
+            _openFolderButton.IsEnabled = true;
         }
         if (_exportComicButton is not null)
         {
             _exportComicButton.IsEnabled = hasComic && !busy;
         }
 
-        OpenImageButton.IsEnabled = !busy;
+        OpenImageButton.IsEnabled = true;
         AnalyzeButton.Content = hasComic && _comicPages.Count > 1 ? "✦  Traducir cómic" : "✦  Analizar y traducir";
         AnalyzeButton.IsEnabled = hasComic && !busy && ModelComboBox.SelectedItem is not null;
     }
@@ -447,6 +451,7 @@ public partial class MainWindow
 
     private void ShowComicOpenError(Exception exception)
     {
+        AbandonEmptyDocumentAfterOpenFailure();
         MessageBox.Show(this, $"No se pudo abrir el cómic.\n\n{exception.Message}", "Tinta ES",
             MessageBoxButton.OK, MessageBoxImage.Error);
     }

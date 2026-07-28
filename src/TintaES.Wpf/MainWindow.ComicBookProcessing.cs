@@ -133,6 +133,7 @@ public partial class MainWindow
                     page.MaskPath = maskPath;
                     page.Processed = true;
                     page.Error = null;
+                    MarkActiveDocumentDirty(pageIndex);
                 }
                 catch (OperationCanceledException)
                 {
@@ -165,6 +166,12 @@ public partial class MainWindow
             _comicBatchBusy = false;
             SetBusy(false);
             UpdateComicControls();
+            SynchronizeActiveDocumentState();
+        }
+
+        if (_documentOpenPending)
+        {
+            return;
         }
 
         await ShowComicPageFastAsync(Math.Clamp(_comicPageIndex, 0, _comicPages.Count - 1));

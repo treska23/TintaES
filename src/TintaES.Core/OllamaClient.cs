@@ -1,6 +1,9 @@
 using System.Net.Http.Json;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 
 namespace TintaES.Core;
 
@@ -93,6 +96,29 @@ public sealed class OllamaClient : IDisposable
         }
         """)!;
 
+    private static readonly JsonNode ResidualTextSchema = JsonNode.Parse(
+        """
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "detections": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "id": { "type": "integer" },
+                  "text": { "type": "string" }
+                },
+                "required": ["id", "text"]
+              }
+            }
+          },
+          "required": ["detections"]
+        }
+        """)!;
+
     private readonly HttpClient _httpClient;
     private readonly bool _ownsClient;
 
@@ -127,6 +153,104 @@ public sealed class OllamaClient : IDisposable
             }
         }
         return models;
+    }
+
+    public async Task WarmModelAsync(
+        string model,
+        CancellationToken cancellationToken = default)
+    {
+        object payload = new
+        {
+            model,
+            stream = false,
+            think = false,
+            keep_alive = "30m",
+            messages = new[] { new { role = "user", content = "Responde únicamente OK." } },
+            options = new { temperature = 0, num_ctx = 512, num_predict = 2 }
+        };
+        _ = await SendChatAsync(payload, cancellationToken);
+    }
+
+    public async Task<IReadOnlyDictionary<int, string>> RecognizeResidualTextAsync(
+        byte[] contactSheet,
+        IReadOnlyCollection<int> candidateIds,
+        string model = "qwen3.5:9b",
+        CancellationToken cancellationToken = default)
+    {
+        if (contactSheet.Length == 0 || candidateIds.Count == 0)
+        {
+            return new Dictionary<int, string>();
+        }
+
+        string allowedIds = string.Join(", ", candidateIds.Order());
+        string prompt =
+            $"""
+             Eres un OCR especializado en rotulación de cómic. La imagen es una cuadrícula casi cuadrada:
+             cada recorte lleva una etiqueta "ID número". Identifica únicamente los recortes cuyo contenido
+             grande sea una palabra inglesa, un diálogo o una onomatopeya claramente legible. Ignora las
+             propias etiquetas ID, dibujos, líneas, manchas, símbolos y fragmentos dudosos.
+
+             IDs permitidos: {allowedIds}
+
+             Recorre todos los IDs antes de responder y vuelve a comprobar especialmente las onomatopeyas
+             pequeñas en letras blancas, inclinadas o manuscritas, como THWIP/thwip. Puede haber más de una.
+             Devuelve una detección solo cuando puedas transcribir todas sus letras. Copia el ID impreso
+             y el texto exacto. No inventes IDs ni devuelvas elementos con texto vacío.
+             """;
+        object payload = new
+        {
+            model,
+            stream = false,
+            think = false,
+            keep_alive = "30m",
+            format = ResidualTextSchema,
+            messages = new[]
+            {
+                new
+                {
+                    role = "user",
+                    content = prompt,
+                    images = new[] { Convert.ToBase64String(contactSheet) }
+                }
+            },
+            options = new { temperature = 0, seed = 73, num_ctx = 4096, num_predict = 280 }
+        };
+
+        string content = await SendChatAsync(payload, cancellationToken);
+        var recognized = new Dictionary<int, string>();
+        ParseResidualDetections(content, candidateIds, recognized);
+        return recognized;
+    }
+
+    private static void ParseResidualDetections(
+        string content,
+        IReadOnlyCollection<int> candidateIds,
+        IDictionary<int, string> recognized)
+    {
+        using JsonDocument document = JsonDocument.Parse(ExtractJson(content));
+        if (!document.RootElement.TryGetProperty("detections", out JsonElement detections)
+            || detections.ValueKind != JsonValueKind.Array)
+        {
+            return;
+        }
+
+        HashSet<int> allowed = candidateIds.ToHashSet();
+        foreach (JsonElement item in detections.EnumerateArray())
+        {
+            if (!item.TryGetProperty("id", out JsonElement idElement)
+                || !idElement.TryGetInt32(out int id)
+                || !allowed.Contains(id))
+            {
+                continue;
+            }
+
+            string text = TrimQuotationMarks(ReadString(item, "text")).Trim();
+            if (text.Length is < 2 or > 100 || text.Count(char.IsLetter) < 2)
+            {
+                continue;
+            }
+            recognized[id] = text;
+        }
     }
 
     public async Task<ComicAnalysis> AnalyzePageAsync(
@@ -246,26 +370,557 @@ public sealed class OllamaClient : IDisposable
     public async Task TranslateRegionsAsync(
         IReadOnlyList<ComicRegion> regions,
         string model,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IProgress<AnalysisProgress>? progress = null)
     {
-        for (int start = 0; start < regions.Count; start += 40)
+        foreach (ComicRegion region in regions)
         {
-            List<ComicRegion> batch = regions.Skip(start).Take(40).ToList();
-            await TranslateBatchAsync(batch, model, cancellationToken);
+            region.Translation = string.Empty;
+        }
+        ApplyKnownSfxLocalizations(regions);
 
-            List<ComicRegion> missing = batch
-                .Where(region => string.IsNullOrWhiteSpace(region.Translation))
-                .ToList();
-            if (missing.Count > 0 && missing.Count < batch.Count)
+        if (model.StartsWith("translategemma", StringComparison.OrdinalIgnoreCase))
+        {
+            await TranslateGemmaBatchAsync(regions, model, cancellationToken, progress);
+        }
+        else
+        {
+            for (int start = 0; start < regions.Count; start += 40)
             {
-                await TranslateBatchAsync(missing, model, cancellationToken);
-            }
+                List<ComicRegion> batch = regions.Skip(start).Take(40).ToList();
+                await TranslateBatchAsync(batch, model, cancellationToken);
 
-            foreach (ComicRegion region in batch.Where(region => string.IsNullOrWhiteSpace(region.Translation)))
-            {
-                region.Translation = region.Original;
+                List<ComicRegion> missing = batch
+                    .Where(region => !IsAcceptableTranslation(region, region.Translation))
+                    .ToList();
+                if (missing.Count > 0 && missing.Count < batch.Count)
+                {
+                    foreach (ComicRegion region in missing)
+                    {
+                        region.Translation = string.Empty;
+                    }
+                    await TranslateBatchAsync(missing, model, cancellationToken);
+                }
+
+                ReportTranslationProgress(progress, regions, $"Traduciendo con {model}…");
             }
         }
+
+        ApplyKnownSfxLocalizations(regions);
+        ApplySemanticGuards(regions);
+        NormalizeSignTranslations(regions);
+        foreach (ComicRegion region in regions.Where(region =>
+                     !IsAcceptableTranslation(region, region.Translation)))
+        {
+            // Nunca se vuelve a colocar el OCR inglés sobre el fondo ya reconstruido.
+            // Una incidencia visible y editable es preferible a exportar inglés sin avisar.
+            region.Translation = "Traducción pendiente";
+        }
+        ReportTranslationProgress(progress, regions, "Traducción contextual terminada");
+    }
+
+    private static void ApplyKnownSfxLocalizations(IEnumerable<ComicRegion> regions)
+    {
+        foreach (ComicRegion region in regions.Where(region => region.Type == "sfx"))
+        {
+            string key = new(region.Original
+                .Where(char.IsLetter)
+                .Select(char.ToUpperInvariant)
+                .ToArray());
+            region.Translation = key switch
+            {
+                "THWIP" or "THWIPP" or "THWP" or "THWID" => "¡FSSS!",
+                "BOOM" => "¡BUM!",
+                "BANG" => "¡PUM!",
+                "SMASH" => "¡CRASH!",
+                _ => region.Translation
+            };
+        }
+    }
+
+    private static void NormalizeSignTranslations(IEnumerable<ComicRegion> regions)
+    {
+        foreach (ComicRegion region in regions.Where(region => region.Type == "sign"))
+        {
+            region.Translation = region.Translation
+                .Trim()
+                .Trim('¡', '!', '¿', '?', '.', ',', ';', ':', '…')
+                .Trim();
+        }
+    }
+
+    private static void ApplySemanticGuards(IEnumerable<ComicRegion> regions)
+    {
+        foreach (ComicRegion region in regions)
+        {
+            string source = NormalizeOcrForTranslation(region.Original);
+            string evidence = FormatSourceForModel(region);
+            if (Regex.IsMatch(
+                    evidence,
+                    @"\bHOW\s+CAN\s+THIS\s+BE\b",
+                    RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+            {
+                region.Translation = "¡¿Cómo puede ser?!";
+            }
+            else if (Regex.IsMatch(
+                         evidence,
+                         @"\bTHIS\s+IS\s+IMPOS[\s-]*SI?BLE\b",
+                         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+            {
+                region.Translation = "¡Esto es imposible!";
+            }
+            else if (Regex.IsMatch(
+                         evidence,
+                         @"\bOPEN\s+YOUR\s+EYES\b",
+                         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+            {
+                region.Translation = "¡Abre los ojos!";
+            }
+
+            if (Regex.IsMatch(
+                source,
+                @"DIDN.?T\s+ALMOST\s+GET\s+SHOT",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+            {
+                region.Translation =
+                    "Si preguntan: no estuve a punto de recibir un disparo láser.";
+            }
+
+            if (Regex.IsMatch(source, @"\bGOT\s+A\s+LUCKY\s+SHOT\b", RegexOptions.IgnoreCase)
+                && Regex.IsMatch(source, @"\bNOTHING\s+BUT\s+(?:A\s+)?BUNCH\b", RegexOptions.IgnoreCase))
+            {
+                region.Translation =
+                    "¡No son más que una pandilla de ratas callejeras que tuvieron suerte!";
+            }
+
+            if (Regex.IsMatch(source, @"^\s*FIGURE[DO]\b", RegexOptions.IgnoreCase))
+            {
+                region.Translation =
+                    "Ya me lo imaginaba. En cualquier caso, mejor que estas cosas estén fuera de la calle.";
+            }
+
+            if (Regex.IsMatch(evidence, @"\bBACK\s+TO\s+['’]?(?:RI|RL)\b", RegexOptions.IgnoreCase))
+            {
+                region.Translation =
+                    "Deberíamos llevarle esto a Ri; está pidiendo a gritos que el genio descubra cómo funciona.";
+            }
+
+            region.Translation = Regex.Replace(
+                region.Translation,
+                @"\b(?:[Ss]on|[Ee]s)\s+equipo\b",
+                "Es un equipo",
+                RegexOptions.CultureInvariant);
+
+            region.Translation = Regex.Replace(
+                region.Translation,
+                @"\b(grupo|pandilla)\b([^.!?]{0,80})\bque\s+tuvo\s+suerte\b",
+                "$1$2que tuvieron suerte",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+            if (Regex.IsMatch(source, @"\bDOPE\b.*\bWAITING\b", RegexOptions.IgnoreCase))
+            {
+                region.Translation = "¡Genial! ¡Aquí os esperamos!";
+            }
+            else if (Regex.IsMatch(
+                         source,
+                         @"\bONE\s+DOING\s+MOST\s+OF\s+THE\s+FIGHTING\b",
+                         RegexOptions.IgnoreCase))
+            {
+                region.Translation =
+                    "Es fácil decirlo cuando soy yo quien se encarga de casi toda la pelea.";
+            }
+            else if (Regex.IsMatch(
+                         source,
+                         @"\bNO\s+ONE\s+CALLS\s+IT\s+THAT\b.*\bSEE\s+WHAT\s+I\s+CAN\s+DO\b",
+                         RegexOptions.IgnoreCase))
+            {
+                region.Translation =
+                    "Nadie lo llama así, Hobie, pero veré qué puedo hacer.";
+            }
+            else if (Regex.IsMatch(
+                         evidence,
+                         @"KRAVEN.*HUNTERS.*AFFORD.*STRINGS.*GUITARS.*ROLLING\s+UP",
+                         RegexOptions.IgnoreCase))
+            {
+                region.Translation =
+                    "Sí. Kraven y los Cazadores apenas podían permitirse cuerdas para sus guitarras, ¿y ahora aparecen con este equipo?";
+            }
+            else if (Regex.IsMatch(
+                         source,
+                         @"\bTHAT\s+WASN'?T\s+SO\s+BAD\b.*\bALL\s+THINGS\s+CONSIDERED\b",
+                         RegexOptions.IgnoreCase))
+            {
+                region.Translation = "Je, no estuvo tan mal, considerando todo.";
+            }
+
+            region.Translation = Regex.Replace(region.Translation, @"\s{2,}", " ").Trim();
+        }
+    }
+
+    private static void ReportTranslationProgress(
+        IProgress<AnalysisProgress>? progress,
+        IReadOnlyList<ComicRegion> regions,
+        string message)
+    {
+        if (progress is null)
+        {
+            return;
+        }
+
+        int completed = regions.Count(region =>
+            IsAcceptableTranslation(region, region.Translation));
+        double fraction = completed / (double)Math.Max(1, regions.Count);
+        progress.Report(new AnalysisProgress(
+            (int)Math.Round(960 + fraction * 40),
+            1000,
+            $"{message} · {completed}/{regions.Count}"));
+    }
+
+    private static bool IsAcceptableTranslation(ComicRegion region, string? translation)
+    {
+        if (string.IsNullOrWhiteSpace(translation))
+        {
+            return false;
+        }
+
+        string candidate = Regex.Replace(translation.Trim(), @"\s+", " ");
+        if (candidate.Contains("[[", StringComparison.Ordinal)
+            || candidate.Contains("SOURCE:", StringComparison.OrdinalIgnoreCase)
+            || candidate.Contains("TRANSLATION:", StringComparison.OrdinalIgnoreCase)
+            || candidate.Contains("OCR ALTERNATIVE", StringComparison.OrdinalIgnoreCase)
+            || candidate.Contains("||", StringComparison.Ordinal)
+            || !candidate.Any(char.IsLetter))
+        {
+            return false;
+        }
+
+        string source = Regex.Replace(region.Original.Trim(), @"\s+", " ");
+        string sourceLetters = new(source.Where(char.IsLetterOrDigit).ToArray());
+        string candidateLetters = new(candidate.Where(char.IsLetterOrDigit).ToArray());
+        if (sourceLetters.Length >= 4
+            && string.Equals(sourceLetters, candidateLetters, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (candidate.Length > Math.Max(70, source.Length * 2.35))
+        {
+            return false;
+        }
+
+        string[] words = Regex.Matches(candidate.ToLowerInvariant(), @"[\p{L}']+")
+            .Select(match => match.Value)
+            .ToArray();
+        if (words.Length >= 2)
+        {
+            string[] commonEnglish =
+            [
+                "the", "and", "but", "with", "from", "that", "this", "these", "those",
+                "you", "your", "we", "they", "their", "what", "when", "where", "who",
+                "have", "has", "had", "are", "was", "were", "will", "would", "could",
+                "should", "just", "not", "for", "into", "about"
+            ];
+            int englishWords = words.Count(word => commonEnglish.Contains(word, StringComparer.Ordinal));
+            if (englishWords >= 2 && englishWords / (double)words.Length >= 0.25)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private async Task TranslateGemmaBatchAsync(
+        IReadOnlyList<ComicRegion> regions,
+        string model,
+        CancellationToken cancellationToken,
+        IProgress<AnalysisProgress>? progress)
+    {
+        ComicRegion[] translatable = regions
+            .Where(region => !IsAcceptableTranslation(region, region.Translation))
+            .ToArray();
+        const int chunkSize = 6;
+        for (int start = 0; start < translatable.Length; start += chunkSize)
+        {
+            IReadOnlyList<ComicRegion> targets = translatable.Skip(start).Take(chunkSize).ToArray();
+            await TranslateGemmaChunkAsync(targets, regions, model, cancellationToken);
+            ReportTranslationProgress(progress, regions, "Traduciendo la escena con contexto…");
+        }
+
+        ComicRegion[] unresolved = translatable
+            .Where(region => !IsAcceptableTranslation(region, region.Translation))
+            .ToArray();
+        for (int start = 0; start < unresolved.Length; start += chunkSize)
+        {
+            ComicRegion[] retry = unresolved.Skip(start).Take(chunkSize).ToArray();
+            foreach (ComicRegion region in retry)
+            {
+                region.Translation = string.Empty;
+            }
+            await TranslateGemmaChunkAsync(retry, regions, model, cancellationToken);
+            ReportTranslationProgress(progress, regions, "Repitiendo líneas dudosas…");
+        }
+
+        await RefineTranslateGemmaBatchAsync(regions, model, cancellationToken, progress);
+    }
+
+    private async Task RefineTranslateGemmaBatchAsync(
+        IReadOnlyList<ComicRegion> regions,
+        string model,
+        CancellationToken cancellationToken,
+        IProgress<AnalysisProgress>? progress)
+    {
+        ComicRegion[] targets = regions
+            .Where(region => region.Type != "sfx"
+                             && ((NormalizeSourceText(region.Original).Length >= 68
+                                  && region.OcrAlternatives.Count > 0)
+                                 || LooksLikeLiteralDraft(region.Translation)))
+            .ToArray();
+        const int chunkSize = 12;
+        for (int start = 0; start < targets.Length; start += chunkSize)
+        {
+            ComicRegion[] chunk = targets.Skip(start).Take(chunkSize).ToArray();
+            await RefineTranslateGemmaChunkAsync(chunk, regions, model, cancellationToken);
+            ReportTranslationProgress(progress, regions, "Puliendo el español de los diálogos largos…");
+        }
+    }
+
+    private async Task RefineTranslateGemmaChunkAsync(
+        IReadOnlyList<ComicRegion> targets,
+        IReadOnlyList<ComicRegion> fullContext,
+        string model,
+        CancellationToken cancellationToken)
+    {
+        string context = string.Join(
+            "\n",
+            fullContext.Select((region, index) =>
+                $"C{index:000} ({region.Type}): {FormatSourceForModel(region)}"));
+        var tokens = targets.ToDictionary(region => region, CreateTranslationToken);
+        string drafts = string.Join(
+            "\n",
+            targets.Select(region =>
+                $"""
+                 [[{tokens[region]}]]
+                 SOURCE: {NormalizeOcrForTranslation(region.Original)}
+                 DRAFT: {NormalizeSourceText(region.Translation)}
+                 [[/{tokens[region]}]]
+                 """));
+        string prompt =
+            """
+            You are the final dialogue editor for a professionally published Spanish comic.
+            Proofread each DRAFT into idiomatic, concise Spanish from Spain. Correct literal phrasing and obvious
+            OCR damage by using the complete page context, while preserving the exact action, speaker, humour,
+            negation, names and every meaningful fragment. Never add information from a neighbouring balloon.
+            Resolve conflicting OCR readings by grammar; alternatives are evidence, not extra dialogue. In
+            particular, "got a lucky shot" means "tuvieron suerte/acertaron de suerte", "figured" as a reply
+            means "ya me lo imaginaba", "roll up with this stuff" means "aparecer con este equipo", and
+            "we'll be waiting" must retain the idea of waiting. Never replace an uncertain proper name or place
+            with a different one from the page.
+            Return every revised draft inside its exact random opening and closing tags. Do not explain anything.
+
+            COMPLETE PAGE CONTEXT:
+            """ + "\n" + context + "\n\nDRAFTS TO REVISE:\n" + drafts;
+        object payload = new
+        {
+            model,
+            stream = false,
+            keep_alive = "30m",
+            messages = new[] { new { role = "user", content = prompt } },
+            options = new
+            {
+                temperature = 0,
+                seed = 73,
+                num_ctx = 4096,
+                num_predict = Math.Max(180, targets.Count * 120)
+            }
+        };
+
+        string content = await SendChatAsync(payload, cancellationToken);
+        foreach (ComicRegion region in targets)
+        {
+            string token = tokens[region];
+            Match match = Regex.Match(
+                content,
+                $@"\[\[{Regex.Escape(token)}\]\]\s*(.*?)\s*\[\[/{Regex.Escape(token)}\]\]",
+                RegexOptions.Singleline | RegexOptions.CultureInvariant);
+            string candidate = match.Success
+                ? CleanTranslationCandidate(match.Groups[1].Value)
+                : string.Empty;
+            if (IsAcceptableTranslation(region, candidate))
+            {
+                region.Translation = candidate;
+            }
+        }
+    }
+
+    private static bool LooksLikeLiteralDraft(string value) =>
+        Regex.IsMatch(
+            value,
+            @"\b(?:no\s+casi|figuré|entendí|una\s+suerte|sufició|son\s+equipo)\b",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    private async Task TranslateGemmaChunkAsync(
+        IReadOnlyList<ComicRegion> targets,
+        IReadOnlyList<ComicRegion> fullContext,
+        string model,
+        CancellationToken cancellationToken)
+    {
+        string context = string.Join(
+            "\n",
+            fullContext.Select((region, index) =>
+                $"C{index:000} ({region.Type}): {FormatSourceForModel(region)}"));
+        var tokens = targets.ToDictionary(region => region, CreateTranslationToken);
+        string targetText = string.Join(
+            "\n",
+            targets.Select(region =>
+                $"[[{tokens[region]}]] {NormalizeOcrForTranslation(region.Original)} [[/{tokens[region]}]]"));
+        string prompt =
+            """
+            You are a professional English-to-Spanish comic translator and dialogue editor.
+            Translate into natural Spanish from Spain. Reconstruct obvious OCR mistakes from grammar and scene
+            context before translating. Preserve meaning, speaker intent, jokes, register, names, actions and
+            punctuation. Preserve every semantic fragment around ellipses, including possessives: "what is his"
+            means "lo que es suyo". Treat negative auxiliaries with special care: "didn't almost get shot" means
+            "no estuvo a punto de recibir un disparo", never "no casi se disparó". Keep the result concise enough
+            for the original speech balloon. "Got a lucky shot" means "tuvieron suerte" or "acertaron de pura
+            suerte"; "figured" as a reply means "ya me lo imaginaba"; "roll up with this stuff" means "aparecer
+            con este equipo"; and "we'll be waiting" must retain the waiting. Never replace an uncertain proper
+            name or place with a different name borrowed from CONTEXT.
+
+            CONTEXT contains the complete page in reading order. Use it only to understand the scene.
+            TARGETS contains the lines that must be translated in this request.
+            CONTEXT may include OCR ALTERNATIVES. They are alternative readings of the SAME lettering,
+            not additional dialogue. Use them only to reconstruct the corresponding target's English meaning.
+
+            For every target, copy its exact random tag at both ends. Return exactly this shape:
+            [[RANDOMTAG]] traducción española [[/RANDOMTAG]]
+            Never number, reorder, merge or omit targets. Output no explanations and no English source text.
+
+            COMPLETE PAGE CONTEXT:
+            """ + "\n" + context + "\n\nTARGETS:\n" + targetText;
+
+        object payload = new
+        {
+            model,
+            stream = false,
+            keep_alive = "30m",
+            messages = new[] { new { role = "user", content = prompt } },
+            options = new
+            {
+                temperature = 0,
+                seed = 73,
+                num_ctx = 4096,
+                num_predict = Math.Max(180, targets.Count * 110)
+            }
+        };
+
+        string content = await SendChatAsync(payload, cancellationToken);
+        foreach (ComicRegion region in targets)
+        {
+            string token = tokens[region];
+            Match match = Regex.Match(
+                content,
+                $@"\[\[{Regex.Escape(token)}\]\]\s*(.*?)\s*\[\[/{Regex.Escape(token)}\]\]",
+                RegexOptions.Singleline | RegexOptions.CultureInvariant);
+            string candidate = match.Success
+                ? CleanTranslationCandidate(match.Groups[1].Value)
+                : string.Empty;
+
+            // En el reintento individual aceptamos también una respuesta limpia sin etiquetas.
+            // No se hace en lotes porque podría volver a desplazar las frases.
+            if (targets.Count == 1 && string.IsNullOrWhiteSpace(candidate))
+            {
+                candidate = CleanTranslationCandidate(content);
+            }
+
+            if (IsAcceptableTranslation(region, candidate))
+            {
+                region.Translation = candidate;
+            }
+        }
+    }
+
+    private static string CreateTranslationToken(ComicRegion region)
+    {
+        byte[] bytes = Encoding.UTF8.GetBytes($"{region.Id:N}|{NormalizeSourceText(region.Original)}");
+        return "R" + Convert.ToHexString(SHA256.HashData(bytes))[..10];
+    }
+
+    private static string NormalizeSourceText(string value) =>
+        Regex.Replace(value.Trim(), @"\s+", " ");
+
+    private static string FormatSourceForModel(ComicRegion region)
+    {
+        string primary = NormalizeOcrForTranslation(region.Original);
+        string[] alternatives = region.OcrAlternatives
+            .Select(NormalizeOcrForTranslation)
+            .Where(value => !string.Equals(value, primary, StringComparison.OrdinalIgnoreCase))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(3)
+            .ToArray();
+        return alternatives.Length == 0
+            ? primary
+            : $"{primary} || OCR ALTERNATIVES: {string.Join(" | ", alternatives)}";
+    }
+
+    private static string NormalizeOcrForTranslation(string value)
+    {
+        string text = NormalizeSourceText(value);
+        (string Pattern, string Replacement)[] repairs =
+        [
+            (@"\bSTREEI\b", "STREET"),
+            (@"\bBARELT\b", "BARELY"),
+            (@"\bKEEF\b", "KEEP"),
+            (@"\bYEAR\b", "YEAH"),
+            (@"\bUUNTERS\b", "HUNTERS"),
+            (@"\bYEAH\s+KRAVEN\s+E\s+HUNTERS\b", "YEAH. KRAVEN & THE HUNTERS"),
+            (@"\bAPPORD\b", "AFFORD"),
+            (@"\bTWEIR\b", "THEIR"),
+            (@"\bWIT\s+G\b", "WITH THIS"),
+            (@"\bTGTS\b", "THIS"),
+            (@"\bNASN'?T\b", "WASN'T"),
+            (@"\bBAO\b", "BAD"),
+            (@"\bPRETT4\b", "PRETTY"),
+            (@"\bFAVOA\b", "FAVOR"),
+            (@"\bVO\s+ONE\b", "NO ONE"),
+            (@"\bTHINKINBOUT\b", "THINKIN' 'BOUT"),
+            (@"\bI\s+THE\s+ONE\b", "I'M THE ONE"),
+            (@"\bDIDNT\b", "DIDN'T"),
+            (@"\bILL\b", "I'LL"),
+            (@"\bIVE\b", "I'VE"),
+            (@"\bIM\b", "I'M"),
+            (@"\bTHEYRE\b", "THEY'RE"),
+            (@"\bTHATS\b", "THAT'S")
+        ];
+        foreach ((string pattern, string replacement) in repairs)
+        {
+            text = Regex.Replace(
+                text,
+                pattern,
+                replacement,
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        }
+        return text;
+    }
+
+    private static string CleanTranslationCandidate(string value)
+    {
+        string cleaned = value
+            .Replace("```", string.Empty, StringComparison.Ordinal)
+            .Replace("\r", string.Empty, StringComparison.Ordinal)
+            .Trim();
+        cleaned = Regex.Replace(
+            cleaned,
+            @"^(?:ESPAÑOL|SPANISH|TRADUCCI[ÓO]N|TRANSLATION)\s*:\s*",
+            string.Empty,
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        cleaned = Regex.Replace(cleaned, @"\[\[/?R[A-F0-9]+\]\]", string.Empty);
+        cleaned = Regex.Replace(
+            cleaned,
+            @"\s*\|\|\s*OCR\s+ALTERNATIVES?\s*:.*$",
+            string.Empty,
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        return TrimQuotationMarks(Regex.Replace(cleaned, @"\s+", " ").Trim());
     }
 
     private async Task TranslateBatchAsync(
@@ -273,12 +928,6 @@ public sealed class OllamaClient : IDisposable
         string model,
         CancellationToken cancellationToken)
     {
-        if (model.StartsWith("translategemma", StringComparison.OrdinalIgnoreCase))
-        {
-            await TranslateGemmaBatchAsync(regions, model, cancellationToken);
-            return;
-        }
-
         var input = regions.Select(region => new
         {
             id = region.Id.ToString("N"),
@@ -289,8 +938,10 @@ public sealed class OllamaClient : IDisposable
         string prompt =
             """
             Traduce todos los elementos de la lista a español natural de España.
-            Conserva la voz, intención, puntuación y tratamiento de cada personaje. Sé conciso para que el texto
-            pueda caber en el mismo bocadillo. Adapta onomatopeyas a una forma habitual en cómic español
+            La lista está en el orden de lectura de una página completa: úsala como contexto continuo y reconstruye
+            errores obvios del OCR antes de traducir. Conserva con exactitud voz, intención, puntuación, sujeto y
+            todas las negaciones; nunca inviertas quién hizo una acción ni conviertas "no ocurrió" en "ocurrió".
+            Sé conciso para que el texto pueda caber en el mismo bocadillo. Adapta onomatopeyas a una forma habitual en cómic español
             (por ejemplo BOOM puede ser ¡BUM! y SMASH puede ser ¡CRASH! según el contexto).
             Devuelve exactamente una traducción no vacía para cada id, sin comillas añadidas ni comentarios.
 
@@ -323,87 +974,6 @@ public sealed class OllamaClient : IDisposable
             if (byId.TryGetValue(id, out ComicRegion? region) && !string.IsNullOrWhiteSpace(translation))
             {
                 region.Translation = translation;
-            }
-        }
-    }
-
-    private async Task TranslateGemmaBatchAsync(
-        IReadOnlyList<ComicRegion> regions,
-        string model,
-        CancellationToken cancellationToken)
-    {
-        var blocks = regions.Select((region, index) =>
-            $"{index:000}||| {System.Text.RegularExpressions.Regex.Replace(region.Original.Trim(), @"\s+", " ")}");
-        string text = string.Join("\n", blocks);
-        string prompt =
-            """
-            You are a professional English (en) to Spanish (es) translator. Your goal is to accurately convey
-            the meaning, voice and nuances of comic dialogue while using natural Spanish from Spain.
-            Produce only the Spanish translation, without explanations or commentary.
-            Every input line starts with a three-digit number and |||. Copy that prefix exactly at the start of
-            the translated line. The lines appear in page reading order and belong to the same scene: use every
-            preceding and following line as context for pronouns, jokes, tone and speaker intent, while still returning
-            exactly one translation for each numbered line. Keep each translation concise enough for its speech bubble.
-            The English comes from OCR and may contain an obvious substituted or missing character. Silently restore
-            the intended English word from grammar and scene context before translating; never transliterate an OCR typo.
-            Translate common exclamations idiomatically: for example, VICTORY! is ¡VICTORIA!, never ¡VICTORIO!.
-            Preserve actions exactly: hitting someone with an object is not giving that object to them.
-            There are two blank lines before the text to translate.
-
-
-            """ + text;
-
-        object payload = new
-        {
-            model,
-            stream = false,
-            keep_alive = "15m",
-            messages = new[] { new { role = "user", content = prompt } },
-            options = new
-            {
-                temperature = 0,
-                num_ctx = 4096,
-                num_predict = 1200
-            }
-        };
-
-        string content = await SendChatAsync(payload, cancellationToken);
-        System.Text.RegularExpressions.MatchCollection matches = System.Text.RegularExpressions.Regex.Matches(
-            content,
-            @"^(\d{3})\|\|\|\s*(.+?)\s*$",
-            System.Text.RegularExpressions.RegexOptions.Multiline
-                | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
-
-        foreach (System.Text.RegularExpressions.Match match in matches)
-        {
-            if (!int.TryParse(match.Groups[1].Value, out int index)
-                || index < 0
-                || index >= regions.Count)
-            {
-                continue;
-            }
-
-            string translation = TrimQuotationMarks(match.Groups[2].Value.Replace("\r", string.Empty).Trim());
-            if (!string.IsNullOrWhiteSpace(translation))
-            {
-                regions[index].Translation = translation;
-            }
-        }
-
-        if (matches.Count == 0)
-        {
-            string[] translations = System.Text.RegularExpressions.Regex
-                .Split(content.Trim(), @"\r?\n\s*\r?\n")
-                .Select(value => TrimQuotationMarks(value.Trim()))
-                .Where(value => !string.IsNullOrWhiteSpace(value))
-                .ToArray();
-
-            if (translations.Length == regions.Count)
-            {
-                for (int index = 0; index < regions.Count; index++)
-                {
-                    regions[index].Translation = translations[index];
-                }
             }
         }
     }

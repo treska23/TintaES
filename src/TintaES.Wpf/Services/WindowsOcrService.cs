@@ -1,4 +1,5 @@
 using System.IO;
+using System.Windows;
 using System.Windows.Media.Imaging;
 using TintaES.Core;
 using Windows.Globalization;
@@ -11,6 +12,45 @@ namespace TintaES.Wpf.Services;
 public sealed class WindowsOcrService
 {
     private const double CoordinateScale = 1000d;
+
+    public async Task<ComicAnalysis> RecognizeWithTilingAsync(
+        BitmapSource source,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        int tileWidth = Math.Min(source.PixelWidth, 640);
+        int tileHeight = Math.Min(source.PixelHeight, 640);
+        IReadOnlyList<int> xOrigins = CreateTileOrigins(source.PixelWidth, tileWidth, 90);
+        IReadOnlyList<int> yOrigins = CreateTileOrigins(source.PixelHeight, tileHeight, 90);
+        var detected = new List<ComicRegion>();
+
+        foreach (int y in yOrigins)
+        {
+            foreach (int x in xOrigins)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                int width = Math.Min(tileWidth, source.PixelWidth - x);
+                int height = Math.Min(tileHeight, source.PixelHeight - y);
+                var crop = new CroppedBitmap(source, new Int32Rect(x, y, width, height));
+                crop.Freeze();
+
+                ComicAnalysis tile = await RecognizeAsync(crop, cancellationToken);
+                detected.AddRange(tile.Regions.Select(region =>
+                    MapRegionToPage(
+                        region,
+                        x,
+                        y,
+                        width,
+                        height,
+                        source.PixelWidth,
+                        source.PixelHeight)));
+            }
+        }
+
+        return new ComicAnalysis("en", RegionMerger.Merge(detected));
+    }
 
     public async Task<ComicAnalysis> RecognizeAsync(
         BitmapSource source,
@@ -179,6 +219,80 @@ public sealed class WindowsOcrService
             box.Y / pageHeight * CoordinateScale,
             box.Width / pageWidth * CoordinateScale,
             box.Height / pageHeight * CoordinateScale).Clamp();
+    }
+
+    private static IReadOnlyList<int> CreateTileOrigins(int total, int size, int overlap)
+    {
+        if (size >= total)
+        {
+            return [0];
+        }
+
+        int stride = Math.Max(1, size - overlap);
+        var origins = new List<int>();
+        for (int origin = 0; origin < total; origin += stride)
+        {
+            int clamped = Math.Min(origin, total - size);
+            if (origins.Count == 0 || origins[^1] != clamped)
+            {
+                origins.Add(clamped);
+            }
+            if (clamped + size >= total)
+            {
+                break;
+            }
+        }
+        return origins;
+    }
+
+    private static ComicRegion MapRegionToPage(
+        ComicRegion region,
+        int tileX,
+        int tileY,
+        int tileWidth,
+        int tileHeight,
+        int pageWidth,
+        int pageHeight)
+    {
+        NormalizedRect MapRect(NormalizedRect box) =>
+            new(
+                (tileX + box.X / CoordinateScale * tileWidth) / pageWidth * CoordinateScale,
+                (tileY + box.Y / CoordinateScale * tileHeight) / pageHeight * CoordinateScale,
+                box.Width / CoordinateScale * tileWidth / pageWidth * CoordinateScale,
+                box.Height / CoordinateScale * tileHeight / pageHeight * CoordinateScale);
+
+        return RegionMerger.Sanitize(new ComicRegion
+        {
+            Original = region.Original,
+            Translation = string.Empty,
+            Type = region.Type,
+            Confidence = region.Confidence,
+            TextBox = MapRect(region.TextBox),
+            RenderBox = MapRect(region.RenderBox),
+            SafePolygon = region.SafePolygon.Select(point => new NormalizedPoint(
+                (tileX + point.X / CoordinateScale * tileWidth) / pageWidth * CoordinateScale,
+                (tileY + point.Y / CoordinateScale * tileHeight) / pageHeight * CoordinateScale)).ToArray(),
+            Rotation = region.Rotation,
+            CleanupMode = "none",
+            IsEnabled = false,
+            Style = new ComicTextStyle
+            {
+                FontCategory = region.Style.FontCategory,
+                FontWeight = region.Style.FontWeight,
+                FontSize = region.Style.FontSize,
+                FontWidthRatio = region.Style.FontWidthRatio,
+                LineHeightRatio = region.Style.LineHeightRatio,
+                OriginalLineCount = region.Style.OriginalLineCount,
+                Italic = region.Style.Italic,
+                Uppercase = region.Style.Uppercase,
+                TextColor = region.Style.TextColor,
+                OutlineColor = region.Style.OutlineColor,
+                OutlineWidth = region.Style.OutlineWidth,
+                Alignment = region.Style.Alignment,
+                BackgroundColor = region.Style.BackgroundColor,
+                Shadow = region.Style.Shadow
+            }
+        });
     }
 
     private static byte[] EncodePng(BitmapSource source)

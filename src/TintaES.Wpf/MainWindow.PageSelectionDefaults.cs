@@ -62,7 +62,7 @@ public partial class MainWindow
             return;
         }
 
-        string sessionKey = $"{_comicPages.Count}|{_comicPages[0].SourcePath}|{_comicPages[^1].SourcePath}";
+        string sessionKey = BuildActiveDocumentSessionKey();
         if (!string.Equals(sessionKey, _pageSelectionDefaultsSessionKey, StringComparison.OrdinalIgnoreCase))
         {
             _pageSelectionDefaultsSessionKey = sessionKey;
@@ -70,9 +70,7 @@ public partial class MainWindow
             Dispatcher.BeginInvoke(
                 () =>
                 {
-                    string currentKey = _comicPages.Count == 0
-                        ? string.Empty
-                        : $"{_comicPages.Count}|{_comicPages[0].SourcePath}|{_comicPages[^1].SourcePath}";
+                    string currentKey = BuildActiveDocumentSessionKey();
                     if (string.Equals(currentKey, sessionKey, StringComparison.OrdinalIgnoreCase))
                     {
                         SelectAllComicPages();

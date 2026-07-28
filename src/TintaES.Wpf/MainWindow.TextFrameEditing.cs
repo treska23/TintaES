@@ -10,6 +10,7 @@ using System.Windows.Media;
 using System.Windows.Threading;
 using TintaES.Core;
 using TintaES.Wpf.Controls;
+using TintaES.Wpf.Services;
 
 namespace TintaES.Wpf;
 
@@ -249,20 +250,25 @@ public partial class MainWindow
 
         layer.ClipToBounds = true;
 
+        bool useNativeFrame = region.IsManual && region.Type != "sfx";
         foreach (FastComicTextPreviewElement preview in layer.Children.OfType<FastComicTextPreviewElement>())
         {
             preview.Visibility = Visibility.Collapsed;
         }
         foreach (ComicTextElement automatic in layer.Children.OfType<ComicTextElement>())
         {
-            automatic.Visibility = Visibility.Collapsed;
+            automatic.Visibility = region.IsEnabled && !useNativeFrame
+                ? Visibility.Visible
+                : Visibility.Collapsed;
         }
         foreach (ManualComicTextElement manual in layer.Children.OfType<ManualComicTextElement>())
         {
             manual.Visibility = Visibility.Collapsed;
         }
 
-        textBlock.Visibility = region.IsEnabled ? Visibility.Visible : Visibility.Collapsed;
+        textBlock.Visibility = region.IsEnabled && useNativeFrame
+            ? Visibility.Visible
+            : Visibility.Collapsed;
         return textBlock;
     }
 
@@ -284,7 +290,16 @@ public partial class MainWindow
                 foreach (FastComicTextPreviewElement preview in _selectedTextFrameLayer.Children
                              .OfType<FastComicTextPreviewElement>())
                 {
-                    preview.Visibility = region.IsEnabled ? Visibility.Visible : Visibility.Collapsed;
+                    preview.Visibility = region.IsEnabled && region.IsManual
+                        ? Visibility.Visible
+                        : Visibility.Collapsed;
+                }
+                foreach (ComicTextElement automatic in _selectedTextFrameLayer.Children
+                             .OfType<ComicTextElement>())
+                {
+                    automatic.Visibility = region.IsEnabled && !region.IsManual
+                        ? Visibility.Visible
+                        : Visibility.Collapsed;
                 }
             }
 
@@ -373,9 +388,20 @@ public partial class MainWindow
         double fontSize = region.IsManual && region.Type != "sfx"
             ? ResolveNativeManualBaseSize(region, height) * Math.Clamp(region.ManualFontScale, 0.25, 2.5)
             : ResolveNativeAutomaticFontSize(region, width, height, text);
+        if (region.IsManual && region.Type != "sfx")
+        {
+            fontSize = FitNativeTextFrameFontSize(
+                region,
+                text,
+                fontSize,
+                Math.Max(2, width - padding * 2),
+                Math.Max(2, height - padding * 2));
+        }
 
         textBlock.Text = text;
-        textBlock.FontFamily = new FontFamily(ResolveNativeFontFamily(region));
+        textBlock.FontFamily = ComicFontResolver.Resolve(
+            region.Style.FontFamily,
+            region.Style.FontCategory);
         textBlock.FontWeight = FontWeight.FromOpenTypeWeight(Math.Clamp(region.Style.FontWeight, 100, 999));
         textBlock.FontStyle = region.Style.Italic ? FontStyles.Italic : FontStyles.Normal;
         textBlock.Foreground = ParseNativeTextBrush(region.Style.TextColor, Brushes.Black);
@@ -393,7 +419,67 @@ public partial class MainWindow
         textBlock.MaxHeight = Math.Max(2, height - padding * 2);
         textBlock.Width = Math.Max(2, width - padding * 2);
         textBlock.ClipToBounds = true;
-        textBlock.Visibility = region.IsEnabled ? Visibility.Visible : Visibility.Collapsed;
+        textBlock.Visibility = region.IsEnabled && region.IsManual && region.Type != "sfx"
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+    }
+
+    private double FitNativeTextFrameFontSize(
+        ComicRegion region,
+        string text,
+        double preferredSize,
+        double availableWidth,
+        double availableHeight)
+    {
+        Typeface typeface = new(
+            ComicFontResolver.Resolve(region.Style.FontFamily, region.Style.FontCategory),
+            region.Style.Italic ? FontStyles.Italic : FontStyles.Normal,
+            FontWeight.FromOpenTypeWeight(Math.Clamp(region.Style.FontWeight, 100, 999)),
+            FontStretches.Normal);
+        double pixelsPerDip = VisualTreeHelper.GetDpi(this).PixelsPerDip;
+
+        bool Fits(double size)
+        {
+            var formatted = new FormattedText(
+                text,
+                CultureInfo.GetCultureInfo("es-ES"),
+                FlowDirection.LeftToRight,
+                typeface,
+                size,
+                Brushes.Black,
+                pixelsPerDip)
+            {
+                MaxTextWidth = availableWidth,
+                LineHeight = Math.Max(
+                    size * 0.9,
+                    size * Math.Clamp(region.Style.LineHeightRatio, 0.82, 1.8)),
+                Trimming = TextTrimming.None
+            };
+            return formatted.Height <= availableHeight + 0.5;
+        }
+
+        if (Fits(preferredSize))
+        {
+            return preferredSize;
+        }
+
+        double low = 1.2;
+        double high = preferredSize;
+        double best = low;
+        for (int index = 0; index < 12; index++)
+        {
+            double candidate = (low + high) / 2;
+            if (Fits(candidate))
+            {
+                best = candidate;
+                low = candidate;
+            }
+            else
+            {
+                high = candidate;
+            }
+        }
+        return best;
     }
 
     private double ResolveNativeManualBaseSize(ComicRegion region, double boxHeight)
@@ -575,20 +661,6 @@ public partial class MainWindow
             "Caja redimensionada. El texto queda envuelto y recortado dentro de esta caja.",
             "#58A77D");
     }
-
-    private static string ResolveNativeFontFamily(ComicRegion region) =>
-        !string.IsNullOrWhiteSpace(region.Style.FontFamily)
-            ? region.Style.FontFamily
-            : region.Style.FontCategory switch
-            {
-                "comic" => "Comic Sans MS",
-                "handwritten" => "Segoe Print",
-                "condensed" => "Arial Narrow",
-                "serif" => "Georgia",
-                "display" => "Impact",
-                "monospace" => "Consolas",
-                _ => "Arial"
-            };
 
     private static Brush ParseNativeTextBrush(string? value, Brush fallback)
     {

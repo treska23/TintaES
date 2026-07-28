@@ -378,6 +378,7 @@ public partial class MainWindow
         history.Redo.Push(CaptureEditorSnapshot());
         EditorSnapshot target = history.Undo.Pop();
         ApplyEditorSnapshot(target);
+        MarkActiveDocumentDirty();
         SetFooterStatus("Cambio deshecho.", "#4CB2BB");
     }
 
@@ -399,6 +400,7 @@ public partial class MainWindow
         history.Undo.Push(CaptureEditorSnapshot());
         EditorSnapshot target = history.Redo.Pop();
         ApplyEditorSnapshot(target);
+        MarkActiveDocumentDirty();
         SetFooterStatus("Cambio rehecho.", "#4CB2BB");
     }
 
@@ -411,6 +413,7 @@ public partial class MainWindow
 
         EditorPageHistory history = GetCurrentEditorHistory(create: true)!;
         history.Undo.Push(CaptureEditorSnapshot());
+        MarkActiveDocumentDirty();
         while (history.Undo.Count > EditorHistoryLimit)
         {
             EditorSnapshot[] ordered = history.Undo.Reverse().Skip(1).ToArray();
@@ -431,9 +434,7 @@ public partial class MainWindow
             return null;
         }
 
-        string sessionKey = _comicPages.Count == 0
-            ? string.Empty
-            : $"{_comicPages.Count}|{_comicPages[0].SourcePath}|{_comicPages[^1].SourcePath}";
+        string sessionKey = BuildActiveDocumentSessionKey();
         if (!string.Equals(sessionKey, _editorHistorySessionKey, StringComparison.OrdinalIgnoreCase))
         {
             _editorHistorySessionKey = sessionKey;
@@ -545,6 +546,7 @@ public partial class MainWindow
             EditorPageHistory history = GetCurrentEditorHistory(create: true)!;
             history.Undo.Push(_textEditBaseline);
             history.Redo.Clear();
+            MarkActiveDocumentDirty();
         }
 
         _textEditBaseline = null;
@@ -829,6 +831,7 @@ public partial class MainWindow
             Id = source.Id,
             Order = source.Order,
             Original = source.Original,
+            OcrAlternatives = source.OcrAlternatives.ToArray(),
             Translation = source.Translation,
             Type = source.Type,
             Confidence = source.Confidence,

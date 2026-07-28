@@ -110,13 +110,11 @@ public partial class MainWindow
 
         ComicRegion region = _selectedRegion;
         region.Translation = TranslationTextBox.Text;
-        if (region.Type != "sfx")
-        {
-            EnsureRegionUsesTextFrame(region);
-        }
 
         // ComicRegion.PropertyChanged invalida únicamente el preview de esta región.
-        // No RebuildOverlay, UpdateCleanedPreview ni guardado de PNG durante la escritura.
+        // Una corrección de texto no convierte una zona automática en caja manual: así el
+        // autoajuste sigue garantizando que la nueva frase permanezca dentro del bocadillo.
+        // El modo manual se activa solo al redimensionar o cambiar expresamente la escala.
     }
 
     private void FontScaleSlider_ValueChanged_FixedManual(
@@ -167,6 +165,7 @@ public partial class MainWindow
         region.IsManual = true;
         region.Vertical = false;
         region.NotifyVisualChange();
+        QueueFastCanvasTextRefresh(forceLayout: false);
     }
 
     private double ResolveTextFrameBaseSize(ComicRegion region)

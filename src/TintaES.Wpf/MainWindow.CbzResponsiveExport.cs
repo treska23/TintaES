@@ -8,13 +8,13 @@ namespace TintaES.Wpf;
 
 /// <summary>
 /// Exportación CBZ resistente a páginas que bloquean el render de WPF. Cada página se procesa
-/// en un hilo STA independiente. Cada dos minutos se pregunta si debe seguir esperando; si el
+/// en un hilo STA independiente. A los treinta segundos se pregunta si debe seguir esperando; si el
 /// usuario no responde en treinta segundos, la página se omite. Los checkboxes actúan como lista
 /// de pendientes: una página se desmarca al quedar preparada.
 /// </summary>
 public partial class MainWindow
 {
-    private static readonly TimeSpan CbzPageReviewInterval = TimeSpan.FromMinutes(2);
+    private static readonly TimeSpan CbzPageReviewInterval = TimeSpan.FromSeconds(30);
     private static readonly bool ResponsiveCbzExportRegistered = RegisterResponsiveCbzExport();
 
     private bool _responsiveCbzExportInstalled;
@@ -160,7 +160,7 @@ public partial class MainWindow
                     : $"Renderizando página {pageIndex + 1} · {position + 1}/{selectedPages.Count}";
                 FooterStatusText.Text = reusable
                     ? "Reutilizando una página preparada de una exportación interrumpida…"
-                    : $"Preparando página {pageIndex + 1} de {_comicPages.Count} · se preguntará cada 2 minutos…";
+                    : $"Preparando página {pageIndex + 1} de {_comicPages.Count} · aviso si tarda más de 30 segundos…";
                 await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Render);
 
                 if (!reusable)

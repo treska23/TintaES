@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using TintaES.Core;
 
 var tests = new (string Name, Func<Task> Run)[]
@@ -8,7 +9,10 @@ var tests = new (string Name, Func<Task> Run)[]
     ("Sanea cajas gigantes", TestSanitizeAsync),
     ("Rechaza polígonos de bocadillo desmesurados", TestOversizedBubblePolygonAsync),
     ("Combina lecturas solapadas", TestMergeAsync),
-    ("Separa detección y traducción", TestOllamaPipelineAsync)
+    ("Separa áreas de rotulación que compiten", TestCompetingRenderAreasAsync),
+    ("Nunca vuelve a dibujar el OCR inglés como texto de resultado", TestDisplayTextNeverUsesOriginalAsync),
+    ("Separa detección y traducción", TestOllamaPipelineAsync),
+    ("No desplaza traducciones si TranslateGemma omite una línea", TestTranslateGemmaStableMappingAsync)
 };
 
 int failures = 0;
@@ -114,6 +118,85 @@ static Task TestMergeAsync()
     return Task.CompletedTask;
 }
 
+static Task TestCompetingRenderAreasAsync()
+{
+    var left = new ComicRegion
+    {
+        Original = "LEFT BALLOON",
+        Type = "dialogue",
+        TextBox = new NormalizedRect(100, 100, 120, 80),
+        RenderBox = new NormalizedRect(70, 75, 190, 125),
+        SafePolygon =
+        [
+            new NormalizedPoint(70, 75),
+            new NormalizedPoint(260, 75),
+            new NormalizedPoint(260, 200),
+            new NormalizedPoint(70, 200)
+        ]
+    };
+    var right = new ComicRegion
+    {
+        Original = "RIGHT BALLOON",
+        Type = "dialogue",
+        TextBox = new NormalizedRect(225, 145, 120, 80),
+        RenderBox = new NormalizedRect(185, 115, 200, 135),
+        SafePolygon =
+        [
+            new NormalizedPoint(185, 115),
+            new NormalizedPoint(385, 115),
+            new NormalizedPoint(385, 250),
+            new NormalizedPoint(185, 250)
+        ]
+    };
+
+    RegionMerger.ResolveCompetingRenderAreas([left, right]);
+
+    Assert(left.RenderBox.Right <= right.RenderBox.X + 0.01,
+        "Dos bocadillos distintos no pueden compartir área de rotulación.");
+    Assert(left.RenderBox.Right < right.RenderBox.X,
+        "La separación debe dejar un margen real entre textos vecinos.");
+    Assert(left.RenderBox.Right >= left.TextBox.Right - 10,
+        "La separación solo puede recortar un margen mínimo del bloque original izquierdo.");
+    Assert(right.RenderBox.X <= right.TextBox.X + 10,
+        "La separación solo puede recortar un margen mínimo del bloque original derecho.");
+
+    var shallowLeft = new ComicRegion
+    {
+        Original = "NEAR LEFT",
+        Type = "dialogue",
+        TextBox = new NormalizedRect(100, 400, 120, 80),
+        RenderBox = new NormalizedRect(90, 390, 145, 100)
+    };
+    var shallowRight = new ComicRegion
+    {
+        Original = "NEAR RIGHT",
+        Type = "dialogue",
+        TextBox = new NormalizedRect(225, 402, 120, 80),
+        RenderBox = new NormalizedRect(225, 392, 145, 100)
+    };
+    RegionMerger.ResolveCompetingRenderAreas([shallowLeft, shallowRight]);
+    Assert(shallowLeft.RenderBox.Right < shallowRight.RenderBox.X,
+        "Incluso un solape estrecho entre bocadillos contiguos debe dejar un canal libre.");
+    return Task.CompletedTask;
+}
+
+static Task TestDisplayTextNeverUsesOriginalAsync()
+{
+    var region = new ComicRegion
+    {
+        Original = "OPEN YOUR EYES",
+        Translation = string.Empty
+    };
+
+    Assert(region.DisplayText == string.Empty,
+        "Una traducción vacía no puede hacer que el lienzo vuelva a dibujar el inglés.");
+
+    region.Translation = "ABRE LOS OJOS";
+    Assert(region.DisplayText == "ABRE LOS OJOS",
+        "El lienzo debe mostrar exclusivamente la traducción española.");
+    return Task.CompletedTask;
+}
+
 static async Task TestOllamaPipelineAsync()
 {
     var handler = new FakeOllamaHandler();
@@ -128,6 +211,26 @@ static async Task TestOllamaPipelineAsync()
     Assert(Math.Abs(result.Regions[0].Style.FontSize - 52) < 0.01, "Debe convertir el tamaño detectado a coordenadas de página.");
     Assert(result.Regions[0].Style.OriginalLineCount == 1, "Debe conservar el número de líneas original.");
     Assert(handler.VisionCalls == 1 && handler.TranslationCalls == 1, "Debe realizar detección y traducción por separado.");
+}
+
+static async Task TestTranslateGemmaStableMappingAsync()
+{
+    var handler = new FakeTranslateGemmaHandler();
+    using var http = new HttpClient(handler) { BaseAddress = new Uri("http://127.0.0.1:11434/") };
+    using var client = new OllamaClient(httpClient: http);
+    ComicRegion[] regions =
+    [
+        new() { Original = "FIRST LINE", Type = "dialogue" },
+        new() { Original = "SECOND LINE", Type = "dialogue" },
+        new() { Original = "THIRD LINE", Type = "dialogue" }
+    ];
+
+    await client.TranslateRegionsAsync(regions, "translategemma:4b", CancellationToken.None);
+
+    Assert(regions[0].Translation == "Primera frase", "La primera traducción debe conservar su región.");
+    Assert(regions[1].Translation == "Segunda frase", "La línea omitida debe repetirse de forma aislada.");
+    Assert(regions[2].Translation == "Tercera frase", "La tercera traducción no puede desplazarse a la segunda región.");
+    Assert(handler.Calls == 2, "Debe hacer un lote y un único reintento para la línea omitida.");
 }
 
 static void Assert(bool condition, string message)
@@ -211,6 +314,54 @@ sealed class FakeOllamaHandler : HttpMessageHandler
         return new HttpResponseMessage(HttpStatusCode.OK)
         {
             Content = new StringContent(JsonSerializer.Serialize(value), Encoding.UTF8, "application/json")
+        };
+    }
+}
+
+sealed class FakeTranslateGemmaHandler : HttpMessageHandler
+{
+    public int Calls { get; private set; }
+
+    protected override async Task<HttpResponseMessage> SendAsync(
+        HttpRequestMessage request,
+        CancellationToken cancellationToken)
+    {
+        Calls++;
+        string body = await request.Content!.ReadAsStringAsync(cancellationToken);
+        using JsonDocument requestDocument = JsonDocument.Parse(body);
+        string prompt = requestDocument.RootElement
+            .GetProperty("messages")[0]
+            .GetProperty("content")
+            .GetString()!;
+        Match[] targets = Regex.Matches(
+                prompt,
+                @"\[\[(R[A-F0-9]+)\]\]\s*(.*?)\s*\[\[/\1\]\]",
+                RegexOptions.Singleline | RegexOptions.CultureInvariant)
+            .Cast<Match>()
+            .ToArray();
+
+        IEnumerable<Match> returned = Calls == 1 && targets.Length > 1
+            ? targets.Where((_, index) => index != 1)
+            : targets;
+        string content = string.Join(
+            "\n",
+            returned.Select(match =>
+            {
+                string token = match.Groups[1].Value;
+                string source = match.Groups[2].Value;
+                string translation = source.Contains("FIRST", StringComparison.Ordinal)
+                    ? "Primera frase"
+                    : source.Contains("SECOND", StringComparison.Ordinal)
+                        ? "Segunda frase"
+                        : "Tercera frase";
+                return $"[[{token}]] {translation} [[/{token}]]";
+            }));
+        return new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                JsonSerializer.Serialize(new { message = new { content } }),
+                Encoding.UTF8,
+                "application/json")
         };
     }
 }

@@ -44,12 +44,53 @@ public static class RegionMerger
             ordered[index].Order = index + 1;
         }
 
+        ResolveCompetingRenderAreas(ordered);
         return ordered;
+    }
+
+    public static void ResolveCompetingRenderAreas(IReadOnlyList<ComicRegion> regions)
+    {
+        for (int firstIndex = 0; firstIndex < regions.Count; firstIndex++)
+        {
+            for (int secondIndex = firstIndex + 1; secondIndex < regions.Count; secondIndex++)
+            {
+                ComicRegion first = regions[firstIndex];
+                ComicRegion second = regions[secondIndex];
+                double intersection = IntersectionArea(first.RenderBox, second.RenderBox);
+                double overlap = intersection / Math.Max(1, Math.Min(first.RenderBox.Area, second.RenderBox.Area));
+                if (overlap < 0.015 || IntersectionArea(first.TextBox, second.TextBox) > 1)
+                {
+                    continue;
+                }
+
+                double firstCentreX = first.TextBox.X + first.TextBox.Width / 2;
+                double firstCentreY = first.TextBox.Y + first.TextBox.Height / 2;
+                double secondCentreX = second.TextBox.X + second.TextBox.Width / 2;
+                double secondCentreY = second.TextBox.Y + second.TextBox.Height / 2;
+                double deltaX = Math.Abs(secondCentreX - firstCentreX);
+                double deltaY = Math.Abs(secondCentreY - firstCentreY);
+
+                if (deltaX >= deltaY
+                    && TrySeparateHorizontally(first, second, firstCentreX, secondCentreX))
+                {
+                    continue;
+                }
+
+                TrySeparateVertically(first, second, firstCentreY, secondCentreY);
+            }
+        }
     }
 
     public static ComicRegion Sanitize(ComicRegion region)
     {
         region.Original = TrimQuotationMarks(region.Original);
+        region.OcrAlternatives = (region.OcrAlternatives ?? [])
+            .Select(TrimQuotationMarks)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Where(value => !string.Equals(value, region.Original, StringComparison.OrdinalIgnoreCase))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(4)
+            .ToArray();
         region.Translation = TrimQuotationMarks(region.Translation);
         region.TextBox = region.TextBox.Clamp();
         region.RenderBox = region.RenderBox.Clamp();
@@ -60,6 +101,8 @@ public static class RegionMerger
 
         if (region.Type is "dialogue" or "thought")
         {
+            region.SafePolygon = ConstrainDialoguePolygon(region.SafePolygon, region.TextBox);
+
             // El texto original ya estaba dentro del bocadillo. Ese bloque es nuestra referencia
             // más fiable. Una silueta de bocadillo detectada solo se acepta si permanece cerca de
             // esa zona; así una detección antigua o una cola conectada al fondo nunca puede convertir
@@ -126,6 +169,103 @@ public static class RegionMerger
         return union <= 0 ? 0 : intersection / union;
     }
 
+    private static double IntersectionArea(NormalizedRect first, NormalizedRect second)
+    {
+        double left = Math.Max(first.X, second.X);
+        double top = Math.Max(first.Y, second.Y);
+        double right = Math.Min(first.Right, second.Right);
+        double bottom = Math.Min(first.Bottom, second.Bottom);
+        return Math.Max(0, right - left) * Math.Max(0, bottom - top);
+    }
+
+    private static bool TrySeparateHorizontally(
+        ComicRegion first,
+        ComicRegion second,
+        double firstCentre,
+        double secondCentre)
+    {
+        ComicRegion left = firstCentre <= secondCentre ? first : second;
+        ComicRegion right = ReferenceEquals(left, first) ? second : first;
+        if (left.TextBox.Right > right.TextBox.X + 1)
+        {
+            return false;
+        }
+
+        double boundary = (left.TextBox.Right + right.TextBox.X) / 2;
+        double gutter = Math.Clamp(
+            Math.Min(left.TextBox.Width, right.TextBox.Width) * 0.08,
+            5,
+            9);
+        NormalizedRect leftBox = left.RenderBox;
+        NormalizedRect rightBox = right.RenderBox;
+        SetStrictSeparatedBox(
+            left,
+            new NormalizedRect(
+                leftBox.X,
+                leftBox.Y,
+                Math.Max(5, Math.Min(leftBox.Right, boundary - gutter) - leftBox.X),
+                leftBox.Height));
+        SetStrictSeparatedBox(
+            right,
+            new NormalizedRect(
+                Math.Max(rightBox.X, boundary + gutter),
+                rightBox.Y,
+                Math.Max(5, rightBox.Right - Math.Max(rightBox.X, boundary + gutter)),
+                rightBox.Height));
+        return true;
+    }
+
+    private static bool TrySeparateVertically(
+        ComicRegion first,
+        ComicRegion second,
+        double firstCentre,
+        double secondCentre)
+    {
+        ComicRegion top = firstCentre <= secondCentre ? first : second;
+        ComicRegion bottom = ReferenceEquals(top, first) ? second : first;
+        if (top.TextBox.Bottom > bottom.TextBox.Y + 1)
+        {
+            return false;
+        }
+
+        double boundary = (top.TextBox.Bottom + bottom.TextBox.Y) / 2;
+        double gutter = Math.Clamp(
+            Math.Min(top.TextBox.Height, bottom.TextBox.Height) * 0.08,
+            5,
+            9);
+        NormalizedRect topBox = top.RenderBox;
+        NormalizedRect bottomBox = bottom.RenderBox;
+        SetStrictSeparatedBox(
+            top,
+            new NormalizedRect(
+                topBox.X,
+                topBox.Y,
+                topBox.Width,
+                Math.Max(5, Math.Min(topBox.Bottom, boundary - gutter) - topBox.Y)));
+        SetStrictSeparatedBox(
+            bottom,
+            new NormalizedRect(
+                bottomBox.X,
+                Math.Max(bottomBox.Y, boundary + gutter),
+                bottomBox.Width,
+                Math.Max(5, bottomBox.Bottom - Math.Max(bottomBox.Y, boundary + gutter))));
+        return true;
+    }
+
+    private static void SetStrictSeparatedBox(ComicRegion region, NormalizedRect candidate)
+    {
+        region.RenderBox = candidate.Clamp();
+        region.SafePolygon = region.Type is "dialogue" or "thought"
+            ? CreateEllipsePolygon(region.RenderBox)
+            :
+            [
+                new NormalizedPoint(region.RenderBox.X, region.RenderBox.Y),
+                new NormalizedPoint(region.RenderBox.Right, region.RenderBox.Y),
+                new NormalizedPoint(region.RenderBox.Right, region.RenderBox.Bottom),
+                new NormalizedPoint(region.RenderBox.X, region.RenderBox.Bottom)
+            ];
+    }
+
     private static IReadOnlyList<NormalizedPoint> SanitizePolygon(IReadOnlyList<NormalizedPoint>? polygon)
     {
         if (polygon is null || polygon.Count < 3)
@@ -159,7 +299,7 @@ public static class RegionMerger
 
         // El interior seguro de un bocadillo puede ser mayor que las letras originales,
         // pero no varias veces mayor ni desplazarse lejos de ellas.
-        NormalizedRect allowedEnvelope = textBox.Expand(0.70, 0.90);
+        NormalizedRect allowedEnvelope = textBox.Expand(0.16, 0.06);
         bool insideEnvelope = bounds.X >= allowedEnvelope.X - 1
             && bounds.Y >= allowedEnvelope.Y - 1
             && bounds.Right <= allowedEnvelope.Right + 1
@@ -176,6 +316,36 @@ public static class RegionMerger
 
         return Math.Abs(boundsCentreX - textCentreX) <= Math.Max(12, textBox.Width * 0.28)
             && Math.Abs(boundsCentreY - textCentreY) <= Math.Max(10, textBox.Height * 0.30);
+    }
+
+    private static IReadOnlyList<NormalizedPoint> ConstrainDialoguePolygon(
+        IReadOnlyList<NormalizedPoint> polygon,
+        NormalizedRect textBox)
+    {
+        if (polygon.Count < 3)
+        {
+            return polygon;
+        }
+
+        NormalizedRect originalBounds = BoundsFromPolygon(polygon);
+        if (originalBounds.Area > textBox.Area * 3.2)
+        {
+            return [];
+        }
+
+        // Algunos contornos de visión incluyen la cola del bocadillo, el borde de la viñeta
+        // o incluso un globo vecino. Las letras originales son una referencia mucho más
+        // fiable: permitimos un 12 % de margen por lado para la traducción, pero ninguna
+        // silueta puede crecer más allá de ese corredor.
+        // En vertical apenas ampliamos el bloque OCR: las colas de los bocadillos suelen
+        // quedar conectadas al contorno y no son superficie válida para rotulación.
+        NormalizedRect envelope = textBox.Expand(0.16, 0.06);
+        IReadOnlyList<NormalizedPoint> constrained = SanitizePolygon(
+            polygon.Select(point => new NormalizedPoint(
+                    Math.Clamp(point.X, envelope.X, envelope.Right),
+                    Math.Clamp(point.Y, envelope.Y, envelope.Bottom)))
+                .ToArray());
+        return constrained.Count >= 3 ? constrained : [];
     }
 
     private static bool IsUsableGeneralPolygon(
@@ -207,8 +377,8 @@ public static class RegionMerger
         // Ampliamos solo un poco el bloque OCR. El texto traducido puede usar ese margen,
         // pero si es más largo tendrá que reducir el tamaño de fuente en lugar de invadir
         // el dibujo o otro bocadillo.
-        double expansionX = type == "thought" ? 0.14 : 0.18;
-        double expansionY = type == "thought" ? 0.18 : 0.22;
+        double expansionX = type == "thought" ? 0.12 : 0.14;
+        double expansionY = type == "thought" ? 0.10 : 0.08;
         return textBox.Expand(expansionX, expansionY);
     }
 
