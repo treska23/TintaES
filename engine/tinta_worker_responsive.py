@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tinta_worker as worker
+import tinta_quality_guard
 
 
 _original_init = worker.TintaTranslator.__init__
@@ -22,6 +23,7 @@ def _responsive_init(
 
 
 worker.TintaTranslator.__init__ = _responsive_init
+tinta_quality_guard.apply(worker)
 
 
 if __name__ == "__main__":
