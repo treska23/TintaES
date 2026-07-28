@@ -7,9 +7,8 @@ using Microsoft.Win32;
 namespace TintaES.Wpf;
 
 /// <summary>
-/// Permite incorporar una o varias imágenes sueltas al proyecto actual sin sustituir la sesión.
-/// Los archivos se copian al espacio temporal del proyecto para que permanezcan disponibles hasta
-/// que el usuario guarde el archivo .tinta.
+/// Incorpora una o varias imágenes sueltas a la pestaña activa. Las selecciones sucesivas son
+/// acumulativas: nunca sustituyen las páginas existentes ni crean un documento nuevo.
 /// </summary>
 public partial class MainWindow
 {
@@ -52,7 +51,7 @@ public partial class MainWindow
                 Content = "＋ Páginas",
                 Style = toolbarStyle,
                 Margin = new Thickness(7, 0, 0, 0),
-                ToolTip = "Agregar uno o varios archivos JPG, PNG, WEBP, BMP o TIFF al proyecto actual"
+                ToolTip = "Añadir uno o varios archivos de imagen al final de la pestaña actual"
             };
             _addImagePagesButton.Click += AddImagePagesButton_Click;
 
@@ -66,11 +65,10 @@ public partial class MainWindow
             && _classicMenu?.Items.OfType<MenuItem>().FirstOrDefault() is MenuItem fileMenu)
         {
             _menuAddImagePages = CreateMenuItem(
-                "_Agregar imágenes…",
+                "_Añadir páginas a la pestaña actual…",
                 null,
                 AddImagePagesButton_Click);
 
-            // Abrir cómic, abrir proyecto, agregar imágenes, separador.
             int insertionIndex = Math.Min(2, fileMenu.Items.Count);
             fileMenu.Items.Insert(insertionIndex, _menuAddImagePages);
         }
@@ -85,28 +83,40 @@ public partial class MainWindow
         DependencyPropertyChangedEventArgs e) =>
         UpdateAddImagePagesAvailability();
 
+    private bool CanAddImagePagesNow() =>
+        !_addingImagePages
+        && !_switchingDocument
+        && !_documentOpenPending
+        && !_comicBatchBusy
+        && !_pageNavigationBusy
+        && !_pageSaveBusy
+        && !_maskEditorBusy
+        && !_fastRegionDeletionBusy
+        && BusyOverlay.Visibility != Visibility.Visible;
+
     private void UpdateAddImagePagesAvailability()
     {
+        bool available = CanAddImagePagesNow();
         if (_addImagePagesButton is not null)
         {
-            _addImagePagesButton.IsEnabled = true;
+            _addImagePagesButton.IsEnabled = available;
         }
         if (_menuAddImagePages is not null)
         {
-            _menuAddImagePages.IsEnabled = true;
+            _menuAddImagePages.IsEnabled = available;
         }
     }
 
     private async void AddImagePagesButton_Click(object sender, RoutedEventArgs e)
     {
-        if (_addingImagePages)
+        if (!CanAddImagePagesNow())
         {
             return;
         }
 
         var dialog = new OpenFileDialog
         {
-            Title = "Agregar páginas de imagen",
+            Title = "Añadir páginas a la pestaña actual",
             Filter = "Imágenes compatibles|*.png;*.jpg;*.jpeg;*.webp;*.bmp;*.tif;*.tiff|PNG|*.png|JPEG|*.jpg;*.jpeg|WEBP|*.webp|BMP|*.bmp|TIFF|*.tif;*.tiff|Todos los archivos|*.*",
             FilterIndex = 1,
             Multiselect = true,
@@ -136,7 +146,13 @@ public partial class MainWindow
             return;
         }
 
-        await AwaitCurrentDocumentReadyForOpenAsync();
+        // El diálogo puede permanecer abierto mientras comienza otra operación.
+        if (!CanAddImagePagesNow())
+        {
+            SetFooterStatus("Espera a que termine la operación actual antes de añadir páginas.", "#C99A35");
+            return;
+        }
+
         PersistVisibleComicPageRegions();
         int firstAddedIndex = _comicPages.Count;
         bool wasEmpty = firstAddedIndex == 0;
@@ -144,29 +160,18 @@ public partial class MainWindow
         _addingImagePages = true;
         BusyOverlay.Visibility = Visibility.Visible;
         BusyTitleText.Text = selectedFiles.Length == 1
-            ? "Agregando una página…"
-            : $"Agregando {selectedFiles.Length} páginas…";
+            ? "Añadiendo una página…"
+            : $"Añadiendo {selectedFiles.Length} páginas…";
         BusyProgressBar.IsIndeterminate = true;
         FooterProgressBar.Visibility = Visibility.Visible;
         FooterProgressBar.IsIndeterminate = true;
-        FooterStatusText.Text = "Copiando las imágenes al proyecto…";
+        FooterStatusText.Text = "Copiando las imágenes a la pestaña actual…";
         UpdateAddImagePagesAvailability();
         await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Render);
 
         try
         {
-            if (wasEmpty)
-            {
-                PrepareNewComicWorkspace();
-                _comicTitle = ResolveAddedPagesTitle(selectedFiles);
-                _comicPageIndex = -1;
-                _visibleComicPageIndex = -1;
-            }
-            else
-            {
-                EnsureComicWorkspaceForAddedPages();
-            }
-
+            PrepareActiveDocumentForAccumulatedPages(selectedFiles, wasEmpty);
             string workspace = _comicWorkspace
                 ?? throw new InvalidOperationException("No se pudo preparar el espacio de trabajo del proyecto.");
 
@@ -177,15 +182,16 @@ public partial class MainWindow
             {
                 _comicPages.Add(new ComicBookPageState(page.SourcePath, page.DisplayName));
             }
-            if (!wasEmpty)
+
+            if (_activeDocumentSession is not null)
             {
-                foreach (int index in Enumerable.Range(firstAddedIndex, imported.Count))
+                for (int index = firstAddedIndex; index < _comicPages.Count; index++)
                 {
-                    MarkActiveDocumentDirty(index);
+                    _activeDocumentSession.DirtyPages.Add(index);
                 }
             }
-            SynchronizeActiveDocumentState();
 
+            SynchronizeActiveDocumentState();
             ClearComicPageBitmapCache();
             SynchronizeSelectorsAfterAddingPages(firstAddedIndex);
         }
@@ -193,11 +199,11 @@ public partial class MainWindow
         {
             MessageBox.Show(
                 this,
-                $"No se pudieron agregar las páginas.\n\n{exception.Message}",
+                $"No se pudieron añadir las páginas.\n\n{exception.Message}",
                 "Tinta ES",
                 MessageBoxButton.OK,
                 MessageBoxImage.Error);
-            SetFooterStatus("No se pudieron agregar las páginas.", "#EE594B");
+            SetFooterStatus("No se pudieron añadir las páginas.", "#EE594B");
             return;
         }
         finally
@@ -216,9 +222,46 @@ public partial class MainWindow
         await ShowComicPageFastAsync(firstAddedIndex);
         SetFooterStatus(
             selectedFiles.Length == 1
-                ? $"Página agregada · {_comicPages.Count} páginas en el proyecto"
-                : $"{selectedFiles.Length} páginas agregadas · {_comicPages.Count} páginas en el proyecto",
+                ? $"Página añadida · {_comicPages.Count} páginas en esta pestaña"
+                : $"{selectedFiles.Length} páginas añadidas · {_comicPages.Count} páginas en esta pestaña",
             "#58A77D");
+    }
+
+    private void PrepareActiveDocumentForAccumulatedPages(
+        IReadOnlyList<string> selectedFiles,
+        bool wasEmpty)
+    {
+        // A diferencia de Abrir cómic/Abrir carpeta, esta ruta jamás llama a
+        // PrepareNewComicWorkspace ni a BeginNewDocumentWorkspace: no crea pestañas.
+        EnsureComicWorkspaceForAddedPages();
+        InstallDocumentTabs();
+
+        if (_activeDocumentSession is null)
+        {
+            var session = new ComicDocumentSession
+            {
+                Title = ResolveAddedPagesTitle(selectedFiles),
+                Workspace = _comicWorkspace,
+                PageIndex = -1,
+                VisiblePageIndex = -1
+            };
+            _documentSessions.Add(session);
+            _activeDocumentSession = session;
+        }
+        else
+        {
+            _activeDocumentSession.Workspace = _comicWorkspace;
+        }
+
+        if (wasEmpty)
+        {
+            _comicTitle = ResolveAddedPagesTitle(selectedFiles);
+            _comicPageIndex = -1;
+            _visibleComicPageIndex = -1;
+            _activeDocumentSession.Title = _comicTitle;
+        }
+
+        RefreshDocumentTabs();
     }
 
     private void EnsureComicWorkspaceForAddedPages()
