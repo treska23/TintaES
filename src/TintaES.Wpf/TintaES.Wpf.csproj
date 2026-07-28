@@ -14,6 +14,7 @@
   <ItemGroup>
     <ProjectReference Include="..\TintaES.Core\TintaES.Core.csproj" />
     <Resource Include="..\..\engine\manga-image-translator\fonts\anime_ace_3.ttf"
-              Link="Resources\Fonts\anime_ace_3.ttf" />
+              Link="Resources\Fonts\anime_ace_3.ttf"
+              Condition="Exists('..\..\engine\manga-image-translator\fonts\anime_ace_3.ttf')" />
   </ItemGroup>
 </Project>
