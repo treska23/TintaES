@@ -45,6 +45,7 @@ public partial class MainWindow
         var stopwatch = Stopwatch.StartNew();
         int failures = 0;
         bool cancelled = false;
+        string? lastFailure = null;
 
         _comicBatchBusy = true;
         SetBusy(true);
@@ -81,7 +82,7 @@ public partial class MainWindow
                         BusyTitleText.Text = $"Página {humanPage}/{_comicPages.Count} · {value.Message}";
                     });
 
-                    OrganicAnalysisResult organic = await _organicEngine.AnalyzeAsync(
+                    OrganicAnalysisResult organic = await AnalyzePageWithWatchdogAsync(
                         page.SourcePath,
                         progress,
                         cancellationToken);
@@ -142,6 +143,7 @@ public partial class MainWindow
                 catch (Exception exception)
                 {
                     page.Error = exception.Message;
+                    lastFailure = exception.Message;
                     failures++;
                 }
 
@@ -181,7 +183,18 @@ public partial class MainWindow
         }
         else if (failures > 0)
         {
-            SetFooterStatus($"Proceso terminado en {FormatDuration(stopwatch.Elapsed.TotalSeconds)} · {failures} página(s) con error.", "#C99A35");
+            SetFooterStatus(
+                $"Proceso detenido sin bloquear la aplicación · {failures} página(s) con error.",
+                "#C99A35");
+            if (pending.Length == 1 && !string.IsNullOrWhiteSpace(lastFailure))
+            {
+                MessageBox.Show(
+                    this,
+                    lastFailure,
+                    "La página no pudo terminar",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+            }
         }
         else
         {
