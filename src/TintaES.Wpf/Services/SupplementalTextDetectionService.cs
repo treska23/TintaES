@@ -10,6 +10,8 @@ namespace TintaES.Wpf.Services;
 
 public sealed class SupplementalTextDetectionService
 {
+    private static readonly TimeSpan DetectionTimeout = TimeSpan.FromMinutes(4);
+
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         PropertyNameCaseInsensitive = true,
@@ -26,35 +28,49 @@ public sealed class SupplementalTextDetectionService
     {
         progress?.Report(new AnalysisProgress(2, 100, "Buscando textos pequeños que podrían quedar visibles…"));
         BitmapSource original = LoadBitmap(sourcePath);
-        Task<ComicAnalysis> windowsTask =
-            new WindowsOcrService().RecognizeAsync(original, cancellationToken);
-        Task<BrightCandidateManifest> brightTask = RunBrightCandidateDetectorAsync(
-            sourcePath,
-            outputDirectory,
-            projectRoot,
-            pythonPath,
-            cancellationToken);
+        using var detectorCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        detectorCancellation.CancelAfter(DetectionTimeout);
+        CancellationToken detectorToken = detectorCancellation.Token;
 
-        await Task.WhenAll(windowsTask, brightTask);
-        ComicAnalysis windows = await windowsTask;
-        BrightCandidateManifest bright = await brightTask;
+        try
+        {
+            Task<ComicAnalysis> windowsTask =
+                new WindowsOcrService().RecognizeAsync(original, detectorToken);
+            Task<BrightCandidateManifest> brightTask = RunBrightCandidateDetectorAsync(
+                sourcePath,
+                outputDirectory,
+                projectRoot,
+                pythonPath,
+                detectorToken);
 
-        IReadOnlyList<ComicRegion> merged = RegionMerger.Merge(
-            NormalizeWindowsRegions(windows.Regions)
-                .Where(region => IsPlausibleText(region.Original)));
+            await Task.WhenAll(windowsTask, brightTask);
+            ComicAnalysis windows = await windowsTask;
+            BrightCandidateManifest bright = await brightTask;
 
-        var payload = new SupplementalManifest(
-            bright.Width,
-            bright.Height,
-            bright.Candidates,
-            merged.Select(region => ToPayload(region, bright.Width, bright.Height)).ToArray());
-        string manifestPath = Path.Combine(outputDirectory, "supplemental-text.json");
-        await File.WriteAllTextAsync(
-            manifestPath,
-            JsonSerializer.Serialize(payload, JsonOptions),
-            Encoding.UTF8,
-            cancellationToken);
-        return manifestPath;
+            IReadOnlyList<ComicRegion> merged = RegionMerger.Merge(
+                NormalizeWindowsRegions(windows.Regions)
+                    .Where(region => IsPlausibleText(region.Original)));
+
+            var payload = new SupplementalManifest(
+                bright.Width,
+                bright.Height,
+                bright.Candidates,
+                merged.Select(region => ToPayload(region, bright.Width, bright.Height)).ToArray());
+            string manifestPath = Path.Combine(outputDirectory, "supplemental-text.json");
+            await File.WriteAllTextAsync(
+                manifestPath,
+                JsonSerializer.Serialize(payload, JsonOptions),
+                Encoding.UTF8,
+                detectorToken);
+            progress?.Report(new AnalysisProgress(7, 100, "Textos auxiliares localizados. Preparando el motor principal…"));
+            return manifestPath;
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new TimeoutException(
+                "La búsqueda auxiliar de textos superó cuatro minutos y se detuvo. " +
+                "La aplicación no seguirá esperando indefinidamente.");
+        }
     }
 
     private static async Task<BrightCandidateManifest> RunBrightCandidateDetectorAsync(
@@ -93,9 +109,17 @@ public sealed class SupplementalTextDetectionService
         using var process = Process.Start(startInfo)
                             ?? throw new InvalidOperationException(
                                 "No se pudo iniciar el detector de textos residuales.");
-        string output = await process.StandardOutput.ReadToEndAsync(cancellationToken);
-        string error = await process.StandardError.ReadToEndAsync(cancellationToken);
-        await process.WaitForExitAsync(cancellationToken);
+        using CancellationTokenRegistration registration = cancellationToken.Register(() => TryKill(process));
+
+        // Leer ambos canales a la vez evita que Python se bloquee si llena stderr
+        // mientras .NET espera a que termine stdout.
+        Task<string> outputTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
+        Task<string> errorTask = process.StandardError.ReadToEndAsync(cancellationToken);
+        Task exitTask = process.WaitForExitAsync(cancellationToken);
+        await Task.WhenAll(outputTask, errorTask, exitTask);
+
+        string output = await outputTask;
+        string error = await errorTask;
         if (process.ExitCode != 0)
         {
             throw new InvalidOperationException(
@@ -115,36 +139,19 @@ public sealed class SupplementalTextDetectionService
                    "El detector de textos residuales devolvió un manifiesto vacío.");
     }
 
-    private static ComicRegion CreateBrightRegion(
-        BrightCandidate candidate,
-        string text,
-        int pageWidth,
-        int pageHeight)
+    private static void TryKill(Process process)
     {
-        var box = new NormalizedRect(
-            candidate.X / (double)pageWidth * 1000,
-            candidate.Y / (double)pageHeight * 1000,
-            candidate.Width / (double)pageWidth * 1000,
-            candidate.Height / (double)pageHeight * 1000).Clamp();
-        bool uppercase = text.Any(char.IsLetter) && text.Where(char.IsLetter).All(char.IsUpper);
-        return RegionMerger.Sanitize(new ComicRegion
+        try
         {
-            Original = text.Trim(),
-            Type = "sfx",
-            Confidence = 0.76,
-            TextBox = box,
-            RenderBox = box.Expand(0.16, 0.20),
-            CleanupMode = "none",
-            IsEnabled = true,
-            Style = new ComicTextStyle
+            if (!process.HasExited)
             {
-                FontCategory = "display",
-                FontWeight = 700,
-                Uppercase = uppercase,
-                TextColor = "#F7F4E8",
-                Alignment = "center"
+                process.Kill(entireProcessTree: true);
             }
-        });
+        }
+        catch (InvalidOperationException)
+        {
+            // El proceso terminó al mismo tiempo que se canceló la operación.
+        }
     }
 
     private static bool IsPlausibleText(string value)
