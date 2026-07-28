@@ -8,6 +8,8 @@ namespace TintaES.Wpf;
 
 public partial class MainWindow
 {
+    private static readonly TimeSpan PageLoadWarningInterval = TimeSpan.FromSeconds(30);
+
     private readonly Dictionary<int, ComicPageBitmapCache> _comicPageBitmapCache = [];
     private readonly object _comicPageBitmapCacheLock = new();
     private bool _pageNavigationBusy;
@@ -38,10 +40,13 @@ public partial class MainWindow
             ComicPageBitmapCache cache = await GetComicPageBitmapCacheAsync(index, page);
             await ApplyComicPageAsync(index, page, cache);
 
-            // Una página de 1800 x 2700 puede ocupar decenas de MB por cada bitmap. Antes se
-            // decodificaban además original, fondo y máscara de las dos páginas vecinas. Ese
-            // trabajo seguía ejecutándose después de mostrar la página y provocaba los picones.
+            // Una página de 1800 x 2700 puede ocupar decenas de MB por cada bitmap. Solo
+            // conservamos la visible para no disparar el consumo al recorrer un cómic entero.
             PruneComicPageBitmapCache(index);
+        }
+        catch (OperationCanceledException)
+        {
+            SetFooterStatus($"Carga de la página {index + 1} cancelada.", "#C99A35");
         }
         catch (Exception exception)
         {
@@ -82,7 +87,64 @@ public partial class MainWindow
             }
         }
 
-        ComicPageBitmapCache loaded = await Task.Run(() => LoadComicPageBitmapCache(page));
+        object stageLock = new();
+        string currentStage = "abriendo la imagen original";
+        void ReportStage(string stage)
+        {
+            lock (stageLock)
+            {
+                currentStage = stage;
+            }
+
+            _ = Dispatcher.BeginInvoke(() =>
+            {
+                if (!_pageNavigationBusy)
+                {
+                    return;
+                }
+
+                BusyTitleText.Text = $"Página {index + 1}/{_comicPages.Count} · {stage}…";
+                FooterStatusText.Text = $"Página {index + 1} · {stage}…";
+            }, DispatcherPriority.Background);
+        }
+
+        using var loadCancellation = new CancellationTokenSource();
+        Task<ComicPageBitmapCache> loadTask = Task.Run(
+            () => LoadComicPageBitmapCache(page, ReportStage, loadCancellation.Token),
+            loadCancellation.Token);
+
+        while (!loadTask.IsCompleted)
+        {
+            Task completed = await Task.WhenAny(
+                loadTask,
+                Task.Delay(PageLoadWarningInterval));
+            if (completed == loadTask || loadTask.IsCompleted)
+            {
+                break;
+            }
+
+            string stage;
+            lock (stageLock)
+            {
+                stage = currentStage;
+            }
+
+            MessageBoxResult decision = MessageBox.Show(
+                this,
+                $"La página lleva 30 segundos {stage}.\n\n" +
+                "Esto no debería tardar tanto. ¿Quieres seguir esperando?",
+                "La carga está tardando demasiado",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning,
+                MessageBoxResult.No);
+            if (decision != MessageBoxResult.Yes)
+            {
+                loadCancellation.Cancel();
+                throw new OperationCanceledException("El usuario canceló la recarga de la página.");
+            }
+        }
+
+        ComicPageBitmapCache loaded = await loadTask;
         lock (_comicPageBitmapCacheLock)
         {
             _comicPageBitmapCache[index] = loaded;
@@ -90,19 +152,34 @@ public partial class MainWindow
         return loaded;
     }
 
-    private static ComicPageBitmapCache LoadComicPageBitmapCache(ComicBookPageState page)
+    private static ComicPageBitmapCache LoadComicPageBitmapCache(
+        ComicBookPageState page,
+        Action<string> reportStage,
+        CancellationToken cancellationToken)
     {
-        BitmapSource original = LoadBitmapSource(page.SourcePath);
-        BitmapSource? cleaned = page.Processed
+        cancellationToken.ThrowIfCancellationRequested();
+        reportStage("abriendo la imagen original");
+        BitmapSource original = LoadBitmapSourceDetached(page.SourcePath, cancellationToken);
+
+        BitmapSource? cleaned = null;
+        if (page.Processed
             && !string.IsNullOrWhiteSpace(page.CleanedPath)
-            && File.Exists(page.CleanedPath)
-                ? LoadBitmapSource(page.CleanedPath)
-                : null;
-        BitmapSource? mask = page.Processed
+            && File.Exists(page.CleanedPath))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            reportStage("abriendo el fondo limpio");
+            cleaned = LoadBitmapSourceDetached(page.CleanedPath, cancellationToken);
+        }
+
+        BitmapSource? mask = null;
+        if (page.Processed
             && !string.IsNullOrWhiteSpace(page.MaskPath)
-            && File.Exists(page.MaskPath)
-                ? LoadBitmapSource(page.MaskPath)
-                : null;
+            && File.Exists(page.MaskPath))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            reportStage("abriendo la máscara de texto");
+            mask = LoadBitmapSourceDetached(page.MaskPath, cancellationToken);
+        }
 
         return new ComicPageBitmapCache(
             page.SourcePath,
@@ -111,6 +188,73 @@ public partial class MainWindow
             original,
             cleaned,
             mask);
+    }
+
+    private static BitmapSource LoadBitmapSourceDetached(
+        string path,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!File.Exists(path))
+        {
+            throw new FileNotFoundException("No se encuentra una de las imágenes de la página.", path);
+        }
+
+        using var stream = new FileStream(
+            path,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.ReadWrite | FileShare.Delete,
+            bufferSize: 128 * 1024,
+            FileOptions.SequentialScan);
+        BitmapDecoder decoder = BitmapDecoder.Create(
+            stream,
+            BitmapCreateOptions.PreservePixelFormat,
+            BitmapCacheOption.OnLoad);
+        if (decoder.Frames.Count == 0)
+        {
+            throw new InvalidDataException($"La imagen «{Path.GetFileName(path)}» no contiene ningún fotograma.");
+        }
+
+        BitmapSource bitmap = decoder.Frames[0];
+        if (!bitmap.IsFrozen && bitmap.CanFreeze)
+        {
+            bitmap.Freeze();
+        }
+        cancellationToken.ThrowIfCancellationRequested();
+        return bitmap;
+    }
+
+    private void StoreComicPageBitmapCache(
+        int index,
+        ComicBookPageState page,
+        BitmapSource original,
+        BitmapSource cleaned,
+        BitmapSource mask)
+    {
+        FreezeForPageCache(original);
+        FreezeForPageCache(cleaned);
+        FreezeForPageCache(mask);
+
+        var cache = new ComicPageBitmapCache(
+            page.SourcePath,
+            page.CleanedPath,
+            page.MaskPath,
+            original,
+            cleaned,
+            mask);
+        lock (_comicPageBitmapCacheLock)
+        {
+            _comicPageBitmapCache[index] = cache;
+        }
+    }
+
+    private static void FreezeForPageCache(BitmapSource bitmap)
+    {
+        if (!bitmap.IsFrozen && bitmap.CanFreeze)
+        {
+            bitmap.Freeze();
+        }
     }
 
     private async Task ApplyComicPageAsync(int index, ComicBookPageState page, ComicPageBitmapCache cache)
@@ -174,16 +318,26 @@ public partial class MainWindow
         FooterProgressBar.IsIndeterminate = false;
         FooterProgressBar.Value = 45;
         FooterStatusText.Text = page.Processed && _regions.Count > 0
-            ? $"Mostrando {_regions.Count} textos…"
+            ? $"Preparando {_regions.Count} textos…"
             : $"Mostrando página {index + 1}…";
         await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Render);
 
-        foreach (ComicRegion region in _regions.Where(region => region.IsEnabled))
+        ComicRegion[] enabledRegions = _regions.Where(region => region.IsEnabled).ToArray();
+        for (int regionIndex = 0; regionIndex < enabledRegions.Length; regionIndex++)
         {
-            AddRegionVisual(region);
+            AddRegionVisual(enabledRegions[regionIndex]);
+            if ((regionIndex + 1) % 4 == 0 || regionIndex + 1 == enabledRegions.Length)
+            {
+                double fraction = (regionIndex + 1d) / Math.Max(1, enabledRegions.Length);
+                FooterProgressBar.Value = 45 + fraction * 45;
+                FooterStatusText.Text =
+                    $"Colocando textos · {regionIndex + 1}/{enabledRegions.Length}";
+                await Dispatcher.Yield(DispatcherPriority.Background);
+            }
         }
 
-        FinalizeProgressiveOverlayTextLayout(finalPass: true);
+        FooterStatusText.Text = "Finalizando la página…";
+        FinalizeProgressiveOverlayTextLayout(finalPass: false);
         await Dispatcher.Yield(DispatcherPriority.Render);
 
         if (_regions.Count > 0)
