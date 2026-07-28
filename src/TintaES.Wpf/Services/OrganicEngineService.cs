@@ -18,6 +18,8 @@ public sealed record OrganicAnalysisResult(
 
 public sealed class OrganicEngineService
 {
+    private static readonly TimeSpan EngineTimeout = TimeSpan.FromMinutes(35);
+
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         PropertyNameCaseInsensitive = true
@@ -34,7 +36,9 @@ public sealed class OrganicEngineService
         }
 
         string projectRoot = FindProjectRoot();
-        string workerPath = Path.Combine(projectRoot, "engine", "tinta_worker.py");
+        string supervisorPath = Path.Combine(projectRoot, "engine", "tinta_supervisor.py");
+        string workerPath = Path.Combine(projectRoot, "engine", "tinta_worker_lazy.py");
+        string legacyWorkerPath = Path.Combine(projectRoot, "engine", "tinta_worker.py");
         string configPath = Path.Combine(projectRoot, "engine", "organic-engine-config.json");
         string pythonPath = Path.Combine(
             projectRoot,
@@ -48,8 +52,18 @@ public sealed class OrganicEngineService
             throw new InvalidOperationException(
                 "Falta el entorno del motor orgánico. Ejecuta la preparación local del proyecto antes de analizar.");
         }
+        if (!File.Exists(supervisorPath) || !File.Exists(workerPath) || !File.Exists(legacyWorkerPath))
+        {
+            throw new InvalidOperationException(
+                "El motor local está incompleto. Faltan archivos de supervisión o procesamiento.");
+        }
 
-        string cacheKey = CreateCacheKey(sourcePath, workerPath, configPath);
+        string cacheKey = CreateCacheKey(
+            sourcePath,
+            supervisorPath,
+            workerPath,
+            legacyWorkerPath,
+            configPath);
         string cacheRoot = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "TintaES",
@@ -77,7 +91,7 @@ public sealed class OrganicEngineService
         };
         foreach (string argument in new[]
                  {
-                     workerPath,
+                     supervisorPath,
                      "analyze",
                      "--input",
                      sourcePath,
@@ -101,59 +115,71 @@ public sealed class OrganicEngineService
         string? reportedManifest = null;
         string? engineError = null;
         var stderr = new StringBuilder();
-        using CancellationTokenRegistration registration = cancellationToken.Register(() =>
-        {
-            try
-            {
-                if (!process.HasExited)
-                {
-                    process.Kill(entireProcessTree: true);
-                }
-            }
-            catch (InvalidOperationException)
-            {
-                // El proceso terminó al mismo tiempo que se solicitó la cancelación.
-            }
-        });
+        using var engineCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        engineCancellation.CancelAfter(EngineTimeout);
+        CancellationToken engineToken = engineCancellation.Token;
+        using CancellationTokenRegistration registration = engineToken.Register(() => TryKill(process));
 
         Task readError = Task.Run(async () =>
         {
-            while (await process.StandardError.ReadLineAsync(cancellationToken) is { } line)
+            while (await process.StandardError.ReadLineAsync(engineToken) is { } line)
             {
                 if (stderr.Length < 12_000)
                 {
                     stderr.AppendLine(line);
                 }
             }
-        }, cancellationToken);
+        }, engineToken);
 
-        while (await process.StandardOutput.ReadLineAsync(cancellationToken) is { } line)
+        try
         {
-            if (!TryReadMessage(line, out EngineMessage? message) || message is null)
+            while (await process.StandardOutput.ReadLineAsync(engineToken) is { } line)
             {
-                continue;
+                if (!TryReadMessage(line, out EngineMessage? message) || message is null)
+                {
+                    continue;
+                }
+
+                if (message.Type == "progress" && message.Percent > 0)
+                {
+                    progress?.Report(new AnalysisProgress(
+                        Math.Clamp(message.Percent, 0, 100),
+                        100,
+                        string.IsNullOrWhiteSpace(message.Message) ? "Procesando la página…" : message.Message));
+                }
+                else if (message.Type == "complete")
+                {
+                    reportedManifest = message.Manifest;
+                }
+                else if (message.Type == "error")
+                {
+                    engineError = message.Message;
+                }
             }
 
-            if (message.Type == "progress" && message.Percent > 0)
+            await process.WaitForExitAsync(engineToken);
+            await readError;
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            TryKill(process);
+            try
             {
-                progress?.Report(new AnalysisProgress(
-                    Math.Clamp(message.Percent, 0, 100),
-                    100,
-                    string.IsNullOrWhiteSpace(message.Message) ? "Procesando la página…" : message.Message));
+                await readError;
             }
-            else if (message.Type == "complete")
+            catch (OperationCanceledException)
             {
-                reportedManifest = message.Manifest;
+                // El lector se cancela junto con el límite total del motor.
             }
-            else if (message.Type == "error")
-            {
-                engineError = message.Message;
-            }
+
+            string detail = stderr.ToString().Trim();
+            throw new TimeoutException(
+                string.IsNullOrWhiteSpace(detail)
+                    ? "El análisis superó 35 minutos y se detuvo para que la aplicación no quedara bloqueada."
+                    : $"El análisis superó 35 minutos y se detuvo. Último detalle del motor: {detail}");
         }
 
-        await process.WaitForExitAsync(cancellationToken);
-        await readError;
-        cancellationToken.ThrowIfCancellationRequested();
         if (process.ExitCode != 0)
         {
             string detail = !string.IsNullOrWhiteSpace(engineError)
@@ -170,6 +196,21 @@ public sealed class OrganicEngineService
             : manifestPath;
         progress?.Report(new AnalysisProgress(100, 100, "Fondo reconstruido. Preparando la traducción…"));
         return LoadResult(resultManifest, false);
+    }
+
+    private static void TryKill(Process process)
+    {
+        try
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+            }
+        }
+        catch (InvalidOperationException)
+        {
+            // El proceso terminó mientras se intentaba cancelarlo.
+        }
     }
 
     private static OrganicAnalysisResult LoadResult(string manifestPath, bool fromCache)
