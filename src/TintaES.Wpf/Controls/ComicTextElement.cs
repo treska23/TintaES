@@ -110,7 +110,10 @@ public sealed class ComicTextElement : FrameworkElement
 
         // Búsqueda binaria: el mayor tamaño posible solo se acepta si TODAS las líneas
         // caben dentro de la silueta durante toda la altura real de los glifos.
-        for (int index = 0; index < 18; index++)
+        // Doce pasos dejan el tamaño a una precisión inferior a una décima de píxel
+        // incluso en rótulos grandes. Los seis pasos adicionales no producían una
+        // diferencia visible y multiplicaban el coste al exportar páginas completas.
+        for (int index = 0; index < 12; index++)
         {
             double size = (low + high) / 2;
             if (TryCreateShapeLayout(text, typeface, fill, pixelsPerDip, polygon, size, out TextLayout? candidate))
@@ -169,6 +172,12 @@ public sealed class ComicTextElement : FrameworkElement
 
         int maxLinesByHeight = Math.Max(1, (int)Math.Floor((usableBottom - usableTop) / lineHeight));
         int maxLines = Math.Min(words.Length, maxLinesByHeight);
+        double[,] measuredWidths = MeasureWordRanges(
+            words,
+            typeface,
+            fontSize,
+            fill,
+            pixelsPerDip);
         TextLayout? best = null;
         double bestScore = double.PositiveInfinity;
         int bestLineDistance = int.MaxValue;
@@ -218,7 +227,7 @@ public sealed class ComicTextElement : FrameworkElement
                 }
 
                 if (!usable
-                    || !TryBreakWords(words, spans, typeface, fontSize, fill, pixelsPerDip, out int[]? breaks, out double score))
+                    || !TryBreakWords(words, spans, measuredWidths, out int[]? breaks, out double score))
                 {
                     continue;
                 }
@@ -326,10 +335,7 @@ public sealed class ComicTextElement : FrameworkElement
     private static bool TryBreakWords(
         string[] words,
         IReadOnlyList<HorizontalSpan> spans,
-        Typeface typeface,
-        double fontSize,
-        Brush fill,
-        double pixelsPerDip,
+        double[,] measuredWidths,
         out int[]? breaks,
         out double score)
     {
@@ -361,8 +367,7 @@ public sealed class ComicTextElement : FrameworkElement
                 int wordsStillNeeded = lineCount - line - 1;
                 for (int end = start + 1; end <= wordCount - wordsStillNeeded; end++)
                 {
-                    string candidate = string.Join(' ', words[start..end]);
-                    double width = MeasureText(candidate, typeface, fontSize, fill, pixelsPerDip);
+                    double width = measuredWidths[start, end];
                     if (width > spans[line].Width)
                     {
                         break;
@@ -397,6 +402,36 @@ public sealed class ComicTextElement : FrameworkElement
 
         score = costs[lineCount, wordCount] + lineCount * 0.008;
         return true;
+    }
+
+    private static double[,] MeasureWordRanges(
+        string[] words,
+        Typeface typeface,
+        double fontSize,
+        Brush fill,
+        double pixelsPerDip)
+    {
+        int count = words.Length;
+        var widths = new double[count, count + 1];
+        for (int start = 0; start < count; start++)
+        {
+            var candidate = new System.Text.StringBuilder();
+            for (int end = start + 1; end <= count; end++)
+            {
+                if (candidate.Length > 0)
+                {
+                    candidate.Append(' ');
+                }
+                candidate.Append(words[end - 1]);
+                widths[start, end] = MeasureText(
+                    candidate.ToString(),
+                    typeface,
+                    fontSize,
+                    fill,
+                    pixelsPerDip);
+            }
+        }
+        return widths;
     }
 
     private Geometry BuildShapedGeometry(
@@ -440,7 +475,7 @@ public sealed class ComicTextElement : FrameworkElement
         double bestSize = minimumSize;
         FormattedText fitted = CreateFormatted(text, typeface, minimumSize, fill, availableWidth, pixelsPerDip);
 
-        for (int index = 0; index < 18; index++)
+        for (int index = 0; index < 12; index++)
         {
             double size = (low + high) / 2;
             FormattedText candidate = CreateFormatted(text, typeface, size, fill, availableWidth, pixelsPerDip);
@@ -495,12 +530,13 @@ public sealed class ComicTextElement : FrameworkElement
                 1.28)
             : 1;
 
-        // Un pequeño margen compensa las diferencias de altura de mayúsculas entre la
-        // fuente detectada y la sustituta. Si el español tiene menos palabras que líneas
-        // originales, recuperamos además su huella vertical aumentando las letras; el
-        // ajuste geométrico sigue siendo quien impone el límite real del bocadillo.
+        // La fuente de sustitución tiene una altura visible menor que la rotulación
+        // detectada. Le damos margen suficiente para ocupar el bocadillo y, cuando la
+        // traducción tiene menos palabras que líneas originales, recuperamos además su
+        // huella vertical. El ajuste geométrico sigue imponiendo el límite real.
+        double visualScale = Math.Min(1.58, 1.35 * footprintCompensation);
         return Math.Clamp(
-            originalPixels * 1.10 * footprintCompensation * scale,
+            originalPixels * visualScale * scale,
             minimum,
             automaticMaximum);
     }

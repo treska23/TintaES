@@ -94,7 +94,12 @@ public sealed class ComicRegion : INotifyPropertyChanged
     public double BubbleConfidence { get; set; }
 
     public NormalizedRect TextBox { get; set; } = new(100, 100, 200, 80);
+    public NormalizedRect? BubbleBox { get; set; }
     public NormalizedRect RenderBox { get; set; } = new(90, 85, 220, 110);
+    // Contorno orgánico original que el motor calculó para borrar las letras.
+    // Es independiente de SafePolygon: el usuario puede mover o redimensionar
+    // la rotulación sin ampliar accidentalmente el área reconstruida del fondo.
+    public IReadOnlyList<NormalizedPoint> CleanupPolygon { get; set; } = [];
     public IReadOnlyList<NormalizedPoint> SafePolygon { get; set; } = [];
     public double Rotation { get; set; }
     public bool Vertical { get; set; }

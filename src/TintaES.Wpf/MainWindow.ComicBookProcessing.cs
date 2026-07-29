@@ -149,6 +149,12 @@ public partial class MainWindow
                     failures++;
                 }
 
+                // La miniatura del selector debe reflejar el resultado en cuanto termina
+                // cada página. Esperar a un cambio de página dejaba visible "pendiente"
+                // aunque el resultado y la exportación ya estuvieran disponibles.
+                RefreshPageSelectionVisuals();
+                UpdatePageSelectionSummary();
+
                 double completed = (pendingPosition + 1d) / pending.Length * 100;
                 BusyProgressBar.Value = completed;
                 FooterProgressBar.Value = completed;

@@ -65,7 +65,7 @@ public sealed class ComicTextLineBreakService
         double low = minimumSize;
         TextLayout? best = null;
 
-        for (int index = 0; index < 18; index++)
+        for (int index = 0; index < 12; index++)
         {
             double size = (low + high) / 2;
             if (TryCreateShapeLayout(region, text, typeface, fill, pageWidth, pageHeight, actualWidth, actualHeight, polygon, size, out TextLayout? candidate))
@@ -114,8 +114,8 @@ public sealed class ComicTextLineBreakService
         double lineHeight = fontSize * lineHeightRatio;
         double outlinePixels = region.Style.OutlineWidth / 1000 * pageWidth;
         double edgePadding = Math.Max(
-            Math.Max(2.5, Math.Min(actualWidth, actualHeight) * 0.045),
-            outlinePixels + fontSize * 0.10);
+            Math.Max(3.5, Math.Min(actualWidth, actualHeight) * 0.07),
+            outlinePixels + fontSize * 0.14);
 
         Rect bounds = GetPolygonBounds(polygon);
         double usableTop = Math.Max(edgePadding, bounds.Top + edgePadding);
@@ -128,8 +128,10 @@ public sealed class ComicTextLineBreakService
 
         int maxLinesByHeight = Math.Max(1, (int)Math.Floor((usableBottom - usableTop) / lineHeight));
         int maxLines = Math.Min(words.Length, maxLinesByHeight);
+        double[,] measuredWidths = MeasureWordRanges(words, typeface, fontSize, fill);
         TextLayout? best = null;
         double bestScore = double.PositiveInfinity;
+        int bestLineDistance = int.MaxValue;
         double preferredCenterY = GetOriginalTextCenterY(region, pageHeight, actualHeight);
         double preferredCenterX = GetOriginalTextCenterX(region, pageWidth, actualWidth);
 
@@ -161,19 +163,19 @@ public sealed class ComicTextLineBreakService
                     spans[line] = span;
                 }
 
-                if (!usable || !TryBreakWords(words, spans, typeface, fontSize, fill, out int[]? breaks, out double score))
+                if (!usable || !TryBreakWords(words, spans, measuredWidths, out int[]? breaks, out double score))
                 {
                     continue;
                 }
 
-                if (region.Style.OriginalLineCount > 0)
-                {
-                    score += Math.Abs(lineCount - region.Style.OriginalLineCount) * 0.12;
-                }
+                int lineDistance = region.Style.OriginalLineCount > 0
+                    ? Math.Abs(lineCount - region.Style.OriginalLineCount)
+                    : 0;
 
                 double actualCenterY = top + blockHeight / 2;
                 score += Math.Abs(actualCenterY - preferredCenterY) / Math.Max(1, actualHeight) * 0.08;
-                if (score >= bestScore)
+                if (lineDistance > bestLineDistance
+                    || (lineDistance == bestLineDistance && score >= bestScore))
                 {
                     continue;
                 }
@@ -187,6 +189,7 @@ public sealed class ComicTextLineBreakService
                     start = end;
                 }
 
+                bestLineDistance = lineDistance;
                 bestScore = score;
                 best = new TextLayout(fontSize, placements);
             }
@@ -215,7 +218,7 @@ public sealed class ComicTextLineBreakService
         double low = minimumSize;
         double bestSize = minimumSize;
 
-        for (int index = 0; index < 18; index++)
+        for (int index = 0; index < 12; index++)
         {
             double size = (low + high) / 2;
             IReadOnlyList<string> lines = WrapWords(text, typeface, size, fill, availableWidth);
@@ -264,9 +267,7 @@ public sealed class ComicTextLineBreakService
     private static bool TryBreakWords(
         string[] words,
         IReadOnlyList<HorizontalSpan> spans,
-        Typeface typeface,
-        double fontSize,
-        Brush fill,
+        double[,] measuredWidths,
         out int[]? breaks,
         out double score)
     {
@@ -295,8 +296,7 @@ public sealed class ComicTextLineBreakService
                 int wordsStillNeeded = lineCount - line - 1;
                 for (int end = start + 1; end <= wordCount - wordsStillNeeded; end++)
                 {
-                    string candidate = string.Join(' ', words[start..end]);
-                    double measured = MeasureText(candidate, typeface, fontSize, fill);
+                    double measured = measuredWidths[start, end];
                     if (measured > spans[line].Width)
                     {
                         break;
@@ -329,6 +329,34 @@ public sealed class ComicTextLineBreakService
         }
         score = costs[lineCount, wordCount] + lineCount * 0.008;
         return true;
+    }
+
+    private static double[,] MeasureWordRanges(
+        string[] words,
+        Typeface typeface,
+        double fontSize,
+        Brush fill)
+    {
+        int count = words.Length;
+        var widths = new double[count, count + 1];
+        for (int start = 0; start < count; start++)
+        {
+            var candidate = new System.Text.StringBuilder();
+            for (int end = start + 1; end <= count; end++)
+            {
+                if (candidate.Length > 0)
+                {
+                    candidate.Append(' ');
+                }
+                candidate.Append(words[end - 1]);
+                widths[start, end] = MeasureText(
+                    candidate.ToString(),
+                    typeface,
+                    fontSize,
+                    fill);
+            }
+        }
+        return widths;
     }
 
     private static IEnumerable<double> GetCandidateTops(double minimum, double maximum, double preferred)
@@ -508,7 +536,23 @@ public sealed class ComicTextLineBreakService
             return Math.Clamp(automaticMaximum * scale, minimum, automaticMaximum);
         }
         double originalPixels = region.Style.FontSize / 1000 * pageHeight;
-        return Math.Clamp(originalPixels * 1.03 * scale, minimum, automaticMaximum);
+        int translatedWords = region.DisplayText.Split(
+            [' ', '\t', '\r', '\n'],
+            StringSplitOptions.RemoveEmptyEntries).Length;
+        int feasibleOriginalLines = Math.Min(
+            Math.Max(1, translatedWords),
+            Math.Max(1, region.Style.OriginalLineCount));
+        double footprintCompensation = region.Style.OriginalLineCount > feasibleOriginalLines
+            ? Math.Clamp(
+                (double)region.Style.OriginalLineCount / feasibleOriginalLines,
+                1,
+                1.28)
+            : 1;
+        double visualScale = Math.Min(1.58, 1.35 * footprintCompensation);
+        return Math.Clamp(
+            originalPixels * visualScale * scale,
+            minimum,
+            automaticMaximum);
     }
 
     private static double MeasureText(string text, Typeface typeface, double size, Brush fill)

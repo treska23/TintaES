@@ -751,18 +751,6 @@ public partial class MainWindow
             return finalSize;
         }
 
-        protected override void OnRender(DrawingContext drawingContext)
-        {
-            base.OnRender(drawingContext);
-            double zoom = Math.Max(0.05, _zoomProvider());
-            double thickness = Math.Clamp(1 / zoom, 0.75, 4);
-            var pen = new Pen(_accent, thickness);
-            drawingContext.DrawRectangle(
-                null,
-                pen,
-                new Rect(0, 0, Math.Max(0, ActualWidth), Math.Max(0, ActualHeight)));
-        }
-
         private Thumb CreateThumb(
             TextFrameCorner corner,
             Action<TextFrameCorner> dragStarted,

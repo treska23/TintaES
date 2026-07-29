@@ -222,7 +222,13 @@ public sealed class SupplementalTextDetectionService
         string Sheet,
         IReadOnlyList<BrightCandidate> Candidates);
 
-    private sealed record BrightCandidate(int Id, int X, int Y, int Width, int Height);
+    private sealed record BrightCandidate(
+        int Id,
+        int X,
+        int Y,
+        int Width,
+        int Height,
+        string? Polarity = null);
     private sealed record SupplementalManifest(
         int Width,
         int Height,

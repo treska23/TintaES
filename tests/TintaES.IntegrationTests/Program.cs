@@ -8,12 +8,419 @@ using TintaES.Wpf.Services;
 
 try
 {
+    if (args is ["--cleanup-polygon-self-test"])
+    {
+        return RunCleanupPolygonSelfTest();
+    }
+    if (args is ["--cleanup-image", var cleanupImage])
+    {
+        return await RunCleanupImageAsync(cleanupImage);
+    }
+    if (args is ["--lettering-layout-self-test"])
+    {
+        return RunLetteringLayoutSelfTest();
+    }
+    if (args is ["--windows-ocr-image", var ocrImage])
+    {
+        return await RunWindowsOcrImageAsync(ocrImage);
+    }
     return await RunAsync(args);
 }
 catch (Exception exception)
 {
     Console.Error.WriteLine($"ERROR_INTEGRACION={exception.GetType().Name}: {exception.Message}");
     return 1;
+}
+
+static int RunCleanupPolygonSelfTest()
+{
+    const int width = 32;
+    const int height = 32;
+    const int colorStride = width * 4;
+    var originalPixels = new byte[colorStride * height];
+    var cleanedPixels = new byte[colorStride * height];
+    var maskPixels = Enumerable.Repeat((byte)255, width * height).ToArray();
+    for (int pixel = 0; pixel < width * height; pixel++)
+    {
+        int offset = pixel * 4;
+        originalPixels[offset] = 20;
+        originalPixels[offset + 1] = 40;
+        originalPixels[offset + 2] = 60;
+        originalPixels[offset + 3] = 255;
+        cleanedPixels[offset] = 250;
+        cleanedPixels[offset + 1] = 250;
+        cleanedPixels[offset + 2] = 250;
+        cleanedPixels[offset + 3] = 255;
+    }
+
+    BitmapSource original = BitmapSource.Create(
+        width, height, 96, 96, PixelFormats.Bgra32, null, originalPixels, colorStride);
+    BitmapSource cleaned = BitmapSource.Create(
+        width, height, 96, 96, PixelFormats.Bgra32, null, cleanedPixels, colorStride);
+    BitmapSource mask = BitmapSource.Create(
+        width, height, 96, 96, PixelFormats.Gray8, null, maskPixels, width);
+    var region = new ComicRegion
+    {
+        Original = "TEST",
+        Type = "dialogue",
+        Confidence = 1,
+        TextBox = new NormalizedRect(180, 180, 640, 640),
+        RenderBox = new NormalizedRect(100, 100, 800, 800),
+        CleanupPolygon =
+        [
+            new NormalizedPoint(500, 100),
+            new NormalizedPoint(900, 500),
+            new NormalizedPoint(500, 900),
+            new NormalizedPoint(100, 500)
+        ]
+    };
+
+    DialogueOnlyResult result = new DialogueOnlyResultService().Build(
+        original,
+        cleaned,
+        mask,
+        [region],
+        includeAllDetectedText: true);
+    var resultPixels = new byte[colorStride * height];
+    var resultMask = new byte[width * height];
+    result.CleanedBitmap.CopyPixels(resultPixels, colorStride, 0);
+    result.MaskBitmap.CopyPixels(resultMask, width, 0);
+
+    int corner = 7 * width + 7;
+    int centre = 16 * width + 16;
+    bool cornerPreserved = resultMask[corner] == 0
+        && resultPixels[corner * 4] == 20
+        && resultPixels[corner * 4 + 1] == 40
+        && resultPixels[corner * 4 + 2] == 60;
+    bool centreCleaned = resultMask[centre] == 255
+        && resultPixels[centre * 4] == 250
+        && resultPixels[centre * 4 + 1] == 250
+        && resultPixels[centre * 4 + 2] == 250;
+
+    bool flatBalloonRepair = VerifyFlatBalloonRepair();
+    Console.WriteLine($"LIMPIEZA_ORGANICA_ESQUINA={(cornerPreserved ? "OK" : "ERROR")}");
+    Console.WriteLine($"LIMPIEZA_ORGANICA_CENTRO={(centreCleaned ? "OK" : "ERROR")}");
+    Console.WriteLine($"REPARA_MANCHA_EN_BOCADILLO={(flatBalloonRepair ? "OK" : "ERROR")}");
+    return cornerPreserved && centreCleaned && flatBalloonRepair ? 0 : 1;
+}
+
+static bool VerifyFlatBalloonRepair()
+{
+    const int width = 64;
+    const int height = 40;
+    const int colorStride = width * 4;
+    var originalPixels = new byte[colorStride * height];
+    var cleanedPixels = new byte[colorStride * height];
+    var maskPixels = new byte[width * height];
+    for (int pixel = 0; pixel < width * height; pixel++)
+    {
+        int colorOffset = pixel * 4;
+        originalPixels[colorOffset] = 248;
+        originalPixels[colorOffset + 1] = 249;
+        originalPixels[colorOffset + 2] = 250;
+        originalPixels[colorOffset + 3] = 255;
+        cleanedPixels[colorOffset] = 248;
+        cleanedPixels[colorOffset + 1] = 249;
+        cleanedPixels[colorOffset + 2] = 250;
+        cleanedPixels[colorOffset + 3] = 255;
+    }
+
+    for (int y = 17; y <= 22; y++)
+    {
+        for (int x = 22; x <= 41; x++)
+        {
+            int pixel = y * width + x;
+            int colorOffset = pixel * 4;
+            originalPixels[colorOffset] = 24;
+            originalPixels[colorOffset + 1] = 24;
+            originalPixels[colorOffset + 2] = 24;
+            cleanedPixels[colorOffset] = 0;
+            cleanedPixels[colorOffset + 1] = 0;
+            cleanedPixels[colorOffset + 2] = 0;
+            maskPixels[pixel] = 255;
+        }
+    }
+
+    BitmapSource original = BitmapSource.Create(
+        width, height, 96, 96, PixelFormats.Bgra32, null, originalPixels, colorStride);
+    BitmapSource cleaned = BitmapSource.Create(
+        width, height, 96, 96, PixelFormats.Bgra32, null, cleanedPixels, colorStride);
+    BitmapSource mask = BitmapSource.Create(
+        width, height, 96, 96, PixelFormats.Gray8, null, maskPixels, width);
+    var region = new ComicRegion
+    {
+        Original = "MAYBE",
+        Type = "sfx",
+        Confidence = 1,
+        TextBox = new NormalizedRect(300, 350, 400, 300),
+        RenderBox = new NormalizedRect(300, 350, 400, 300),
+        CleanupPolygon =
+        [
+            new NormalizedPoint(300, 350),
+            new NormalizedPoint(700, 350),
+            new NormalizedPoint(700, 650),
+            new NormalizedPoint(300, 650)
+        ]
+    };
+
+    DialogueOnlyResult result = new DialogueOnlyResultService().Build(
+        original,
+        cleaned,
+        mask,
+        [region],
+        includeAllDetectedText: true);
+    var resultPixels = new byte[colorStride * height];
+    result.CleanedBitmap.CopyPixels(resultPixels, colorStride, 0);
+    int centre = 20 * width + 31;
+    int offset = centre * 4;
+    return resultPixels[offset] >= 245
+        && resultPixels[offset + 1] >= 245
+        && resultPixels[offset + 2] >= 245;
+}
+
+static async Task<int> RunCleanupImageAsync(string imagePath)
+{
+    if (!File.Exists(imagePath))
+    {
+        Console.Error.WriteLine($"No existe la imagen: {imagePath}");
+        return 2;
+    }
+
+    BitmapSource original = LoadBitmap(Path.GetFullPath(imagePath));
+    var engine = new OrganicEngineService();
+    OrganicAnalysisResult organic = await engine.AnalyzeAsync(Path.GetFullPath(imagePath));
+    DialogueOnlyResult filtered = new DialogueOnlyResultService().Build(
+        original,
+        organic.CleanedBitmap,
+        organic.MaskBitmap,
+        organic.Analysis.Regions,
+        includeAllDetectedText: true);
+
+    string artifactsDirectory = Path.Combine(Environment.CurrentDirectory, "artifacts");
+    Directory.CreateDirectory(artifactsDirectory);
+    string cleanPath = Path.Combine(artifactsDirectory, "cleanup-organic-preview.png");
+    string maskPath = Path.Combine(artifactsDirectory, "cleanup-organic-mask.png");
+    SavePng(filtered.CleanedBitmap, cleanPath);
+    SavePng(filtered.MaskBitmap, maskPath);
+
+    int organicRegions = filtered.Regions.Count(region => region.CleanupPolygon.Count >= 3);
+    Console.WriteLine($"ZONAS={filtered.Regions.Count}");
+    Console.WriteLine($"CONTORNOS_ORGANICOS={organicRegions}/{filtered.Regions.Count}");
+    Console.WriteLine($"FONDO_LIMPIO={cleanPath}");
+    Console.WriteLine($"MASCARA={maskPath}");
+    return organicRegions == filtered.Regions.Count ? 0 : 1;
+}
+
+static void SavePng(BitmapSource bitmap, string path)
+{
+    var encoder = new PngBitmapEncoder();
+    encoder.Frames.Add(BitmapFrame.Create(bitmap));
+    using FileStream stream = File.Create(path);
+    encoder.Save(stream);
+}
+
+static async Task<int> RunWindowsOcrImageAsync(string imagePath)
+{
+    if (!File.Exists(imagePath))
+    {
+        Console.Error.WriteLine($"No existe la imagen: {imagePath}");
+        return 2;
+    }
+
+    BitmapSource original = LoadBitmap(Path.GetFullPath(imagePath));
+    ComicAnalysis analysis = await new WindowsOcrService().RecognizeWithTilingAsync(original);
+    foreach (ComicRegion region in analysis.Regions)
+    {
+        Console.WriteLine(
+            $"OCR {region.Type} {region.TextBox.X:F0},{region.TextBox.Y:F0}," +
+            $"{region.TextBox.Width:F0},{region.TextBox.Height:F0}: " +
+            region.Original.Replace('\n', ' '));
+    }
+    Console.WriteLine($"OCR_ZONAS={analysis.Regions.Count}");
+    return analysis.Regions.Count > 0 ? 0 : 1;
+}
+
+static int RunLetteringLayoutSelfTest()
+{
+    const int width = 900;
+    const int height = 600;
+    int stride = width * 4;
+    byte[] whitePixels = Enumerable.Repeat((byte)255, stride * height).ToArray();
+    BitmapSource white = BitmapSource.Create(
+        width, height, 96, 96, PixelFormats.Bgra32, null, whitePixels, stride);
+    white.Freeze();
+
+    static NormalizedRect Box(double x, double y, double boxWidth, double boxHeight) =>
+        new(x / width * 1000, y / height * 1000, boxWidth / width * 1000, boxHeight / height * 1000);
+
+    static IReadOnlyList<NormalizedPoint> Ellipse(double x, double y, double boxWidth, double boxHeight) =>
+        Enumerable.Range(0, 48)
+            .Select(index =>
+            {
+                double angle = Math.PI * 2 * index / 48;
+                return new NormalizedPoint(
+                    (x + boxWidth / 2 + Math.Cos(angle) * boxWidth / 2) / width * 1000,
+                    (y + boxHeight / 2 + Math.Sin(angle) * boxHeight / 2) / height * 1000);
+            })
+            .ToArray();
+
+    ComicTextStyle Style(double originalFontPixels, int originalLines) => new()
+    {
+        FontCategory = "comic",
+        FontWeight = 700,
+        FontSize = originalFontPixels / height * 1000,
+        LineHeightRatio = 1.02,
+        OriginalLineCount = originalLines,
+        Uppercase = true,
+        TextColor = "#161616",
+        Alignment = "center"
+    };
+
+    ComicRegion[] regions =
+    [
+        new ComicRegion
+        {
+            Original = "SHUT UP!",
+            Translation = "¡Cállate!",
+            Type = "dialogue",
+            IsEnabled = true,
+            TextBox = Box(105, 95, 110, 55),
+            RenderBox = Box(45, 35, 230, 190),
+            SafePolygon = Ellipse(45, 35, 230, 190),
+            Style = Style(34, 2)
+        },
+        new ComicRegion
+        {
+            Original = "YOU THINK YOU ARE SO GREAT BUT YOU ARE MISSING THE POINT",
+            Translation = "Crees que eres genial, pero se te escapa lo importante.",
+            Type = "dialogue",
+            IsEnabled = true,
+            TextBox = Box(375, 75, 180, 130),
+            RenderBox = Box(320, 25, 290, 265),
+            SafePolygon = Ellipse(320, 25, 290, 265),
+            Style = Style(28, 6)
+        },
+        new ComicRegion
+        {
+            Original = "THAT DOES NOT EVEN RHYME",
+            Translation = "¡Eso ni siquiera rima!",
+            Type = "thought",
+            IsEnabled = true,
+            TextBox = Box(665, 330, 135, 80),
+            RenderBox = Box(625, 280, 225, 205),
+            SafePolygon =
+            [
+                new NormalizedPoint(737.5 / width * 1000, 280d / height * 1000),
+                new NormalizedPoint(850d / width * 1000, 382.5 / height * 1000),
+                new NormalizedPoint(737.5 / width * 1000, 485d / height * 1000),
+                new NormalizedPoint(625d / width * 1000, 382.5 / height * 1000)
+            ],
+            Style = Style(31, 4)
+        }
+    ];
+
+    BitmapSource? rendered = null;
+    Exception? renderError = null;
+    var renderThread = new Thread(() =>
+    {
+        try
+        {
+            rendered = new ImageExportService().Render(white, regions);
+        }
+        catch (Exception exception)
+        {
+            renderError = exception;
+        }
+    });
+    renderThread.SetApartmentState(ApartmentState.STA);
+    renderThread.Start();
+    renderThread.Join();
+    if (renderError is not null)
+    {
+        throw renderError;
+    }
+
+    string output = Path.Combine(Environment.CurrentDirectory, "artifacts", "lettering-layout-self-test.png");
+    Directory.CreateDirectory(Path.GetDirectoryName(output)!);
+    SavePng(rendered!, output);
+
+    byte[] pixels = new byte[stride * height];
+    rendered!.CopyPixels(pixels, stride, 0);
+    bool[] hasInk = new bool[regions.Length];
+    int[] minX = Enumerable.Repeat(int.MaxValue, regions.Length).ToArray();
+    int[] minY = Enumerable.Repeat(int.MaxValue, regions.Length).ToArray();
+    int[] maxX = Enumerable.Repeat(int.MinValue, regions.Length).ToArray();
+    int[] maxY = Enumerable.Repeat(int.MinValue, regions.Length).ToArray();
+    bool inkStayedInside = true;
+
+    for (int y = 0; y < height; y++)
+    {
+        for (int x = 0; x < width; x++)
+        {
+            int offset = y * stride + x * 4;
+            bool ink = pixels[offset] < 210 || pixels[offset + 1] < 210 || pixels[offset + 2] < 210;
+            if (!ink)
+            {
+                continue;
+            }
+
+            double normalizedX = (x + 0.5) / width * 1000;
+            double normalizedY = (y + 0.5) / height * 1000;
+            int owner = Array.FindIndex(regions, region =>
+                normalizedX >= region.RenderBox.X
+                && normalizedX <= region.RenderBox.Right
+                && normalizedY >= region.RenderBox.Y
+                && normalizedY <= region.RenderBox.Bottom);
+            if (owner < 0
+                || !ContainsPoint(regions[owner].SafePolygon, normalizedX, normalizedY))
+            {
+                inkStayedInside = false;
+                continue;
+            }
+
+            hasInk[owner] = true;
+            minX[owner] = Math.Min(minX[owner], x);
+            minY[owner] = Math.Min(minY[owner], y);
+            maxX[owner] = Math.Max(maxX[owner], x);
+            maxY[owner] = Math.Max(maxY[owner], y);
+        }
+    }
+
+    bool readableScale = regions.Select((region, index) =>
+    {
+        if (!hasInk[index])
+        {
+            return false;
+        }
+        double boxHeight = region.RenderBox.Height / 1000 * height;
+        double inkHeight = maxY[index] - minY[index] + 1;
+        return inkHeight / Math.Max(1, boxHeight) >= 0.20;
+    }).All(value => value);
+
+    Console.WriteLine($"ROTULOS_VISIBLES={(hasInk.All(value => value) ? "OK" : "ERROR")}");
+    Console.WriteLine($"ROTULOS_DENTRO_DE_FORMAS={(inkStayedInside ? "OK" : "ERROR")}");
+    Console.WriteLine($"ESCALA_LEGIBLE={(readableScale ? "OK" : "ERROR")}");
+    Console.WriteLine($"MUESTRA_ROTULACION={output}");
+    return hasInk.All(value => value) && inkStayedInside && readableScale ? 0 : 1;
+}
+
+static bool ContainsPoint(
+    IReadOnlyList<NormalizedPoint> polygon,
+    double x,
+    double y)
+{
+    bool inside = false;
+    for (int first = 0, second = polygon.Count - 1; first < polygon.Count; second = first++)
+    {
+        NormalizedPoint a = polygon[first];
+        NormalizedPoint b = polygon[second];
+        bool crosses = (a.Y > y) != (b.Y > y);
+        if (crosses && x < (b.X - a.X) * (y - a.Y) / (b.Y - a.Y) + a.X)
+        {
+            inside = !inside;
+        }
+    }
+    return inside;
 }
 
 static async Task<int> RunAsync(string[] args)
@@ -105,25 +512,39 @@ Exception? renderError = null;
 bool manualFitVerified = false;
 bool threeBalloonFitVerified = false;
 bool spanishComicGlyphsVerified = false;
+double pageRenderSeconds = double.PositiveInfinity;
+var renderStepTimings = new List<string>();
 var renderThread = new Thread(() =>
 {
     try
     {
+        var renderStep = Stopwatch.StartNew();
         spanishComicGlyphsVerified = VerifySpanishComicGlyphs();
+        renderStepTimings.Add($"fuente={renderStep.Elapsed.TotalSeconds:F2}s");
         var export = new ImageExportService();
+        renderStep.Restart();
         BitmapSource rendered = export
             .RenderAsync(filtered.CleanedBitmap, analysis.Regions)
             .GetAwaiter()
             .GetResult();
+        pageRenderSeconds = renderStep.Elapsed.TotalSeconds;
+        renderStepTimings.Add($"render_pagina={renderStep.Elapsed.TotalSeconds:F2}s");
         foreach (string path in exportedPaths)
         {
+            renderStep.Restart();
             export.Save(rendered, path);
+            renderStepTimings.Add(
+                $"guardar_{Path.GetExtension(path).TrimStart('.')}={renderStep.Elapsed.TotalSeconds:F2}s");
         }
+        renderStep.Restart();
         manualFitVerified = VerifyManualTextSafety(export);
+        renderStepTimings.Add($"ajuste_manual={renderStep.Elapsed.TotalSeconds:F2}s");
+        renderStep.Restart();
         threeBalloonFitVerified = VerifyThreeBalloonAutomaticSafety(
             export,
             threeBalloonRegions,
             Path.Combine(artifactsDirectory, "three-balloon-regression.png"));
+        renderStepTimings.Add($"ajuste_3_bocadillos={renderStep.Elapsed.TotalSeconds:F2}s");
     }
     catch (Exception exception)
     {
@@ -144,6 +565,7 @@ Console.WriteLine(
     $"TRADUCCION={translationTime.TotalSeconds:F2}s " +
     $"TOTAL={stopwatch.Elapsed.TotalSeconds:F2}s " +
     $"ZONAS={analysis.Regions.Count} CACHE={organic.FromCache}");
+Console.WriteLine($"PERFIL_RENDER={string.Join(" ", renderStepTimings)}");
 for (int index = 0; index < analysis.Regions.Count; index++)
 {
     ComicRegion region = analysis.Regions[index];
@@ -164,6 +586,7 @@ Console.WriteLine($"EXPORTACIONES={validExports}/{exportedPaths.Length}");
 Console.WriteLine($"REFERENCIAS_TIPOGRAFICAS={layoutReferences}/{analysis.Regions.Count}");
 Console.WriteLine($"AJUSTE_MANUAL_SEGURO={manualFitVerified}");
 Console.WriteLine($"TRES_BOCADILLOS_VISIBLES_Y_DENTRO={threeBalloonFitVerified}");
+Console.WriteLine($"RENDER_PAGINA_FLUIDO={pageRenderSeconds <= 15}");
 Console.WriteLine($"TRES_BOCADILLOS_TRADUCIDOS_CON_SENTIDO={threeBalloonTranslationVerified}");
 Console.WriteLine($"FUENTE_COMIC_ES_COMPATIBLE={spanishComicGlyphsVerified}");
 Console.WriteLine(
@@ -182,6 +605,7 @@ return translated == analysis.Regions.Count
        && layoutReferences >= Math.Max(1, analysis.Regions.Count / 2)
        && manualFitVerified
        && threeBalloonFitVerified
+       && pageRenderSeconds <= 15
        && threeBalloonTranslationVerified
        && spanishComicGlyphsVerified
     ? 0

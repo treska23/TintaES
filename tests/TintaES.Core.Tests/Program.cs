@@ -8,6 +8,7 @@ var tests = new (string Name, Func<Task> Run)[]
 {
     ("Sanea cajas gigantes", TestSanitizeAsync),
     ("Rechaza polígonos de bocadillo desmesurados", TestOversizedBubblePolygonAsync),
+    ("Aprovecha el interior orgánico del bocadillo", TestDetectedBubbleInteriorAsync),
     ("Combina lecturas solapadas", TestMergeAsync),
     ("Separa áreas de rotulación que compiten", TestCompetingRenderAreasAsync),
     ("Nunca vuelve a dibujar el OCR inglés como texto de resultado", TestDisplayTextNeverUsesOriginalAsync),
@@ -89,6 +90,39 @@ static Task TestOversizedBubblePolygonAsync()
     Assert(region.RenderBox.Width < 150, "Un polígono enorme no puede ampliar la rotulación por media viñeta.");
     Assert(region.RenderBox.Height < 70, "La altura segura debe mantenerse cerca del texto original.");
     Assert(region.SafePolygon.Count >= 20, "Debe crear una forma elíptica conservadora para el diálogo.");
+    return Task.CompletedTask;
+}
+
+static Task TestDetectedBubbleInteriorAsync()
+{
+    NormalizedPoint[] cleanupPolygon =
+    [
+        new NormalizedPoint(448, 355),
+        new NormalizedPoint(510, 355),
+        new NormalizedPoint(510, 450),
+        new NormalizedPoint(448, 450)
+    ];
+    var region = new ComicRegion
+    {
+        Original = "YOU ARE TALKING THE TALK",
+        Type = "dialogue",
+        BubbleConfidence = 0.98,
+        TextBox = new NormalizedRect(450, 360, 55, 82),
+        BubbleBox = new NormalizedRect(425, 300, 105, 205),
+        RenderBox = new NormalizedRect(432, 340, 92, 122),
+        CleanupPolygon = cleanupPolygon
+    };
+
+    RegionMerger.Sanitize(region);
+
+    Assert(region.RenderBox.Height >= 155, "Debe usar la altura interior del globo, no una caja pegada al OCR.");
+    Assert(region.RenderBox.Width >= 80, "Debe conservar un ancho útil dentro del globo.");
+    Assert(region.SafePolygon.Count >= 20, "El área automática debe ser orgánica, no rectangular.");
+    Assert(
+        region.CleanupPolygon.SequenceEqual(cleanupPolygon),
+        "Ampliar la rotulación no debe ampliar ni sustituir el contorno de borrado.");
+    Assert(region.RenderBox.Y < region.TextBox.Y, "Debe recuperar el espacio libre superior del bocadillo.");
+    Assert(region.RenderBox.Bottom > region.TextBox.Bottom, "Debe recuperar el espacio libre inferior del bocadillo.");
     return Task.CompletedTask;
 }
 

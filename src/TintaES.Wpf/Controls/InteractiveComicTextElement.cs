@@ -51,7 +51,7 @@ public sealed class InteractiveComicTextElement : FrameworkElement
 
         double pixelsPerDip = VisualTreeHelper.GetDpi(this).PixelsPerDip;
         Typeface typeface = CreateTypeface(Region);
-        Brush fill = ParseBrush(Region.Style.TextColor, Brushes.Black);
+        Brush fill = ParseBrush(Region.Style.TextColor, Brushes.Black) ?? Brushes.Black;
         Brush? outline = string.IsNullOrWhiteSpace(Region.Style.OutlineColor)
             ? null
             : ParseBrush(Region.Style.OutlineColor, null);

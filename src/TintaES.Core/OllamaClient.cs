@@ -717,7 +717,211 @@ public sealed class OllamaClient : IDisposable
             ReportTranslationProgress(progress, regions, "Recuperando un bocadillo aislado…");
         }
 
+        await RepairSplitFragmentSequencesAsync(
+            regions,
+            model,
+            cancellationToken,
+            progress);
         await RefineTranslateGemmaBatchAsync(regions, model, cancellationToken, progress);
+    }
+
+    private async Task RepairSplitFragmentSequencesAsync(
+        IReadOnlyList<ComicRegion> regions,
+        string model,
+        CancellationToken cancellationToken,
+        IProgress<AnalysisProgress>? progress)
+    {
+        foreach (ComicRegion[] group in FindSplitFragmentSequences(regions))
+        {
+            string combinedSource = string.Join(
+                " ",
+                group.Select(region => NormalizeOcrForTranslation(region.Original)));
+            string token = "G" + Convert.ToHexString(
+                SHA256.HashData(Encoding.UTF8.GetBytes(combinedSource)))[..10];
+            string context = string.Join(
+                "\n",
+                regions.Select((region, index) =>
+                    $"C{index:000} ({region.Type}): {FormatSourceForModel(region)}"));
+            string prompt =
+                $"""
+                 You are translating one continuous English comic sentence into natural concise Spanish from
+                 Spain. The source sentence was split into {group.Length} separate lettering fragments by the
+                 page layout. Translate their COMBINED meaning once; do not turn the fragments into separate
+                 replies and do not repeat the same verb or idea. Return one complete Spanish sentence inside
+                 the exact tag, with no explanation and no English.
+
+                 PAGE CONTEXT:
+                 {context}
+
+                 SOURCE FRAGMENTS:
+                 {string.Join(" / ", group.Select(region => NormalizeOcrForTranslation(region.Original)))}
+
+                 COMBINED SOURCE:
+                 {combinedSource}
+
+                 REQUIRED OUTPUT:
+                 [[{token}]] traducción española única [[/{token}]]
+                 """;
+            object payload = new
+            {
+                model,
+                stream = false,
+                keep_alive = "30m",
+                messages = new[] { new { role = "user", content = prompt } },
+                options = new
+                {
+                    temperature = 0,
+                    seed = 73,
+                    num_ctx = 4096,
+                    num_predict = 180
+                }
+            };
+
+            string content = await SendChatAsync(payload, cancellationToken);
+            Match match = Regex.Match(
+                content,
+                $@"\[\[{Regex.Escape(token)}\]\]\s*(.*?)\s*\[\[/{Regex.Escape(token)}\]\]",
+                RegexOptions.Singleline | RegexOptions.CultureInvariant);
+            string combinedTranslation = match.Success
+                ? CleanTranslationCandidate(match.Groups[1].Value)
+                : CleanTranslationCandidate(content);
+            if (!TryDistributeCombinedTranslation(group, combinedTranslation))
+            {
+                continue;
+            }
+
+            ReportTranslationProgress(
+                progress,
+                regions,
+                "Reconstruyendo una frase repartida entre varios rótulos…");
+        }
+    }
+
+    private static IReadOnlyList<ComicRegion[]> FindSplitFragmentSequences(
+        IReadOnlyList<ComicRegion> regions)
+    {
+        var groups = new List<ComicRegion[]>();
+        for (int start = 0; start < regions.Count - 1; start++)
+        {
+            ComicRegion first = regions[start];
+            if (!IsShortFragment(first) || EndsSentence(first.Original))
+            {
+                continue;
+            }
+
+            var candidate = new List<ComicRegion> { first };
+            for (int end = start + 1;
+                 end < regions.Count && candidate.Count < 4;
+                 end++)
+            {
+                ComicRegion previous = candidate[^1];
+                ComicRegion current = regions[end];
+                if (!IsShortFragment(current)
+                    || !AreNearbyFragments(previous, current))
+                {
+                    break;
+                }
+
+                candidate.Add(current);
+                if (!EndsSentence(current.Original))
+                {
+                    continue;
+                }
+
+                string combined = string.Join(
+                    " ",
+                    candidate.Select(region => NormalizeOcrForTranslation(region.Original)));
+                if (LooksLikeContinuousClause(combined))
+                {
+                    groups.Add(candidate.ToArray());
+                    start = end;
+                }
+                break;
+            }
+        }
+        return groups;
+    }
+
+    private static bool IsShortFragment(ComicRegion region)
+    {
+        string source = NormalizeSourceText(region.Original);
+        int words = Regex.Matches(source, @"[\p{L}\p{N}'’-]+").Count;
+        return source.Length is >= 1 and <= 24 && words is >= 1 and <= 4;
+    }
+
+    private static bool EndsSentence(string source) =>
+        Regex.IsMatch(source.Trim(), @"[.!?…][""'’”)]*$");
+
+    private static bool AreNearbyFragments(ComicRegion first, ComicRegion second)
+    {
+        double firstX = first.TextBox.X + first.TextBox.Width / 2;
+        double firstY = first.TextBox.Y + first.TextBox.Height / 2;
+        double secondX = second.TextBox.X + second.TextBox.Width / 2;
+        double secondY = second.TextBox.Y + second.TextBox.Height / 2;
+        return Math.Abs(secondX - firstX) <= 230
+            && Math.Abs(secondY - firstY) <= 230;
+    }
+
+    private static bool LooksLikeContinuousClause(string source) =>
+        Regex.IsMatch(
+            source,
+            @"\b(?:I|YOU|WE|THEY|HE|SHE|IT)\s*(?:['’]\s*)?LL\b"
+            + @"|\b(?:CAN|CAN'T|CANNOT|COULD|COULDN'T|WILL|WON'T|WOULD|WOULDN'T|"
+            + @"SHOULD|SHOULDN'T|MUST|MIGHT|MAY)\b",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    private static bool TryDistributeCombinedTranslation(
+        IReadOnlyList<ComicRegion> group,
+        string combinedTranslation)
+    {
+        string[] words = Regex.Matches(combinedTranslation.Trim(), @"\S+")
+            .Select(match => match.Value)
+            .ToArray();
+        if (words.Length < group.Count
+            || words.Length > Math.Max(group.Count * 5, 18))
+        {
+            return false;
+        }
+
+        var combinedRegion = new ComicRegion
+        {
+            Original = string.Join(" ", group.Select(region => region.Original))
+        };
+        if (!IsAcceptableTranslation(combinedRegion, combinedTranslation))
+        {
+            return false;
+        }
+
+        int[] counts = Enumerable.Repeat(1, group.Count).ToArray();
+        int remaining = words.Length - group.Count;
+        int[] priority = Enumerable.Range(0, group.Count)
+            .OrderBy(index => Math.Abs(index - (group.Count - 1) / 2.0))
+            .ToArray();
+        for (int index = 0; index < remaining; index++)
+        {
+            counts[priority[index % priority.Length]]++;
+        }
+
+        int wordIndex = 0;
+        for (int index = 0; index < group.Count; index++)
+        {
+            string fragment = string.Join(" ", words.Skip(wordIndex).Take(counts[index]));
+            if (!IsAcceptableTranslation(group[index], fragment))
+            {
+                return false;
+            }
+            wordIndex += counts[index];
+        }
+
+        wordIndex = 0;
+        for (int index = 0; index < group.Count; index++)
+        {
+            group[index].Translation = string.Join(
+                " ",
+                words.Skip(wordIndex).Take(counts[index]));
+            wordIndex += counts[index];
+        }
+        return true;
     }
 
     private async Task RefineTranslateGemmaBatchAsync(
@@ -767,6 +971,10 @@ public sealed class OllamaClient : IDisposable
             Proofread each DRAFT into idiomatic, concise Spanish from Spain. Correct literal phrasing and obvious
             OCR damage by using the complete page context, while preserving the exact action, speaker, humour,
             negation, names and every meaningful fragment. Never add information from a neighbouring balloon.
+            Read the balloons as one continuous scene: keep questions and replies coherent, preserve callbacks
+            and rhyme or wordplay when the source uses them, and avoid dictionary-like calques or invented words.
+            Prefer natural spoken Spanish over a literal structure, but keep each result compact enough for the
+            original balloon. A short command or reaction must remain short and forceful.
             Resolve conflicting OCR readings by grammar; alternatives are evidence, not extra dialogue. In
             particular, "got a lucky shot" means "tuvieron suerte/acertaron de suerte", "figured" as a reply
             means "ya me lo imaginaba", "roll up with this stuff" means "aparecer con este equipo", and
@@ -847,6 +1055,13 @@ public sealed class OllamaClient : IDisposable
             TARGETS contains the lines that must be translated in this request.
             CONTEXT may include OCR ALTERNATIVES. They are alternative readings of the SAME lettering,
             not additional dialogue. Use them only to reconstruct the corresponding target's English meaning.
+
+            Consecutive short TARGETS can be separate pieces of lettering that together form ONE grammatical
+            sentence. Detect continuations such as auxiliaries, contractions, conjunctions and incomplete
+            clauses. Translate the whole sequence first, then distribute that single Spanish sentence across
+            the same tags; a tag may contain only a sentence fragment and must not be expanded into a separate
+            reply. For example MAYBE / YOU'LL / SEE! should be QUIZÁ / YA LO / VERÁS!, not three independent
+            reactions.
 
             For every target, copy its exact random tag at both ends. Return exactly this shape:
             [[RANDOMTAG]] traducción española [[/RANDOMTAG]]

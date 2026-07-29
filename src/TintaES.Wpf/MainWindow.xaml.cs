@@ -481,16 +481,6 @@ public partial class MainWindow : Window
         moveThumb.DragCompleted += RegionThumb_DragCompleted;
         layer.Children.Add(moveThumb);
 
-        var border = new Border
-        {
-            BorderBrush = region == _selectedRegion ? BrushFrom("#EE594B") : BrushFrom("#4CB2BB"),
-            BorderThickness = new Thickness(Math.Max(2, 2 / CurrentZoom)),
-            // El marco es una ayuda de edición, nunca una placa rectangular sobre el bocadillo.
-            Background = Brushes.Transparent,
-            IsHitTestVisible = false
-        };
-        layer.Children.Add(border);
-
         double handleSize = Math.Clamp(16 / CurrentZoom, 24, 72);
         var resizeThumb = new Thumb
         {

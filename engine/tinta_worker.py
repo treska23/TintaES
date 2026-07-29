@@ -54,6 +54,7 @@ class TintaTranslator(MangaTranslator):
             supplemental_regions if supplemental_regions is not None else []
         )
         self.bright_candidates = bright_candidates or []
+        self.candidate_diagnostics: list[dict] = []
         # Evita que los logs de la librería se mezclen con el protocolo JSON.
         self._progress_hooks.clear()
 
@@ -66,9 +67,15 @@ class TintaTranslator(MangaTranslator):
         unresolved = [
             candidate
             for candidate in self.bright_candidates
-            if not overlaps_detected_text(candidate, textlines)
+            if (
+                str(candidate.get("polarity", "bright")).lower() == "dark"
+                or not overlaps_detected_text(candidate, textlines)
+            )
             and not overlaps_supplemental_text(candidate, self.supplemental_regions)
-            and looks_like_text_candidate(ctx.img_rgb, candidate)
+            and (
+                str(candidate.get("polarity", "bright")).lower() == "dark"
+                or looks_like_text_candidate(ctx.img_rgb, candidate)
+            )
         ]
         if not unresolved:
             return textlines
@@ -77,14 +84,22 @@ class TintaTranslator(MangaTranslator):
             create_candidate_quadrilateral(ctx.img_rgb, candidate)
             for candidate in unresolved
         ]
-        recognized = await dispatch_ocr(
-            config.ocr.ocr,
-            ctx.img_rgb,
-            quadrilaterals,
-            config.ocr,
-            self.device,
-            self.verbose,
-        )
+        original_probability = config.ocr.prob
+        try:
+            # La pasada principal ya filtró con el umbral editorial. En estos recortes
+            # de rescate necesitamos ver también hipótesis de baja confianza para poder
+            # validarlas después con geometría, longitud y probabilidad por polaridad.
+            config.ocr.prob = 0.0
+            recognized = await dispatch_ocr(
+                config.ocr.ocr,
+                ctx.img_rgb,
+                quadrilaterals,
+                config.ocr,
+                self.device,
+                self.verbose,
+            )
+        finally:
+            config.ocr.prob = original_probability
         by_identity = {
             id(quadrilateral): candidate
             for quadrilateral, candidate in zip(quadrilaterals, unresolved)
@@ -94,9 +109,25 @@ class TintaTranslator(MangaTranslator):
             value = str(getattr(region, "text", "")).strip()
             letters = [character for character in value if character.isalpha()]
             probability = float(getattr(region, "prob", 0.0) or 0.0)
+            minimum_probability = (
+                0.18
+                if candidate is not None
+                and str(candidate.get("polarity", "bright")).lower() == "dark"
+                else 0.42
+            )
+            self.candidate_diagnostics.append({
+                "id": candidate.get("id") if candidate is not None else None,
+                "polarity": (
+                    candidate.get("polarity")
+                    if candidate is not None
+                    else None
+                ),
+                "text": value,
+                "probability": round(probability, 4),
+            })
             if (
                 candidate is None
-                or probability < 0.42
+                or probability < minimum_probability
                 or len(letters) < 3
                 or len(letters) > 22
                 or len(value.split()) > 3
@@ -205,15 +236,8 @@ def create_candidate_quadrilateral(
     left, top, right, bottom = clamp_rect(candidate_rectangle(candidate), width, height)
     crop = image_rgb[top:bottom, left:right]
     gray = cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY)
-    local = cv2.GaussianBlur(gray, (0, 0), 13)
-    bright = np.where(
-        (gray >= 205)
-        & (local <= 188)
-        & ((gray.astype(np.int16) - local.astype(np.int16)) >= 38),
-        255,
-        0,
-    ).astype(np.uint8)
-    points = cv2.findNonZero(bright)
+    strokes = candidate_stroke_mask(gray, candidate)
+    points = cv2.findNonZero(strokes)
     if points is not None and len(points) >= 8:
         box = cv2.boxPoints(cv2.minAreaRect(points)).astype(np.float32)
         box[:, 0] += left
@@ -231,26 +255,50 @@ def looks_like_text_candidate(image_rgb: np.ndarray, candidate: dict) -> bool:
     left, top, right, bottom = clamp_rect(candidate_rectangle(candidate), width, height)
     candidate_width = right - left
     candidate_height = bottom - top
-    if candidate_width / max(1, candidate_height) < 1.75:
+    minimum_aspect = (
+        0.70
+        if str(candidate.get("polarity", "bright")).lower() == "dark"
+        else 1.75
+    )
+    if candidate_width / max(1, candidate_height) < minimum_aspect:
         return False
 
     crop = image_rgb[top:bottom, left:right]
     gray = cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY)
+    strokes = candidate_stroke_mask(gray, candidate)
+    count, _, stats, _ = cv2.connectedComponentsWithStats(strokes, 8)
+    if count <= 1:
+        return False
+    areas = stats[1:, cv2.CC_STAT_AREA]
+    components = int(np.count_nonzero(areas >= 5))
+    largest_ratio = float(np.max(areas)) / max(1, candidate_width * candidate_height)
+    maximum_component_ratio = (
+        0.45
+        if str(candidate.get("polarity", "bright")).lower() == "dark"
+        else 0.15
+    )
+    return components >= 2 and largest_ratio <= maximum_component_ratio
+
+
+def candidate_stroke_mask(gray: np.ndarray, candidate: dict) -> np.ndarray:
+    if str(candidate.get("polarity", "bright")).lower() == "dark":
+        local = cv2.GaussianBlur(gray, (0, 0), 75)
+        return np.where(
+            (gray <= 82)
+            & (local >= 118)
+            & ((local.astype(np.int16) - gray.astype(np.int16)) >= 48),
+            255,
+            0,
+        ).astype(np.uint8)
+
     local = cv2.GaussianBlur(gray, (0, 0), 13)
-    bright = np.where(
+    return np.where(
         (gray >= 205)
         & (local <= 188)
         & ((gray.astype(np.int16) - local.astype(np.int16)) >= 38),
         255,
         0,
     ).astype(np.uint8)
-    count, _, stats, _ = cv2.connectedComponentsWithStats(bright, 8)
-    if count <= 1:
-        return False
-    areas = stats[1:, cv2.CC_STAT_AREA]
-    components = int(np.count_nonzero(areas >= 5))
-    largest_ratio = float(np.max(areas)) / max(1, candidate_width * candidate_height)
-    return components >= 2 and largest_ratio <= 0.15
 
 
 def create_supplemental_mask(
@@ -1076,6 +1124,7 @@ async def analyze(args: argparse.Namespace) -> int:
         "cleanImage": str(clean_path),
         "maskImage": str(mask_path),
         "regions": regions,
+        "candidateDiagnostics": translator.candidate_diagnostics,
         "elapsedSeconds": round(time.perf_counter() - started, 3),
     }
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")

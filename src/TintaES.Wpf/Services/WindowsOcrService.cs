@@ -269,6 +269,9 @@ public sealed class WindowsOcrService
             Confidence = region.Confidence,
             TextBox = MapRect(region.TextBox),
             RenderBox = MapRect(region.RenderBox),
+            CleanupPolygon = region.CleanupPolygon.Select(point => new NormalizedPoint(
+                (tileX + point.X / CoordinateScale * tileWidth) / pageWidth * CoordinateScale,
+                (tileY + point.Y / CoordinateScale * tileHeight) / pageHeight * CoordinateScale)).ToArray(),
             SafePolygon = region.SafePolygon.Select(point => new NormalizedPoint(
                 (tileX + point.X / CoordinateScale * tileWidth) / pageWidth * CoordinateScale,
                 (tileY + point.Y / CoordinateScale * tileHeight) / pageHeight * CoordinateScale)).ToArray(),

@@ -93,28 +93,38 @@ public static class RegionMerger
             .ToArray();
         region.Translation = TrimQuotationMarks(region.Translation);
         region.TextBox = region.TextBox.Clamp();
+        region.BubbleBox = region.BubbleBox?.Clamp();
         region.RenderBox = region.RenderBox.Clamp();
         region.Confidence = Math.Clamp(region.Confidence, 0, 1);
         region.Rotation = Math.Clamp(region.Rotation, -180, 180);
 
+        region.CleanupPolygon = SanitizePolygon(region.CleanupPolygon);
         region.SafePolygon = SanitizePolygon(region.SafePolygon);
 
         if (region.Type is "dialogue" or "thought")
         {
-            region.SafePolygon = ConstrainDialoguePolygon(region.SafePolygon, region.TextBox);
-
-            // El texto original ya estaba dentro del bocadillo. Ese bloque es nuestra referencia
-            // más fiable. Una silueta de bocadillo detectada solo se acepta si permanece cerca de
-            // esa zona; así una detección antigua o una cola conectada al fondo nunca puede convertir
-            // media viñeta en una zona válida de rotulación.
-            if (IsUsableDialoguePolygon(region.SafePolygon, region.TextBox))
+            NormalizedRect? bubbleInterior = !region.IsManual
+                ? CreateSafeBubbleInterior(region)
+                : null;
+            if (bubbleInterior is not null)
             {
-                region.RenderBox = BoundsFromPolygon(region.SafePolygon).Clamp();
+                // El globo detectado, sin borde ni cola, es la superficie real de
+                // rotulación. El bloque OCR solo indica dónde estaban las letras inglesas.
+                region.RenderBox = bubbleInterior;
+                region.SafePolygon = CreateEllipsePolygon(bubbleInterior);
             }
             else
             {
-                region.RenderBox = CreateConservativeDialogueBox(region.TextBox, region.Type);
-                region.SafePolygon = CreateEllipsePolygon(region.RenderBox);
+                region.SafePolygon = ConstrainDialoguePolygon(region.SafePolygon, region.TextBox);
+                if (IsUsableDialoguePolygon(region.SafePolygon, region.TextBox))
+                {
+                    region.RenderBox = BoundsFromPolygon(region.SafePolygon).Clamp();
+                }
+                else
+                {
+                    region.RenderBox = CreateConservativeDialogueBox(region.TextBox, region.Type);
+                    region.SafePolygon = CreateEllipsePolygon(region.RenderBox);
+                }
             }
         }
         else
@@ -279,6 +289,47 @@ public static class RegionMerger
                 Math.Clamp(point.Y, 0, 1000)))
             .Distinct()
             .ToArray();
+    }
+
+    private static NormalizedRect? CreateSafeBubbleInterior(ComicRegion region)
+    {
+        if (region.BubbleBox is not NormalizedRect bubble
+            || region.BubbleConfidence < 0.45)
+        {
+            return null;
+        }
+
+        NormalizedRect text = region.TextBox;
+        double textCentreX = text.X + text.Width / 2;
+        double textCentreY = text.Y + text.Height / 2;
+        double areaRatio = bubble.Area / Math.Max(1, text.Area);
+        bool containsTextCentre = textCentreX >= bubble.X
+            && textCentreX <= bubble.Right
+            && textCentreY >= bubble.Y
+            && textCentreY <= bubble.Bottom;
+        bool plausible = areaRatio is >= 1.10 and <= 10
+            && bubble.Width <= Math.Max(70, text.Width * 3.5)
+            && bubble.Height <= Math.Max(90, text.Height * 3.8);
+        if (!containsTextCentre || !plausible)
+        {
+            return null;
+        }
+
+        const double insetX = 0.08;
+        double insetY = region.Type == "thought" ? 0.14 : 0.11;
+        var interior = new NormalizedRect(
+            bubble.X + bubble.Width * insetX,
+            bubble.Y + bubble.Height * insetY,
+            bubble.Width * (1 - insetX * 2),
+            bubble.Height * (1 - insetY * 2)).Clamp();
+
+        // Una detección desplazada no puede recortar letras cuya posición sí conocemos.
+        return text.X >= interior.X - 3
+               && text.Y >= interior.Y - 3
+               && text.Right <= interior.Right + 3
+               && text.Bottom <= interior.Bottom + 3
+            ? interior
+            : null;
     }
 
     private static bool IsUsableDialoguePolygon(

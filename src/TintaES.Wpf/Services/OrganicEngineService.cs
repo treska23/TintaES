@@ -19,7 +19,7 @@ public sealed record OrganicAnalysisResult(
 public sealed class OrganicEngineService
 {
     // Cambiar esta versión invalida únicamente la caché del análisis orgánico.
-    private const string CacheVersion = "organic-layout-v8-responsive-worker";
+    private const string CacheVersion = "organic-layout-v15-dark-sfx";
 
     private static readonly TimeSpan WorkerHeartbeatInterval = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan WorkerSilenceTimeout = TimeSpan.FromMinutes(12);
@@ -498,7 +498,11 @@ public sealed class OrganicEngineService
             Confidence = source.Confidence,
             BubbleConfidence = Math.Clamp(source.BubbleConfidence, 0, 1),
             TextBox = Normalize(source.TextBox, pageWidth, pageHeight),
+            BubbleBox = source.BubbleBox is null
+                ? null
+                : Normalize(source.BubbleBox, pageWidth, pageHeight),
             RenderBox = Normalize(source.RenderBox, pageWidth, pageHeight),
+            CleanupPolygon = NormalizePolygon(source.ShapePolygon, pageWidth, pageHeight),
             SafePolygon = NormalizePolygon(source.ShapePolygon, pageWidth, pageHeight),
             Rotation = source.Rotation,
             Vertical = false,
@@ -683,6 +687,7 @@ public sealed class OrganicEngineService
         IReadOnlyList<string>? OcrAlternatives,
         double Confidence,
         double BubbleConfidence,
+        EngineRect? BubbleBox,
         string Type,
         EngineRect TextBox,
         EngineRect RenderBox,
