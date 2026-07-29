@@ -131,20 +131,39 @@ public partial class MainWindow
             WindowGuardNoZOrder | WindowGuardNoActivate);
     }
 
-    [DllImport("user32.dll")]
+    // Los métodos llevan prefijo para no colisionar con los P/Invoke de otras partes de
+    // MainWindow. EntryPoint debe apuntar expresamente al nombre exportado por user32.dll;
+    // de lo contrario .NET intenta resolver literalmente "WindowGuardGetWindowRect", etc.
+    [DllImport(
+        "user32.dll",
+        EntryPoint = "MonitorFromWindow",
+        ExactSpelling = true)]
     private static extern nint WindowGuardMonitorFromWindow(nint hwnd, uint flags);
 
-    [DllImport("user32.dll", CharSet = CharSet.Auto)]
+    [DllImport(
+        "user32.dll",
+        EntryPoint = "GetMonitorInfoW",
+        CharSet = CharSet.Unicode,
+        ExactSpelling = true,
+        SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool WindowGuardGetMonitorInfo(
         nint monitor,
         ref WindowGuardMonitorInfo monitorInfo);
 
-    [DllImport("user32.dll")]
+    [DllImport(
+        "user32.dll",
+        EntryPoint = "GetWindowRect",
+        ExactSpelling = true,
+        SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool WindowGuardGetWindowRect(nint hwnd, out WindowGuardRect rectangle);
 
-    [DllImport("user32.dll")]
+    [DllImport(
+        "user32.dll",
+        EntryPoint = "SetWindowPos",
+        ExactSpelling = true,
+        SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool WindowGuardSetWindowPos(
         nint hwnd,
