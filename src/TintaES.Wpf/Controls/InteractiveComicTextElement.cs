@@ -9,7 +9,7 @@ namespace TintaES.Wpf.Controls;
 
 /// <summary>
 /// Renderizador ligero para el lienzo interactivo. Evita que el ajuste tipográfico preciso
-/// bloquee el dispatcher de WPF mientras el usuario visualiza o edita una página.
+/// bloquee el dispatcher de WPF y respeta la silueta segura del bocadillo.
 /// La exportación sigue usando ComicTextElement en un hilo STA independiente.
 /// </summary>
 public sealed class InteractiveComicTextElement : FrameworkElement
@@ -49,6 +49,13 @@ public sealed class InteractiveComicTextElement : FrameworkElement
             text = string.Join(Environment.NewLine, text.Where(character => !char.IsWhiteSpace(character)));
         }
 
+        IReadOnlyList<Point> safeShape = CreateEffectiveShape();
+        Rect contentBounds = GetSafeContentBounds(safeShape);
+        if (contentBounds.Width < 2 || contentBounds.Height < 2)
+        {
+            return;
+        }
+
         double pixelsPerDip = VisualTreeHelper.GetDpi(this).PixelsPerDip;
         Typeface typeface = CreateTypeface(Region);
         Brush fill = ParseBrush(Region.Style.TextColor, Brushes.Black) ?? Brushes.Black;
@@ -56,9 +63,9 @@ public sealed class InteractiveComicTextElement : FrameworkElement
             ? null
             : ParseBrush(Region.Style.OutlineColor, null);
 
-        double padding = Math.Max(2, Math.Min(ActualWidth, ActualHeight) * 0.055);
-        double availableWidth = Math.Max(2, ActualWidth - padding * 2);
-        double availableHeight = Math.Max(2, ActualHeight - padding * 2);
+        double padding = Math.Max(2, Math.Min(contentBounds.Width, contentBounds.Height) * 0.035);
+        double availableWidth = Math.Max(2, contentBounds.Width - padding * 2);
+        double availableHeight = Math.Max(2, contentBounds.Height - padding * 2);
         double fontSize = GetInitialFontSize(text, availableWidth, availableHeight);
 
         FormattedText formatted = CreateFormattedText(
@@ -82,37 +89,137 @@ public sealed class InteractiveComicTextElement : FrameworkElement
                 pixelsPerDip);
         }
 
-        double preferredCenterY = GetPreferredCenterY();
-        double y = Math.Clamp(
-            preferredCenterY - formatted.Height / 2,
-            padding,
-            Math.Max(padding, ActualHeight - padding - formatted.Height));
-        var origin = new Point(padding, y);
+        double preferredCenterY = GetPreferredCenterY(contentBounds);
+        double minimumY = contentBounds.Top + padding;
+        double maximumY = Math.Max(minimumY, contentBounds.Bottom - padding - formatted.Height);
+        double y = Math.Clamp(preferredCenterY - formatted.Height / 2, minimumY, maximumY);
+        var origin = new Point(contentBounds.Left + padding, y);
 
-        drawingContext.PushClip(new RectangleGeometry(new Rect(0, 0, ActualWidth, ActualHeight)));
-
-        bool needsGeometry = Region.Style.Shadow || outline is not null;
-        if (!needsGeometry)
+        Geometry clip = safeShape.Count >= 3
+            ? CreatePolygonGeometry(safeShape)
+            : new RectangleGeometry(new Rect(0, 0, ActualWidth, ActualHeight));
+        drawingContext.PushClip(clip);
+        try
         {
-            drawingContext.DrawText(formatted, origin);
+            bool needsGeometry = Region.Style.Shadow || outline is not null;
+            if (!needsGeometry)
+            {
+                drawingContext.DrawText(formatted, origin);
+                return;
+            }
+
+            Geometry geometry = formatted.BuildGeometry(origin);
+            if (Region.Style.Shadow)
+            {
+                drawingContext.PushTransform(new TranslateTransform(fontSize * 0.06, fontSize * 0.08));
+                drawingContext.DrawGeometry(new SolidColorBrush(Color.FromArgb(105, 0, 0, 0)), null, geometry);
+                drawingContext.Pop();
+            }
+
+            double outlinePixels = Region.Style.OutlineWidth / 1000 * PageWidth;
+            Pen? pen = outline is null || outlinePixels <= 0
+                ? null
+                : new Pen(outline, Math.Max(1, outlinePixels * 2)) { LineJoin = PenLineJoin.Round };
+            drawingContext.DrawGeometry(fill, pen, geometry);
+        }
+        finally
+        {
             drawingContext.Pop();
-            return;
+        }
+    }
+
+    private IReadOnlyList<Point> CreateEffectiveShape()
+    {
+        IReadOnlyList<Point> detected = CreateLocalPolygon();
+        if (detected.Count >= 3)
+        {
+            return detected;
         }
 
-        Geometry geometry = formatted.BuildGeometry(origin);
-        if (Region.Style.Shadow)
+        double insetX = Math.Max(2, ActualWidth * 0.025);
+        double insetY = Math.Max(2, ActualHeight * 0.025);
+        double left = insetX;
+        double top = insetY;
+        double width = Math.Max(2, ActualWidth - insetX * 2);
+        double height = Math.Max(2, ActualHeight - insetY * 2);
+
+        if (Region.Type is "dialogue" or "thought")
         {
-            drawingContext.PushTransform(new TranslateTransform(fontSize * 0.06, fontSize * 0.08));
-            drawingContext.DrawGeometry(new SolidColorBrush(Color.FromArgb(105, 0, 0, 0)), null, geometry);
-            drawingContext.Pop();
+            var ellipse = new List<Point>(40);
+            double centerX = left + width / 2;
+            double centerY = top + height / 2;
+            for (int index = 0; index < 40; index++)
+            {
+                double angle = Math.PI * 2 * index / 40;
+                ellipse.Add(new Point(
+                    centerX + Math.Cos(angle) * width / 2,
+                    centerY + Math.Sin(angle) * height / 2));
+            }
+            return ellipse;
         }
 
-        double outlinePixels = Region.Style.OutlineWidth / 1000 * PageWidth;
-        Pen? pen = outline is null || outlinePixels <= 0
-            ? null
-            : new Pen(outline, Math.Max(1, outlinePixels * 2)) { LineJoin = PenLineJoin.Round };
-        drawingContext.DrawGeometry(fill, pen, geometry);
-        drawingContext.Pop();
+        return
+        [
+            new Point(left, top),
+            new Point(left + width, top),
+            new Point(left + width, top + height),
+            new Point(left, top + height)
+        ];
+    }
+
+    private IReadOnlyList<Point> CreateLocalPolygon()
+    {
+        if (Region.SafePolygon.Count < 3 || PageWidth <= 0 || PageHeight <= 0)
+        {
+            return [];
+        }
+
+        NormalizedRect box = Region.RenderBox;
+        return Region.SafePolygon
+            .Select(point => new Point(
+                (point.X - box.X) / 1000 * PageWidth,
+                (point.Y - box.Y) / 1000 * PageHeight))
+            .Select(point => new Point(
+                Math.Clamp(point.X, 0, ActualWidth),
+                Math.Clamp(point.Y, 0, ActualHeight)))
+            .Distinct()
+            .ToArray();
+    }
+
+    private Rect GetSafeContentBounds(IReadOnlyList<Point> polygon)
+    {
+        if (polygon.Count < 3)
+        {
+            return new Rect(0, 0, ActualWidth, ActualHeight);
+        }
+
+        double left = Math.Clamp(polygon.Min(point => point.X), 0, ActualWidth);
+        double top = Math.Clamp(polygon.Min(point => point.Y), 0, ActualHeight);
+        double right = Math.Clamp(polygon.Max(point => point.X), left, ActualWidth);
+        double bottom = Math.Clamp(polygon.Max(point => point.Y), top, ActualHeight);
+        var bounds = new Rect(new Point(left, top), new Point(right, bottom));
+
+        double horizontalInset = Region.Type is "dialogue" or "thought" ? 0.16 : 0.045;
+        double verticalInset = Region.Type is "dialogue" or "thought" ? 0.16 : 0.045;
+        double insetX = Math.Max(1, bounds.Width * horizontalInset);
+        double insetY = Math.Max(1, bounds.Height * verticalInset);
+        return new Rect(
+            bounds.Left + insetX,
+            bounds.Top + insetY,
+            Math.Max(2, bounds.Width - insetX * 2),
+            Math.Max(2, bounds.Height - insetY * 2));
+    }
+
+    private static Geometry CreatePolygonGeometry(IReadOnlyList<Point> polygon)
+    {
+        var geometry = new StreamGeometry();
+        using (StreamGeometryContext context = geometry.Open())
+        {
+            context.BeginFigure(polygon[0], true, true);
+            context.PolyLineTo(polygon.Skip(1).ToArray(), true, true);
+        }
+        geometry.Freeze();
+        return geometry;
     }
 
     private double GetInitialFontSize(string text, double availableWidth, double availableHeight)
@@ -125,16 +232,16 @@ public sealed class InteractiveComicTextElement : FrameworkElement
         return Math.Clamp(preferred * scale, 2.5, maximum);
     }
 
-    private double GetPreferredCenterY()
+    private double GetPreferredCenterY(Rect contentBounds)
     {
         if (PageHeight <= 0 || Region.RenderBox.Height <= 0)
         {
-            return ActualHeight / 2;
+            return contentBounds.Top + contentBounds.Height / 2;
         }
 
         double center = Region.TextBox.Y + Region.TextBox.Height / 2;
         double local = (center - Region.RenderBox.Y) / 1000 * PageHeight;
-        return Math.Clamp(local, 0, ActualHeight);
+        return Math.Clamp(local, contentBounds.Top, contentBounds.Bottom);
     }
 
     private FormattedText CreateFormattedText(
