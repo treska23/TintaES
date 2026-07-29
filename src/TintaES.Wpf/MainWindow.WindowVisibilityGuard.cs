@@ -84,10 +84,13 @@ public partial class MainWindow
         }
 
         nint handle = new WindowInteropHelper(this).Handle;
-        if (handle == 0
-            || !WindowGuardGetWindowRect(handle, out WindowGuardRect window)
-            || WindowGuardMonitorFromWindow(handle, WindowGuardMonitorDefaultToNearest) is not nint monitor
-            || monitor == 0)
+        if (handle == 0 || !WindowGuardGetWindowRect(handle, out WindowGuardRect window))
+        {
+            return;
+        }
+
+        nint monitor = WindowGuardMonitorFromWindow(handle, WindowGuardMonitorDefaultToNearest);
+        if (monitor == 0)
         {
             return;
         }
