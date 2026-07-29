@@ -190,6 +190,13 @@ public partial class MainWindow
     private static void NormalizeLoadedProjectRegion(ComicRegion region)
     {
         region.Style ??= new ComicTextStyle();
+        if (string.Equals(
+                region.Translation?.Trim(),
+                ComicRegion.PendingTranslationMarker,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            region.Translation = string.Empty;
+        }
         region.TextBox = (region.TextBox ?? new NormalizedRect(100, 100, 200, 80)).Clamp();
         region.RenderBox = (region.RenderBox ?? region.TextBox.Expand(0.1, 0.2)).Clamp();
         region.SafePolygon ??= [];

@@ -29,7 +29,7 @@ public partial class MainWindow
 
         int[] pending = _comicPages
             .Select((page, index) => (page, index))
-            .Where(item => !item.page.Processed)
+            .Where(item => !item.page.SuppressBatchProcessing && PageNeedsTranslation(item.page))
             .Select(item => item.index)
             .ToArray();
         if (pending.Length == 0)
@@ -117,6 +117,7 @@ public partial class MainWindow
                     }
 
                     await Task.WhenAll(translate, persistImages);
+                    EnsureTranslationsAreComplete(analysis.Regions);
 
                     foreach (ComicRegion region in analysis.Regions)
                     {
@@ -142,6 +143,7 @@ public partial class MainWindow
                 }
                 catch (Exception exception)
                 {
+                    page.Processed = false;
                     page.Error = exception.Message;
                     lastFailure = exception.Message;
                     failures++;
@@ -199,6 +201,22 @@ public partial class MainWindow
         else
         {
             SetFooterStatus($"Cómic traducido · {_comicPages.Count} páginas · {FormatDuration(stopwatch.Elapsed.TotalSeconds)}", "#58A77D");
+        }
+    }
+
+    private static bool PageNeedsTranslation(ComicBookPageState page) =>
+        !page.Processed
+        || page.Regions.Any(region => region.IsEnabled && !region.HasRenderableTranslation);
+
+    private static void EnsureTranslationsAreComplete(IReadOnlyList<ComicRegion> regions)
+    {
+        int incomplete = regions.Count(region =>
+            region.IsEnabled && !region.HasRenderableTranslation);
+        if (incomplete > 0)
+        {
+            throw new InvalidOperationException(
+                $"La traducción no devolvió texto válido para {incomplete} de {regions.Count} zonas. " +
+                "La página seguirá pendiente y no se incrustará un resultado incompleto.");
         }
     }
 

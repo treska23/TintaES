@@ -55,6 +55,8 @@ public sealed class ComicTextStyle
 
 public sealed class ComicRegion : INotifyPropertyChanged
 {
+    public const string PendingTranslationMarker = "Traducción pendiente";
+
     private string _original = string.Empty;
     private string _translation = string.Empty;
     private string _type = "dialogue";
@@ -73,11 +75,16 @@ public sealed class ComicRegion : INotifyPropertyChanged
     public IReadOnlyList<string> OcrAlternatives { get; set; } = [];
     public string Translation { get => _translation; set => Set(ref _translation, value); }
 
-    // El lienzo de resultado nunca debe volver a colocar el OCR inglés sobre un fondo ya
-    // reconstruido. Mientras la traducción todavía no exista se muestra una caja vacía; al
-    // terminar, OllamaClient garantiza una traducción o el aviso español "Traducción pendiente".
-    // El original continúa disponible en el inspector mediante Original.
-    public string DisplayText => Translation;
+    // El lienzo de resultado nunca debe volver a colocar el OCR inglés ni un aviso técnico
+    // sobre un fondo ya reconstruido. El original continúa disponible en el inspector.
+    public bool HasRenderableTranslation =>
+        !string.IsNullOrWhiteSpace(Translation)
+        && !string.Equals(
+            Translation.Trim(),
+            PendingTranslationMarker,
+            StringComparison.OrdinalIgnoreCase);
+
+    public string DisplayText => HasRenderableTranslation ? Translation : string.Empty;
     public string Type { get => _type; set => Set(ref _type, value); }
     public double Confidence { get; set; } = 0.75;
 

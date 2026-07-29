@@ -211,6 +211,15 @@ public partial class MainWindow
                     Error = storedPage.Error
                 };
                 page.Regions.AddRange(storedPage.Regions ?? []);
+                foreach (ComicRegion region in page.Regions)
+                {
+                    NormalizeLoadedProjectRegion(region);
+                }
+                if (page.Regions.Any(region => region.IsEnabled && !region.HasRenderableTranslation))
+                {
+                    page.Processed = false;
+                    page.Error = "La traducción está incompleta y debe reintentarse.";
+                }
                 _comicPages.Add(page);
             }
 

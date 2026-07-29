@@ -6,6 +6,7 @@ namespace TintaES.Wpf.Services;
 public static class ComicFontResolver
 {
     private static readonly Lazy<FontFamily> ComicFallback = new(ResolveComicFallback);
+    private static readonly char[] RequiredSpanishGlyphs = ['O', 'Y', 'Ó', '¡', '¿'];
 
     public static FontFamily Resolve(string? requestedFamily, string category)
     {
@@ -37,10 +38,38 @@ public static class ComicFontResolver
 
     private static FontFamily ResolveComicFallback()
     {
+        FontFamily? packagedComic = TryResolvePackagedFont(
+            "comic_shanns_2.ttf",
+            "Comic Shanns");
+        if (packagedComic is not null)
+        {
+            return packagedComic;
+        }
+
+        FontFamily? installedComic = Fonts.SystemFontFamilies.FirstOrDefault(font =>
+            (string.Equals(font.Source, "Comic Shanns", StringComparison.OrdinalIgnoreCase)
+             || string.Equals(font.Source, "Comic Sans MS", StringComparison.OrdinalIgnoreCase))
+            && SupportsSpanish(font));
+        if (installedComic is not null)
+        {
+            return installedComic;
+        }
+
+        // Anime Ace conserva el aspecto de cómic, pero algunas versiones dibujan «Ó»
+        // como «Y» y carecen de los signos de apertura españoles. Solo se utiliza
+        // cuando la copia instalada sí contiene todos los glifos necesarios.
+        FontFamily? animeAce = Fonts.SystemFontFamilies.FirstOrDefault(font =>
+            string.Equals(font.Source, "Anime Ace v3", StringComparison.OrdinalIgnoreCase)
+            && SupportsSpanish(font));
+        return animeAce ?? new FontFamily("Arial");
+    }
+
+    private static FontFamily? TryResolvePackagedFont(string fileName, string familyName)
+    {
         try
         {
             var resourceUri = new Uri(
-                "pack://application:,,,/TintaES;component/Resources/Fonts/anime_ace_3.ttf",
+                $"pack://application:,,,/TintaES;component/Resources/Fonts/{fileName}",
                 UriKind.Absolute);
             if (Application.GetResourceStream(resourceUri) is not null)
             {
@@ -48,7 +77,7 @@ public static class ComicFontResolver
                     new Uri(
                         "pack://application:,,,/TintaES;component/Resources/Fonts/",
                         UriKind.Absolute),
-                    "./#Anime Ace v3");
+                    $"./#{familyName}");
             }
         }
         catch
@@ -56,9 +85,19 @@ public static class ComicFontResolver
             // La fuente empaquetada es opcional. Se usa una instalada si el recurso no existe.
         }
 
-        FontFamily? installedComic = Fonts.SystemFontFamilies.FirstOrDefault(font =>
-            string.Equals(font.Source, "Anime Ace v3", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(font.Source, "Comic Sans MS", StringComparison.OrdinalIgnoreCase));
-        return installedComic ?? new FontFamily("Arial");
+        return null;
+    }
+
+    private static bool SupportsSpanish(FontFamily family)
+    {
+        var typeface = new Typeface(
+            family,
+            FontStyles.Normal,
+            FontWeights.Normal,
+            FontStretches.Normal);
+        return typeface.TryGetGlyphTypeface(out GlyphTypeface? glyphs)
+               && RequiredSpanishGlyphs.All(character =>
+                   glyphs.CharacterToGlyphMap.ContainsKey(character))
+               && glyphs.CharacterToGlyphMap['Ó'] != glyphs.CharacterToGlyphMap['Y'];
     }
 }

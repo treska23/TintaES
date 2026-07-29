@@ -208,7 +208,7 @@ public partial class MainWindow
                     progress);
 
                 ComicRegion[] incomplete = analysis.Regions
-                    .Where(region => string.IsNullOrWhiteSpace(region.Translation))
+                    .Where(region => region.IsEnabled && !region.HasRenderableTranslation)
                     .ToArray();
                 if (incomplete.Length > 0)
                 {

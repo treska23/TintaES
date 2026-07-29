@@ -465,6 +465,7 @@ public partial class MainWindow
         public string? MaskPath { get; set; }
         public List<ComicRegion> Regions { get; } = [];
         public bool Processed { get; set; }
+        public bool SuppressBatchProcessing { get; set; }
         public string? Error { get; set; }
     }
 

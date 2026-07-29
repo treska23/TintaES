@@ -485,7 +485,8 @@ public partial class MainWindow : Window
         {
             BorderBrush = region == _selectedRegion ? BrushFrom("#EE594B") : BrushFrom("#4CB2BB"),
             BorderThickness = new Thickness(Math.Max(2, 2 / CurrentZoom)),
-            Background = region == _selectedRegion ? new SolidColorBrush(Color.FromArgb(24, 238, 89, 75)) : Brushes.Transparent,
+            // El marco es una ayuda de edición, nunca una placa rectangular sobre el bocadillo.
+            Background = Brushes.Transparent,
             IsHitTestVisible = false
         };
         layer.Children.Add(border);

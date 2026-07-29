@@ -12,7 +12,10 @@ var tests = new (string Name, Func<Task> Run)[]
     ("Separa áreas de rotulación que compiten", TestCompetingRenderAreasAsync),
     ("Nunca vuelve a dibujar el OCR inglés como texto de resultado", TestDisplayTextNeverUsesOriginalAsync),
     ("Separa detección y traducción", TestOllamaPipelineAsync),
-    ("No desplaza traducciones si TranslateGemma omite una línea", TestTranslateGemmaStableMappingAsync)
+    ("No desplaza traducciones si TranslateGemma omite una línea", TestTranslateGemmaStableMappingAsync),
+    ("Recupera individualmente un lote completo sin etiquetas", TestTranslateGemmaWholeBatchRecoveryAsync),
+    ("Nunca incrusta un marcador cuando la traducción falla", TestTranslationFailureNeverRendersMarkerAsync),
+    ("Conserva el sentido y el registro español en la escena real", TestComicSceneSemanticGuardsAsync)
 };
 
 int failures = 0;
@@ -194,6 +197,10 @@ static Task TestDisplayTextNeverUsesOriginalAsync()
     region.Translation = "ABRE LOS OJOS";
     Assert(region.DisplayText == "ABRE LOS OJOS",
         "El lienzo debe mostrar exclusivamente la traducción española.");
+
+    region.Translation = ComicRegion.PendingTranslationMarker;
+    Assert(region.DisplayText == string.Empty,
+        "Un marcador técnico antiguo nunca puede aparecer incrustado en el bocadillo.");
     return Task.CompletedTask;
 }
 
@@ -231,6 +238,79 @@ static async Task TestTranslateGemmaStableMappingAsync()
     Assert(regions[1].Translation == "Segunda frase", "La línea omitida debe repetirse de forma aislada.");
     Assert(regions[2].Translation == "Tercera frase", "La tercera traducción no puede desplazarse a la segunda región.");
     Assert(handler.Calls == 2, "Debe hacer un lote y un único reintento para la línea omitida.");
+}
+
+static async Task TestTranslateGemmaWholeBatchRecoveryAsync()
+{
+    var handler = new FakeTranslateGemmaWholeBatchHandler(failEveryRequest: false);
+    using var http = new HttpClient(handler) { BaseAddress = new Uri("http://127.0.0.1:11434/") };
+    using var client = new OllamaClient(httpClient: http);
+    ComicRegion[] regions =
+    [
+        new() { Original = "FIRST LINE", Type = "dialogue" },
+        new() { Original = "SECOND LINE", Type = "dialogue" },
+        new() { Original = "THIRD LINE", Type = "dialogue" }
+    ];
+
+    await client.TranslateRegionsAsync(regions, "translategemma:4b", CancellationToken.None);
+
+    Assert(regions.All(region => region.HasRenderableTranslation),
+        "Cada bocadillo debe recuperarse aunque el modelo pierda todas las etiquetas del lote.");
+    Assert(regions[0].Translation == "Primera frase", "La recuperación individual debe respetar la primera zona.");
+    Assert(regions[1].Translation == "Segunda frase", "La recuperación individual debe respetar la segunda zona.");
+    Assert(regions[2].Translation == "Tercera frase", "La recuperación individual debe respetar la tercera zona.");
+    Assert(handler.Calls == 5,
+        "Tras dos lotes inválidos debe realizar exactamente un reintento individual por zona.");
+}
+
+static async Task TestTranslationFailureNeverRendersMarkerAsync()
+{
+    var handler = new FakeTranslateGemmaWholeBatchHandler(failEveryRequest: true);
+    using var http = new HttpClient(handler) { BaseAddress = new Uri("http://127.0.0.1:11434/") };
+    using var client = new OllamaClient(httpClient: http);
+    ComicRegion[] regions =
+    [
+        new() { Original = "FIRST LINE", Type = "dialogue" },
+        new() { Original = "SECOND LINE", Type = "dialogue" }
+    ];
+
+    bool failed = false;
+    try
+    {
+        await client.TranslateRegionsAsync(regions, "translategemma:4b", CancellationToken.None);
+    }
+    catch (InvalidOperationException exception)
+    {
+        failed = exception.Message.Contains("no devolvió", StringComparison.OrdinalIgnoreCase);
+    }
+
+    Assert(failed, "Una traducción incompleta debe fallar y dejar la página reintentable.");
+    Assert(regions.All(region => string.IsNullOrEmpty(region.Translation)),
+        "Las zonas fallidas deben quedar vacías, sin texto inglés ni marcadores.");
+    Assert(regions.All(region => region.DisplayText == string.Empty),
+        "El lienzo nunca debe dibujar un aviso técnico como si fuera rotulación.");
+}
+
+static async Task TestComicSceneSemanticGuardsAsync()
+{
+    var handler = new FakeTranslateGemmaSemanticHandler();
+    using var http = new HttpClient(handler) { BaseAddress = new Uri("http://127.0.0.1:11434/") };
+    using var client = new OllamaClient(httpClient: http);
+    ComicRegion[] regions =
+    [
+        new() { Original = "FIRE- BALLS, GIRLS", Type = "dialogue" },
+        new() { Original = "LET ME TELL YOU WHAT IT'S ALL ABOUT", Type = "dialogue" },
+        new() { Original = "TAKE THESE SUCKERS OUT", Type = "dialogue" }
+    ];
+
+    await client.TranslateRegionsAsync(regions, "translategemma:4b", CancellationToken.None);
+
+    Assert(regions[0].Translation == "¡Bolas de fuego, chicas!",
+        "Fireballs debe conservar el plural y la llamada a las chicas.");
+    Assert(regions[1].Translation == "Dejad que os cuente de qué va todo esto.",
+        "El diálogo debe usar un registro natural de España.");
+    Assert(regions[2].Translation == "¡Acabad con esos capullos!",
+        "La orden de combate no puede convertirse en una palabra inventada.");
 }
 
 static void Assert(bool condition, string message)
@@ -356,6 +436,81 @@ sealed class FakeTranslateGemmaHandler : HttpMessageHandler
                         : "Tercera frase";
                 return $"[[{token}]] {translation} [[/{token}]]";
             }));
+        return new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                JsonSerializer.Serialize(new { message = new { content } }),
+                Encoding.UTF8,
+                "application/json")
+        };
+    }
+}
+
+sealed class FakeTranslateGemmaWholeBatchHandler(bool failEveryRequest) : HttpMessageHandler
+{
+    public int Calls { get; private set; }
+
+    protected override async Task<HttpResponseMessage> SendAsync(
+        HttpRequestMessage request,
+        CancellationToken cancellationToken)
+    {
+        Calls++;
+        string body = await request.Content!.ReadAsStringAsync(cancellationToken);
+        using JsonDocument requestDocument = JsonDocument.Parse(body);
+        string prompt = requestDocument.RootElement
+            .GetProperty("messages")[0]
+            .GetProperty("content")
+            .GetString()!;
+        Match[] targets = Regex.Matches(
+                prompt,
+                @"\[\[(R[A-F0-9]+)\]\]\s*(.*?)\s*\[\[/\1\]\]",
+                RegexOptions.Singleline | RegexOptions.CultureInvariant)
+            .Cast<Match>()
+            .ToArray();
+
+        string content = string.Empty;
+        if (!failEveryRequest && targets.Length == 1)
+        {
+            string source = targets[0].Groups[2].Value;
+            content = source.Contains("FIRST", StringComparison.Ordinal)
+                ? "Primera frase"
+                : source.Contains("SECOND", StringComparison.Ordinal)
+                    ? "Segunda frase"
+                    : "Tercera frase";
+        }
+
+        return new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                JsonSerializer.Serialize(new { message = new { content } }),
+                Encoding.UTF8,
+                "application/json")
+        };
+    }
+}
+
+sealed class FakeTranslateGemmaSemanticHandler : HttpMessageHandler
+{
+    protected override async Task<HttpResponseMessage> SendAsync(
+        HttpRequestMessage request,
+        CancellationToken cancellationToken)
+    {
+        string body = await request.Content!.ReadAsStringAsync(cancellationToken);
+        using JsonDocument requestDocument = JsonDocument.Parse(body);
+        string prompt = requestDocument.RootElement
+            .GetProperty("messages")[0]
+            .GetProperty("content")
+            .GetString()!;
+        Match[] targets = Regex.Matches(
+                prompt,
+                @"\[\[(R[A-F0-9]+)\]\]\s*(.*?)\s*\[\[/\1\]\]",
+                RegexOptions.Singleline | RegexOptions.CultureInvariant)
+            .Cast<Match>()
+            .ToArray();
+        string content = string.Join(
+            "\n",
+            targets.Select(match =>
+                $"[[{match.Groups[1].Value}]] Texto provisional [[/{match.Groups[1].Value}]]"));
         return new HttpResponseMessage(HttpStatusCode.OK)
         {
             Content = new StringContent(

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.IO;
+using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using TintaES.Core;
@@ -103,10 +104,12 @@ string[] exportedPaths =
 Exception? renderError = null;
 bool manualFitVerified = false;
 bool threeBalloonFitVerified = false;
+bool spanishComicGlyphsVerified = false;
 var renderThread = new Thread(() =>
 {
     try
     {
+        spanishComicGlyphsVerified = VerifySpanishComicGlyphs();
         var export = new ImageExportService();
         BitmapSource rendered = export
             .RenderAsync(filtered.CleanedBitmap, analysis.Regions)
@@ -162,6 +165,7 @@ Console.WriteLine($"REFERENCIAS_TIPOGRAFICAS={layoutReferences}/{analysis.Region
 Console.WriteLine($"AJUSTE_MANUAL_SEGURO={manualFitVerified}");
 Console.WriteLine($"TRES_BOCADILLOS_VISIBLES_Y_DENTRO={threeBalloonFitVerified}");
 Console.WriteLine($"TRES_BOCADILLOS_TRADUCIDOS_CON_SENTIDO={threeBalloonTranslationVerified}");
+Console.WriteLine($"FUENTE_COMIC_ES_COMPATIBLE={spanishComicGlyphsVerified}");
 Console.WriteLine(
     "ESTILO_3B=" +
     string.Join(
@@ -179,8 +183,28 @@ return translated == analysis.Regions.Count
        && manualFitVerified
        && threeBalloonFitVerified
        && threeBalloonTranslationVerified
+       && spanishComicGlyphsVerified
     ? 0
     : 1;
+}
+
+static bool VerifySpanishComicGlyphs()
+{
+    FontFamily family = ComicFontResolver.Resolve(null, "comic");
+    var typeface = new Typeface(
+        family,
+        FontStyles.Normal,
+        FontWeights.Normal,
+        FontStretches.Normal);
+    if (!typeface.TryGetGlyphTypeface(out GlyphTypeface? glyphs))
+    {
+        return false;
+    }
+
+    char[] required = ['O', 'Y', 'Ó', '¡', '¿'];
+    return required.All(character => glyphs.CharacterToGlyphMap.ContainsKey(character))
+           && glyphs.CharacterToGlyphMap['O'] != glyphs.CharacterToGlyphMap['Y']
+           && glyphs.CharacterToGlyphMap['Ó'] != glyphs.CharacterToGlyphMap['Y'];
 }
 
 static bool VerifyManualTextSafety(ImageExportService export)

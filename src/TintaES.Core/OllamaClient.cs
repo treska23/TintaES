@@ -393,13 +393,20 @@ public sealed class OllamaClient : IDisposable
                 List<ComicRegion> missing = batch
                     .Where(region => !IsAcceptableTranslation(region, region.Translation))
                     .ToList();
-                if (missing.Count > 0 && missing.Count < batch.Count)
+                if (missing.Count > 0)
                 {
                     foreach (ComicRegion region in missing)
                     {
                         region.Translation = string.Empty;
                     }
                     await TranslateBatchAsync(missing, model, cancellationToken);
+
+                    foreach (ComicRegion region in missing.Where(region =>
+                                 !IsAcceptableTranslation(region, region.Translation)))
+                    {
+                        region.Translation = string.Empty;
+                        await TranslateBatchAsync([region], model, cancellationToken);
+                    }
                 }
 
                 ReportTranslationProgress(progress, regions, $"Traduciendo con {model}…");
@@ -409,12 +416,23 @@ public sealed class OllamaClient : IDisposable
         ApplyKnownSfxLocalizations(regions);
         ApplySemanticGuards(regions);
         NormalizeSignTranslations(regions);
-        foreach (ComicRegion region in regions.Where(region =>
-                     !IsAcceptableTranslation(region, region.Translation)))
+        ComicRegion[] unresolved = regions
+            .Where(region => !IsAcceptableTranslation(region, region.Translation))
+            .ToArray();
+        if (unresolved.Length > 0)
         {
-            // Nunca se vuelve a colocar el OCR inglés sobre el fondo ya reconstruido.
-            // Una incidencia visible y editable es preferible a exportar inglés sin avisar.
-            region.Translation = "Traducción pendiente";
+            foreach (ComicRegion region in unresolved)
+            {
+                region.Translation = string.Empty;
+            }
+
+            string examples = string.Join(
+                "; ",
+                unresolved.Take(3).Select(region => $"«{NormalizeSourceText(region.Original)}»"));
+            throw new InvalidOperationException(
+                $"Ollama no devolvió una traducción española válida para {unresolved.Length} de " +
+                $"{regions.Count} zonas ({examples}). La página queda pendiente para poder reintentarlo; " +
+                "no se incrustará ningún aviso ni un resultado incompleto.");
         }
         ReportTranslationProgress(progress, regions, "Traducción contextual terminada");
     }
@@ -475,6 +493,27 @@ public sealed class OllamaClient : IDisposable
                          RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
             {
                 region.Translation = "¡Abre los ojos!";
+            }
+            else if (Regex.IsMatch(
+                         source,
+                         @"\bFIRE[\s-]*BALLS?\s*,?\s*GIRLS\b",
+                         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+            {
+                region.Translation = "¡Bolas de fuego, chicas!";
+            }
+            else if (Regex.IsMatch(
+                         source,
+                         @"\bLET\s+ME\s+TELL\s+YOU\s+WHAT\s+IT['’]?S\s+ALL\s+ABOUT\b",
+                         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+            {
+                region.Translation = "Dejad que os cuente de qué va todo esto.";
+            }
+            else if (Regex.IsMatch(
+                         source,
+                         @"\bTAKE\s+THESE\s+SUCKERS\s+OUT\b",
+                         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+            {
+                region.Translation = "¡Acabad con esos capullos!";
             }
 
             if (Regex.IsMatch(
@@ -584,7 +623,11 @@ public sealed class OllamaClient : IDisposable
         }
 
         string candidate = Regex.Replace(translation.Trim(), @"\s+", " ");
-        if (candidate.Contains("[[", StringComparison.Ordinal)
+        if (string.Equals(
+                candidate,
+                ComicRegion.PendingTranslationMarker,
+                StringComparison.OrdinalIgnoreCase)
+            || candidate.Contains("[[", StringComparison.Ordinal)
             || candidate.Contains("SOURCE:", StringComparison.OrdinalIgnoreCase)
             || candidate.Contains("TRANSLATION:", StringComparison.OrdinalIgnoreCase)
             || candidate.Contains("OCR ALTERNATIVE", StringComparison.OrdinalIgnoreCase)
@@ -659,6 +702,19 @@ public sealed class OllamaClient : IDisposable
             }
             await TranslateGemmaChunkAsync(retry, regions, model, cancellationToken);
             ReportTranslationProgress(progress, regions, "Repitiendo líneas dudosas…");
+        }
+
+        // Si TranslateGemma pierde todas las etiquetas de un lote, repetir el mismo lote no
+        // basta. Cada zona se solicita de forma aislada: así una respuesta sin etiquetas sigue
+        // siendo inequívoca y nunca se desplaza a otro bocadillo.
+        ComicRegion[] individuallyUnresolved = translatable
+            .Where(region => !IsAcceptableTranslation(region, region.Translation))
+            .ToArray();
+        foreach (ComicRegion region in individuallyUnresolved)
+        {
+            region.Translation = string.Empty;
+            await TranslateGemmaChunkAsync([region], regions, model, cancellationToken);
+            ReportTranslationProgress(progress, regions, "Recuperando un bocadillo aislado…");
         }
 
         await RefineTranslateGemmaBatchAsync(regions, model, cancellationToken, progress);

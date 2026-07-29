@@ -71,9 +71,9 @@ public partial class MainWindow
         var temporarilySuppressed = new List<ComicBookPageState>();
         foreach ((ComicBookPageState page, int index) in _comicPages.Select((page, index) => (page, index)))
         {
-            if (!selectedSet.Contains(index) && !page.Processed)
+            if (!selectedSet.Contains(index) && PageNeedsTranslation(page))
             {
-                page.Processed = true;
+                page.SuppressBatchProcessing = true;
                 temporarilySuppressed.Add(page);
             }
         }
@@ -89,7 +89,7 @@ public partial class MainWindow
         {
             foreach (ComicBookPageState page in temporarilySuppressed)
             {
-                page.Processed = false;
+                page.SuppressBatchProcessing = false;
             }
         }
     }

@@ -171,6 +171,7 @@ public sealed class ComicTextElement : FrameworkElement
         int maxLines = Math.Min(words.Length, maxLinesByHeight);
         TextLayout? best = null;
         double bestScore = double.PositiveInfinity;
+        int bestLineDistance = int.MaxValue;
         double preferredCenterY = GetOriginalTextCenterY();
         double preferredCenterX = GetOriginalTextCenterX();
 
@@ -222,15 +223,18 @@ public sealed class ComicTextElement : FrameworkElement
                     continue;
                 }
 
-                if (Region.Style.OriginalLineCount > 0)
-                {
-                    score += Math.Abs(lineCount - Region.Style.OriginalLineCount) * 0.12;
-                }
+                // La huella vertical del rótulo forma parte de la composición. La distancia
+                // al número de líneas original es un criterio principal, no una penalización
+                // ligera que la distribución horizontal pueda anular.
+                int lineDistance = Region.Style.OriginalLineCount > 0
+                    ? Math.Abs(lineCount - Region.Style.OriginalLineCount)
+                    : 0;
 
                 double actualCenterY = top + blockHeight / 2;
                 score += Math.Abs(actualCenterY - preferredCenterY) / Math.Max(1, ActualHeight) * 0.08;
 
-                if (score >= bestScore)
+                if (lineDistance > bestLineDistance
+                    || (lineDistance == bestLineDistance && score >= bestScore))
                 {
                     continue;
                 }
@@ -248,6 +252,7 @@ public sealed class ComicTextElement : FrameworkElement
                     start = end;
                 }
 
+                bestLineDistance = lineDistance;
                 bestScore = score;
                 best = new TextLayout(fontSize, lineHeight, placements);
             }
@@ -477,7 +482,27 @@ public sealed class ComicTextElement : FrameworkElement
         }
 
         double originalPixels = Region.Style.FontSize / 1000 * PageHeight;
-        return Math.Clamp(originalPixels * 1.03 * scale, minimum, automaticMaximum);
+        int translatedWords = Region.DisplayText.Split(
+            [' ', '\t', '\r', '\n'],
+            StringSplitOptions.RemoveEmptyEntries).Length;
+        int feasibleOriginalLines = Math.Min(
+            Math.Max(1, translatedWords),
+            Math.Max(1, Region.Style.OriginalLineCount));
+        double footprintCompensation = Region.Style.OriginalLineCount > feasibleOriginalLines
+            ? Math.Clamp(
+                (double)Region.Style.OriginalLineCount / feasibleOriginalLines,
+                1,
+                1.28)
+            : 1;
+
+        // Un pequeño margen compensa las diferencias de altura de mayúsculas entre la
+        // fuente detectada y la sustituta. Si el español tiene menos palabras que líneas
+        // originales, recuperamos además su huella vertical aumentando las letras; el
+        // ajuste geométrico sigue siendo quien impone el límite real del bocadillo.
+        return Math.Clamp(
+            originalPixels * 1.10 * footprintCompensation * scale,
+            minimum,
+            automaticMaximum);
     }
 
     private double GetOriginalTextCenterY()
