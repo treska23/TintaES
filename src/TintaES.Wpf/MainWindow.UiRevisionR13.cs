@@ -22,7 +22,7 @@ public partial class MainWindow
         if (sender is MainWindow window)
         {
             window.Dispatcher.BeginInvoke(
-                () => window.Title = "Tinta ES · Traductor local de cómics · UI 2026.07.30-r18",
+                () => window.Title = "Tinta ES · Traductor local de cómics · UI 2026.07.30-r19",
                 DispatcherPriority.ApplicationIdle);
         }
     }
