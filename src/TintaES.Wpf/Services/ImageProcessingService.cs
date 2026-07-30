@@ -18,8 +18,13 @@ public sealed class ImageProcessingService
         converted.CopyPixels(original, stride, 0);
         byte[] output = (byte[])original.Clone();
 
+        // Las regiones automáticas ya vienen borradas por CTD/LaMa en clean.png. Volver a
+        // limpiarlas aquí convertía la caja de rotulación en una placa rectangular visible en
+        // Resultado, aunque Fondo limpio fuese correcto. Esta segunda limpieza queda reservada
+        // exclusivamente a las zonas manuales creadas por el usuario.
         foreach (ComicRegion region in regions.Where(region =>
                      region.IsEnabled
+                     && region.IsManual
                      && region.CleanupMode is "solid" or "texture"))
         {
             PixelRect rect = ToPixelRect(region.TextBox, width, height).Expand(0.06, width, height);
