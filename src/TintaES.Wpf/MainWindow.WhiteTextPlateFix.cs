@@ -1,3 +1,4 @@
+using System.IO;
 using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -7,131 +8,145 @@ using TintaES.Core;
 namespace TintaES.Wpf;
 
 /// <summary>
-/// El fondo reconstruido nunca debe aparecer como una placa rectangular debajo de la rotulación.
-/// Esta última barrera compara el original con el fondo limpio y, en interiores planos de bocadillo,
-/// conserva únicamente la reconstrucción situada alrededor de los trazos reales de las letras.
-/// Todo cambio rectangular ajeno a esos trazos se restaura desde la página original.
+/// Impide que el fondo reconstruido aparezca como una placa rectangular detrás del texto.
+/// LaMa puede trabajar sobre una caja rectangular interna, pero el resultado visible se conserva
+/// únicamente dentro de la silueta orgánica del bocadillo o de la zona de limpieza detectada.
+/// Fuera de esa silueta se restauran exactamente los píxeles de la página original.
 /// </summary>
 public partial class MainWindow
 {
-    private static readonly bool WhiteTextPlateFixRegistered = RegisterWhiteTextPlateFix();
+    private static readonly bool BubbleCleanupClipRegistered = RegisterBubbleCleanupClip();
 
-    private bool _whiteTextPlateFixInstalled;
-    private bool _whiteTextPlateFixPending;
-    private BitmapSource? _whiteTextPlateFixLastInput;
-    private int _whiteTextPlateFixGeneration;
+    private bool _bubbleCleanupClipInstalled;
+    private bool _bubbleCleanupClipPending;
+    private BitmapSource? _bubbleCleanupClipLastInput;
+    private int _bubbleCleanupClipGeneration;
 
-    private static bool RegisterWhiteTextPlateFix()
+    private static bool RegisterBubbleCleanupClip()
     {
         EventManager.RegisterClassHandler(
             typeof(MainWindow),
             LoadedEvent,
-            new RoutedEventHandler(MainWindow_WhiteTextPlateFixLoaded),
+            new RoutedEventHandler(MainWindow_BubbleCleanupClipLoaded),
             handledEventsToo: true);
         return true;
     }
 
-    private static void MainWindow_WhiteTextPlateFixLoaded(object sender, RoutedEventArgs e)
+    private static void MainWindow_BubbleCleanupClipLoaded(object sender, RoutedEventArgs e)
     {
         if (sender is MainWindow window)
         {
             window.Dispatcher.BeginInvoke(
-                window.InstallWhiteTextPlateFix,
+                window.InstallBubbleCleanupClip,
                 DispatcherPriority.ApplicationIdle);
         }
     }
 
-    private void InstallWhiteTextPlateFix()
+    private void InstallBubbleCleanupClip()
     {
-        if (_whiteTextPlateFixInstalled)
+        if (_bubbleCleanupClipInstalled)
         {
-            QueueWhiteTextPlateFix();
+            QueueBubbleCleanupClip();
             return;
         }
 
-        _whiteTextPlateFixInstalled = true;
+        _bubbleCleanupClipInstalled = true;
         BusyOverlay.IsVisibleChanged += (_, _) =>
         {
             if (!BusyOverlay.IsVisible)
             {
-                QueueWhiteTextPlateFix();
+                QueueBubbleCleanupClip();
             }
         };
-        ResultPreviewButton.Click += (_, _) => QueueWhiteTextPlateFix();
-        CleanPreviewButton.Click += (_, _) => QueueWhiteTextPlateFix();
-
-        // También cubre páginas recuperadas de un proyecto o al navegar por un CBZ. LayoutUpdated
-        // es frecuente, pero QueueWhiteTextPlateFix sale inmediatamente si el bitmap no ha cambiado.
-        PageImage.LayoutUpdated += (_, _) => QueueWhiteTextPlateFix();
-        QueueWhiteTextPlateFix();
+        ResultPreviewButton.Click += (_, _) => QueueBubbleCleanupClip();
+        CleanPreviewButton.Click += (_, _) => QueueBubbleCleanupClip();
+        PageImage.LayoutUpdated += (_, _) => QueueBubbleCleanupClip();
+        _regions.CollectionChanged += (_, _) => QueueBubbleCleanupClip();
+        QueueBubbleCleanupClip();
     }
 
-    private void QueueWhiteTextPlateFix()
+    private void QueueBubbleCleanupClip()
     {
-        if (_whiteTextPlateFixPending
+        if (_bubbleCleanupClipPending
             || BusyOverlay.IsVisible
             || _originalBitmap is null
             || _cleanedBaseBitmap is null
             || _maskBitmap is null
             || _regions.Count == 0
-            || ReferenceEquals(_cleanedBaseBitmap, _whiteTextPlateFixLastInput))
+            || ReferenceEquals(_cleanedBaseBitmap, _bubbleCleanupClipLastInput))
         {
             return;
         }
 
-        BitmapSource original = FreezeForBackground(_originalBitmap);
-        BitmapSource cleaned = FreezeForBackground(_cleanedBaseBitmap);
-        BitmapSource mask = FreezeForBackground(_maskBitmap);
-        WhitePlateRegion[] regions = _regions
-            .Where(region => region.IsEnabled && region.Type is "dialogue" or "thought")
-            .Select(region => new WhitePlateRegion(region.TextBox))
+        BubbleClipRegion[] regions = _regions
+            .Where(region =>
+                region.IsEnabled
+                && region.Type is "dialogue" or "thought")
+            .Select(region => new BubbleClipRegion(
+                region.TextBox,
+                region.RenderBox,
+                region.BubbleBox,
+                (region.CleanupPolygon.Count >= 3
+                    ? region.CleanupPolygon
+                    : region.SafePolygon).ToArray()))
             .ToArray();
+
         if (regions.Length == 0)
         {
-            _whiteTextPlateFixLastInput = _cleanedBaseBitmap;
+            _bubbleCleanupClipLastInput = _cleanedBaseBitmap;
             return;
         }
 
-        _whiteTextPlateFixPending = true;
-        _whiteTextPlateFixLastInput = _cleanedBaseBitmap;
-        int generation = ++_whiteTextPlateFixGeneration;
-        _ = ApplyWhiteTextPlateFixAsync(original, cleaned, mask, regions, generation);
+        BitmapSource original = FreezeBubbleClipBitmap(_originalBitmap);
+        BitmapSource cleaned = FreezeBubbleClipBitmap(_cleanedBaseBitmap);
+        BitmapSource mask = FreezeBubbleClipBitmap(_maskBitmap);
+
+        _bubbleCleanupClipPending = true;
+        _bubbleCleanupClipLastInput = _cleanedBaseBitmap;
+        int generation = ++_bubbleCleanupClipGeneration;
+        _ = ApplyBubbleCleanupClipAsync(original, cleaned, mask, regions, generation);
     }
 
-    private async Task ApplyWhiteTextPlateFixAsync(
+    private async Task ApplyBubbleCleanupClipAsync(
         BitmapSource original,
         BitmapSource cleaned,
         BitmapSource mask,
-        IReadOnlyList<WhitePlateRegion> regions,
+        IReadOnlyList<BubbleClipRegion> regions,
         int generation)
     {
-        WhitePlateResult result;
+        BubbleClipResult result;
         try
         {
-            result = await Task.Run(() => RemoveWhiteTextPlates(original, cleaned, mask, regions));
+            result = await Task.Run(() => ClipCleanedBackgroundToBubbleShapes(original, cleaned, mask, regions));
         }
         catch
         {
-            _whiteTextPlateFixPending = false;
+            _bubbleCleanupClipPending = false;
             return;
         }
 
-        if (generation != _whiteTextPlateFixGeneration
-            || !ReferenceEquals(_originalBitmap, original)
-            && (_originalBitmap?.PixelWidth != original.PixelWidth
-                || _originalBitmap?.PixelHeight != original.PixelHeight))
+        if (generation != _bubbleCleanupClipGeneration
+            || _originalBitmap is null
+            || _originalBitmap.PixelWidth != original.PixelWidth
+            || _originalBitmap.PixelHeight != original.PixelHeight)
         {
-            _whiteTextPlateFixPending = false;
+            _bubbleCleanupClipPending = false;
+            return;
+        }
+
+        _bubbleCleanupClipPending = false;
+        if (!result.Changed)
+        {
+            _bubbleCleanupClipLastInput = _cleanedBaseBitmap;
             return;
         }
 
         _cleanedBaseBitmap = result.Cleaned;
         _cleanedBitmap = result.Cleaned;
         _maskBitmap = result.Mask;
-        _whiteTextPlateFixLastInput = result.Cleaned;
-        _whiteTextPlateFixPending = false;
+        _bubbleCleanupClipLastInput = result.Cleaned;
 
-        if (_previewMode == "clean" || _previewMode == "result")
+        if (_previewMode is "clean" or "result")
         {
             PageImage.Source = result.Cleaned;
         }
@@ -143,30 +158,33 @@ public partial class MainWindow
         int pageIndex = _visibleComicPageIndex >= 0
             ? _visibleComicPageIndex
             : _comicPageIndex;
-        if (pageIndex >= 0 && pageIndex < _comicPages.Count)
+        if (pageIndex < 0 || pageIndex >= _comicPages.Count)
         {
-            ComicBookPageState page = _comicPages[pageIndex];
-            string? cleanedPath = page.CleanedPath;
-            string? maskPath = page.MaskPath;
-            if (!string.IsNullOrWhiteSpace(cleanedPath)
-                && !string.IsNullOrWhiteSpace(maskPath))
-            {
-                await Task.WhenAll(
-                    Task.Run(() => SaveBitmap(result.Cleaned, cleanedPath)),
-                    Task.Run(() => SaveBitmap(result.Mask, maskPath)));
-            }
+            return;
         }
+
+        ComicBookPageState page = _comicPages[pageIndex];
+        string? cleanedPath = page.CleanedPath;
+        string? maskPath = page.MaskPath;
+        if (string.IsNullOrWhiteSpace(cleanedPath) || string.IsNullOrWhiteSpace(maskPath))
+        {
+            return;
+        }
+
+        await Task.WhenAll(
+            Task.Run(() => SaveBubbleClipBitmap(result.Cleaned, cleanedPath)),
+            Task.Run(() => SaveBubbleClipBitmap(result.Mask, maskPath)));
     }
 
-    private static WhitePlateResult RemoveWhiteTextPlates(
+    private static BubbleClipResult ClipCleanedBackgroundToBubbleShapes(
         BitmapSource original,
         BitmapSource cleaned,
         BitmapSource mask,
-        IReadOnlyList<WhitePlateRegion> regions)
+        IReadOnlyList<BubbleClipRegion> regions)
     {
-        BitmapSource originalBgra = ConvertWhitePlateBitmap(original, PixelFormats.Bgra32);
-        BitmapSource cleanedBgra = ConvertWhitePlateBitmap(cleaned, PixelFormats.Bgra32);
-        BitmapSource maskGray = ConvertWhitePlateBitmap(mask, PixelFormats.Gray8);
+        BitmapSource originalBgra = ConvertBubbleClipBitmap(original, PixelFormats.Bgra32);
+        BitmapSource cleanedBgra = ConvertBubbleClipBitmap(cleaned, PixelFormats.Bgra32);
+        BitmapSource maskGray = ConvertBubbleClipBitmap(mask, PixelFormats.Gray8);
 
         int width = originalBgra.PixelWidth;
         int height = originalBgra.PixelHeight;
@@ -175,7 +193,7 @@ public partial class MainWindow
             || maskGray.PixelWidth != width
             || maskGray.PixelHeight != height)
         {
-            return new WhitePlateResult(cleaned, mask);
+            return new BubbleClipResult(cleaned, mask, false);
         }
 
         int colorStride = width * 4;
@@ -186,101 +204,78 @@ public partial class MainWindow
         cleanedBgra.CopyPixels(cleanedPixels, colorStride, 0);
         maskGray.CopyPixels(maskPixels, width, 0);
 
-        bool changed = false;
-        foreach (WhitePlateRegion region in regions)
+        var scope = new byte[width * height];
+        var allowed = new byte[width * height];
+
+        foreach (BubbleClipRegion region in regions)
         {
-            PixelBox box = ToWhitePlatePixelBox(region.TextBox.Expand(0.48, 0.70), width, height);
-            if (box.Width < 6 || box.Height < 6
-                || !TryEstimateWhitePlateBackground(
-                    originalPixels,
-                    maskPixels,
-                    width,
-                    box,
-                    out WhitePlateColor background,
-                    out int backgroundLuminance,
-                    out bool lightBackground))
+            BubblePixelPoint[] shape = BuildBubbleClipShape(region, width, height);
+            if (shape.Length < 3)
             {
                 continue;
             }
 
-            int area = box.Width * box.Height;
-            var ink = new byte[area];
-            int inkCount = 0;
-            int contrastThreshold = lightBackground ? 24 : 30;
-            for (int y = box.Top; y < box.Bottom; y++)
+            BubblePixelBox textBox = ToBubblePixelBox(region.TextBox, width, height);
+            BubblePixelBox scopeBox = ToBubblePixelBox(
+                UnionBubbleRects(
+                    region.RenderBox.Expand(0.48, 0.72),
+                    region.TextBox.Expand(0.85, 1.20)),
+                width,
+                height);
+
+            double margin = Math.Clamp(Math.Min(textBox.Width, textBox.Height) * 0.075, 2.0, 12.0);
+            for (int y = scopeBox.Top; y < scopeBox.Bottom; y++)
             {
-                for (int x = box.Left; x < box.Right; x++)
+                double sampleY = y + 0.5;
+                int row = y * width;
+                for (int x = scopeBox.Left; x < scopeBox.Right; x++)
                 {
-                    int globalPixel = y * width + x;
-                    if (maskPixels[globalPixel] == 0)
+                    int pixel = row + x;
+                    scope[pixel] = 1;
+                    double sampleX = x + 0.5;
+                    if (PointInsideBubblePolygon(sampleX, sampleY, shape)
+                        || DistanceToBubblePolygon(sampleX, sampleY, shape) <= margin)
                     {
-                        continue;
+                        allowed[pixel] = 1;
                     }
-
-                    int offset = globalPixel * 4;
-                    int luminance = Luminance(
-                        originalPixels[offset + 2],
-                        originalPixels[offset + 1],
-                        originalPixels[offset]);
-                    int contrast = lightBackground
-                        ? backgroundLuminance - luminance
-                        : luminance - backgroundLuminance;
-                    if (contrast < contrastThreshold)
-                    {
-                        continue;
-                    }
-
-                    ink[(y - box.Top) * box.Width + x - box.Left] = 1;
-                    inkCount++;
                 }
             }
+        }
 
-            double inkRatio = inkCount / (double)Math.Max(1, area);
-            if (inkRatio < 0.0015 || inkRatio > 0.34)
+        bool changed = false;
+        for (int pixel = 0; pixel < scope.Length; pixel++)
+        {
+            if (scope[pixel] == 0 || allowed[pixel] != 0)
             {
                 continue;
             }
 
-            int radius = Math.Clamp((int)Math.Round(region.TextBox.Height / 1000 * height / 11.0), 2, 7);
-            byte[] support = DilateWhitePlateInk(ink, box.Width, box.Height, radius);
+            int offset = pixel * 4;
+            int difference = Math.Max(
+                Math.Abs(cleanedPixels[offset] - originalPixels[offset]),
+                Math.Max(
+                    Math.Abs(cleanedPixels[offset + 1] - originalPixels[offset + 1]),
+                    Math.Abs(cleanedPixels[offset + 2] - originalPixels[offset + 2])));
 
-            for (int y = box.Top; y < box.Bottom; y++)
+            if (difference > 1)
             {
-                for (int x = box.Left; x < box.Right; x++)
-                {
-                    int globalPixel = y * width + x;
-                    if (maskPixels[globalPixel] == 0)
-                    {
-                        continue;
-                    }
+                cleanedPixels[offset] = originalPixels[offset];
+                cleanedPixels[offset + 1] = originalPixels[offset + 1];
+                cleanedPixels[offset + 2] = originalPixels[offset + 2];
+                cleanedPixels[offset + 3] = originalPixels[offset + 3];
+                changed = true;
+            }
 
-                    int localPixel = (y - box.Top) * box.Width + x - box.Left;
-                    int offset = globalPixel * 4;
-                    if (support[localPixel] == 0)
-                    {
-                        cleanedPixels[offset] = originalPixels[offset];
-                        cleanedPixels[offset + 1] = originalPixels[offset + 1];
-                        cleanedPixels[offset + 2] = originalPixels[offset + 2];
-                        cleanedPixels[offset + 3] = originalPixels[offset + 3];
-                        maskPixels[globalPixel] = 0;
-                        changed = true;
-                        continue;
-                    }
-
-                    // En un interior demostrado como plano no dependemos del bloque que haya
-                    // producido LaMa: rellenamos exclusivamente la huella de las letras.
-                    cleanedPixels[offset] = background.Blue;
-                    cleanedPixels[offset + 1] = background.Green;
-                    cleanedPixels[offset + 2] = background.Red;
-                    cleanedPixels[offset + 3] = 255;
-                    changed = true;
-                }
+            if (maskPixels[pixel] != 0)
+            {
+                maskPixels[pixel] = 0;
+                changed = true;
             }
         }
 
         if (!changed)
         {
-            return new WhitePlateResult(cleaned, mask);
+            return new BubbleClipResult(cleaned, mask, false);
         }
 
         BitmapSource fixedCleaned = BitmapSource.Create(
@@ -304,124 +299,122 @@ public partial class MainWindow
             maskPixels,
             width);
         fixedMask.Freeze();
-        return new WhitePlateResult(fixedCleaned, fixedMask);
+
+        return new BubbleClipResult(fixedCleaned, fixedMask, true);
     }
 
-    private static bool TryEstimateWhitePlateBackground(
-        byte[] pixels,
-        byte[] mask,
+    private static BubblePixelPoint[] BuildBubbleClipShape(
+        BubbleClipRegion region,
         int width,
-        PixelBox box,
-        out WhitePlateColor background,
-        out int backgroundLuminance,
-        out bool lightBackground)
+        int height)
     {
-        var blues = new List<byte>();
-        var greens = new List<byte>();
-        var reds = new List<byte>();
-        var luminances = new List<int>();
-        int border = Math.Clamp(Math.Min(box.Width, box.Height) / 9, 2, 12);
-        int step = Math.Max(1, Math.Min(box.Width, box.Height) / 72);
-
-        for (int y = box.Top; y < box.Bottom; y += step)
+        if (region.Shape.Length >= 3)
         {
-            for (int x = box.Left; x < box.Right; x += step)
-            {
-                bool onRing = x < box.Left + border
-                    || x >= box.Right - border
-                    || y < box.Top + border
-                    || y >= box.Bottom - border;
-                if (!onRing || mask[y * width + x] >= 32)
-                {
-                    continue;
-                }
-
-                int offset = (y * width + x) * 4;
-                byte blue = pixels[offset];
-                byte green = pixels[offset + 1];
-                byte red = pixels[offset + 2];
-                blues.Add(blue);
-                greens.Add(green);
-                reds.Add(red);
-                luminances.Add(Luminance(red, green, blue));
-            }
+            return region.Shape
+                .Select(point => new BubblePixelPoint(
+                    Math.Clamp(point.X / 1000 * width, 0, width - 1),
+                    Math.Clamp(point.Y / 1000 * height, 0, height - 1)))
+                .Distinct()
+                .ToArray();
         }
 
-        background = default;
-        backgroundLuminance = 0;
-        lightBackground = true;
-        if (luminances.Count < 18)
-        {
-            return false;
-        }
+        NormalizedRect fallback = region.BubbleBox
+            ?? region.TextBox.Expand(0.34, 0.58);
+        double centerX = (fallback.X + fallback.Width / 2) / 1000 * width;
+        double centerY = (fallback.Y + fallback.Height / 2) / 1000 * height;
+        double radiusX = fallback.Width / 2000 * width;
+        double radiusY = fallback.Height / 2000 * height;
 
-        blues.Sort();
-        greens.Sort();
-        reds.Sort();
-        luminances.Sort();
-        int p10 = luminances[(int)Math.Floor((luminances.Count - 1) * 0.10)];
-        int p90 = luminances[(int)Math.Ceiling((luminances.Count - 1) * 0.90)];
-        if (p90 - p10 > 34)
+        var points = new BubblePixelPoint[48];
+        for (int index = 0; index < points.Length; index++)
         {
-            return false;
+            double angle = Math.PI * 2 * index / points.Length;
+            points[index] = new BubblePixelPoint(
+                centerX + Math.Cos(angle) * radiusX,
+                centerY + Math.Sin(angle) * radiusY);
         }
-
-        byte medianBlue = blues[blues.Count / 2];
-        byte medianGreen = greens[greens.Count / 2];
-        byte medianRed = reds[reds.Count / 2];
-        backgroundLuminance = luminances[luminances.Count / 2];
-        lightBackground = backgroundLuminance >= 138;
-        background = new WhitePlateColor(medianBlue, medianGreen, medianRed);
-        return true;
+        return points;
     }
 
-    private static byte[] DilateWhitePlateInk(byte[] ink, int width, int height, int radius)
+    private static bool PointInsideBubblePolygon(
+        double x,
+        double y,
+        IReadOnlyList<BubblePixelPoint> polygon)
     {
-        var result = new byte[ink.Length];
-        int radiusSquared = radius * radius;
-        for (int y = 0; y < height; y++)
+        bool inside = false;
+        for (int current = 0, previous = polygon.Count - 1;
+             current < polygon.Count;
+             previous = current++)
         {
-            for (int x = 0; x < width; x++)
+            BubblePixelPoint a = polygon[current];
+            BubblePixelPoint b = polygon[previous];
+            bool crosses = (a.Y > y) != (b.Y > y)
+                && x < (b.X - a.X) * (y - a.Y) / Math.Max(0.000001, b.Y - a.Y) + a.X;
+            if (crosses)
             {
-                if (ink[y * width + x] == 0)
-                {
-                    continue;
-                }
-
-                int minY = Math.Max(0, y - radius);
-                int maxY = Math.Min(height - 1, y + radius);
-                int minX = Math.Max(0, x - radius);
-                int maxX = Math.Min(width - 1, x + radius);
-                for (int sampleY = minY; sampleY <= maxY; sampleY++)
-                {
-                    int deltaY = sampleY - y;
-                    for (int sampleX = minX; sampleX <= maxX; sampleX++)
-                    {
-                        int deltaX = sampleX - x;
-                        if (deltaX * deltaX + deltaY * deltaY <= radiusSquared)
-                        {
-                            result[sampleY * width + sampleX] = 1;
-                        }
-                    }
-                }
+                inside = !inside;
             }
         }
-        return result;
+        return inside;
     }
 
-    private static PixelBox ToWhitePlatePixelBox(NormalizedRect box, int width, int height)
+    private static double DistanceToBubblePolygon(
+        double x,
+        double y,
+        IReadOnlyList<BubblePixelPoint> polygon)
+    {
+        double best = double.PositiveInfinity;
+        for (int index = 0; index < polygon.Count; index++)
+        {
+            BubblePixelPoint first = polygon[index];
+            BubblePixelPoint second = polygon[(index + 1) % polygon.Count];
+            best = Math.Min(best, DistanceToBubbleSegment(x, y, first, second));
+        }
+        return best;
+    }
+
+    private static double DistanceToBubbleSegment(
+        double x,
+        double y,
+        BubblePixelPoint first,
+        BubblePixelPoint second)
+    {
+        double deltaX = second.X - first.X;
+        double deltaY = second.Y - first.Y;
+        double lengthSquared = deltaX * deltaX + deltaY * deltaY;
+        if (lengthSquared <= 0.000001)
+        {
+            return Math.Sqrt(Math.Pow(x - first.X, 2) + Math.Pow(y - first.Y, 2));
+        }
+
+        double position = Math.Clamp(
+            ((x - first.X) * deltaX + (y - first.Y) * deltaY) / lengthSquared,
+            0,
+            1);
+        double nearestX = first.X + position * deltaX;
+        double nearestY = first.Y + position * deltaY;
+        return Math.Sqrt(Math.Pow(x - nearestX, 2) + Math.Pow(y - nearestY, 2));
+    }
+
+    private static NormalizedRect UnionBubbleRects(NormalizedRect first, NormalizedRect second)
+    {
+        double left = Math.Min(first.X, second.X);
+        double top = Math.Min(first.Y, second.Y);
+        double right = Math.Max(first.Right, second.Right);
+        double bottom = Math.Max(first.Bottom, second.Bottom);
+        return new NormalizedRect(left, top, right - left, bottom - top).Clamp();
+    }
+
+    private static BubblePixelBox ToBubblePixelBox(NormalizedRect box, int width, int height)
     {
         int left = Math.Clamp((int)Math.Floor(box.X / 1000 * width), 0, width - 1);
         int top = Math.Clamp((int)Math.Floor(box.Y / 1000 * height), 0, height - 1);
         int right = Math.Clamp((int)Math.Ceiling(box.Right / 1000 * width), left + 1, width);
         int bottom = Math.Clamp((int)Math.Ceiling(box.Bottom / 1000 * height), top + 1, height);
-        return new PixelBox(left, top, right, bottom);
+        return new BubblePixelBox(left, top, right, bottom);
     }
 
-    private static int Luminance(byte red, byte green, byte blue) =>
-        (red * 3 + green * 6 + blue) / 10;
-
-    private static BitmapSource ConvertWhitePlateBitmap(BitmapSource source, PixelFormat format)
+    private static BitmapSource ConvertBubbleClipBitmap(BitmapSource source, PixelFormat format)
     {
         if (source.Format == format)
         {
@@ -433,7 +426,7 @@ public partial class MainWindow
         return converted;
     }
 
-    private static BitmapSource FreezeForBackground(BitmapSource source)
+    private static BitmapSource FreezeBubbleClipBitmap(BitmapSource source)
     {
         if (source.IsFrozen)
         {
@@ -445,10 +438,24 @@ public partial class MainWindow
         return clone;
     }
 
-    private sealed record WhitePlateRegion(NormalizedRect TextBox);
-    private sealed record WhitePlateResult(BitmapSource Cleaned, BitmapSource Mask);
-    private readonly record struct WhitePlateColor(byte Blue, byte Green, byte Red);
-    private readonly record struct PixelBox(int Left, int Top, int Right, int Bottom)
+    private static void SaveBubbleClipBitmap(BitmapSource bitmap, string path)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(path) ?? ".");
+        var encoder = new PngBitmapEncoder();
+        encoder.Frames.Add(BitmapFrame.Create(bitmap));
+        using FileStream stream = File.Create(path);
+        encoder.Save(stream);
+    }
+
+    private sealed record BubbleClipRegion(
+        NormalizedRect TextBox,
+        NormalizedRect RenderBox,
+        NormalizedRect? BubbleBox,
+        NormalizedPoint[] Shape);
+
+    private sealed record BubbleClipResult(BitmapSource Cleaned, BitmapSource Mask, bool Changed);
+    private readonly record struct BubblePixelPoint(double X, double Y);
+    private readonly record struct BubblePixelBox(int Left, int Top, int Right, int Bottom)
     {
         public int Width => Right - Left;
         public int Height => Bottom - Top;
