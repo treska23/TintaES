@@ -10,7 +10,7 @@ namespace TintaES.Wpf;
 /// </summary>
 public partial class MainWindow
 {
-    private const string CurrentUiBuildStamp = "UI 2026.07.29-r16";
+    private const string CurrentUiBuildStamp = "UI 2026.07.30-r18";
     private const int CurrentUiBootstrapMaxAttempts = 3;
 
     private static readonly bool CurrentUiBootstrapRegistered = RegisterCurrentUiBootstrap();
@@ -85,7 +85,7 @@ public partial class MainWindow
         RunCurrentUiInstaller(InstallContextualBrushOptions, "opciones del pincel", failures);
         RunCurrentUiInstaller(TryInstallFloatingEditorPalette, "paleta flotante", failures);
         RunCurrentUiInstaller(InstallIconOnlyFloatingPalette, "iconos de la paleta", failures);
-        RunCurrentUiInstaller(InstallResponsiveTopBars, "barras superiores adaptables", failures);
+        RunCurrentUiInstaller(InstallResponsiveTopBars, "barra superior única", failures);
         RunCurrentUiInstaller(UpdateClassicMenuAvailability, "estado del menú", failures);
 
         if (failures.Count == 0)
@@ -104,8 +104,6 @@ public partial class MainWindow
             return;
         }
 
-        // Se detiene tras tres intentos para no crear un bucle de Dispatcher. El sello del título
-        // permite distinguir inmediatamente esta versión de cualquier ejecutable antiguo.
         _currentUiBootstrapInstalled = true;
         SetFooterStatus(
             $"La interfaz actual no pudo cargar: {string.Join(", ", failures)}",
