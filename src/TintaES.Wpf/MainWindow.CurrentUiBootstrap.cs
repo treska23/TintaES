@@ -10,7 +10,7 @@ namespace TintaES.Wpf;
 /// </summary>
 public partial class MainWindow
 {
-    private const string CurrentUiBuildStamp = "UI 2026.07.30-r20";
+    private const string CurrentUiBuildStamp = "UI 2026.07.30-r21";
     private const int CurrentUiBootstrapMaxAttempts = 3;
 
     private static readonly bool CurrentUiBootstrapRegistered = RegisterCurrentUiBootstrap();
