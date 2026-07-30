@@ -5,9 +5,8 @@ using System.Windows.Threading;
 namespace TintaES.Wpf;
 
 /// <summary>
-/// Reorganiza las dos barras superiores según el ancho real de la ventana. En lugar de comprimir
-/// controles hasta volverlos ilegibles, la barra de documento pasa a dos o tres filas conservando
-/// los mismos StackPanel que utilizan los instaladores de comandos.
+/// Mantiene toda la barra de trabajo en una sola fila. La cabecera corporativa grande se oculta:
+/// el nombre de la aplicación ya está en la barra de título y no debe robar altura al lienzo.
 /// </summary>
 public partial class MainWindow
 {
@@ -23,6 +22,8 @@ public partial class MainWindow
     private RowDefinition? _responsiveDocumentHostRow;
 
     private Grid? _responsiveHeaderGrid;
+    private Border? _responsiveHeaderBorder;
+    private RowDefinition? _responsiveHeaderHostRow;
     private Border? _responsiveOllamaBadge;
     private StackPanel? _responsiveModelPanel;
     private TextBlock? _responsiveModelLabel;
@@ -64,7 +65,8 @@ public partial class MainWindow
             || !ReferenceEquals(documentActions.Parent, toolbarGrid)
             || toolbarGrid.Parent is not Border toolbarBorder
             || ModelComboBox.Parent is not StackPanel modelPanel
-            || modelPanel.Parent is not Grid headerGrid)
+            || modelPanel.Parent is not Grid headerGrid
+            || headerGrid.Parent is not Border headerBorder)
         {
             Dispatcher.BeginInvoke(InstallResponsiveTopBars, DispatcherPriority.ContextIdle);
             return;
@@ -75,17 +77,8 @@ public partial class MainWindow
         _responsiveDocumentActionsPanel = documentActions;
         _responsiveDocumentToolbarGrid = toolbarGrid;
         _responsiveDocumentToolbarBorder = toolbarBorder;
-
-        if (toolbarBorder.Parent is Grid rootGrid)
-        {
-            int toolbarRow = Grid.GetRow(toolbarBorder);
-            if (toolbarRow >= 0 && toolbarRow < rootGrid.RowDefinitions.Count)
-            {
-                _responsiveDocumentHostRow = rootGrid.RowDefinitions[toolbarRow];
-            }
-        }
-
         _responsiveHeaderGrid = headerGrid;
+        _responsiveHeaderBorder = headerBorder;
         _responsiveModelPanel = modelPanel;
         _responsiveModelLabel = modelPanel.Children.OfType<TextBlock>().FirstOrDefault();
         _responsiveOllamaBadge = headerGrid.Children
@@ -98,6 +91,28 @@ public partial class MainWindow
         _responsiveBrandTextPanel = brandRoot?.Children
             .OfType<StackPanel>()
             .FirstOrDefault();
+
+        if (toolbarBorder.Parent is Grid rootGrid)
+        {
+            int toolbarRow = Grid.GetRow(toolbarBorder);
+            if (toolbarRow >= 0 && toolbarRow < rootGrid.RowDefinitions.Count)
+            {
+                _responsiveDocumentHostRow = rootGrid.RowDefinitions[toolbarRow];
+            }
+        }
+
+        if (headerBorder.Parent is Grid headerRoot)
+        {
+            int headerRow = Grid.GetRow(headerBorder);
+            if (headerRow >= 0 && headerRow < headerRoot.RowDefinitions.Count)
+            {
+                _responsiveHeaderHostRow = headerRoot.RowDefinitions[headerRow];
+            }
+        }
+
+        // El selector de modelo deja la cabecera grande y pasa a la barra única de comandos.
+        headerGrid.Children.Remove(modelPanel);
+        toolbarGrid.Children.Add(modelPanel);
 
         _responsiveTopBarsInstalled = true;
         SizeChanged += MainWindow_ResponsiveTopBarsSizeChanged;
@@ -115,7 +130,8 @@ public partial class MainWindow
             || _responsiveDocumentToolbarBorder is null
             || _responsiveOpenActionsPanel is null
             || _responsiveZoomPanel is null
-            || _responsiveDocumentActionsPanel is null)
+            || _responsiveDocumentActionsPanel is null
+            || _responsiveModelPanel is null)
         {
             return;
         }
@@ -124,20 +140,83 @@ public partial class MainWindow
         try
         {
             double width = ActualWidth > 0 ? ActualWidth : Width;
-            ApplyResponsiveHeader(width);
 
-            if (width >= 1900)
+            // La marca de 66 px desaparece por completo. El título de Windows ya identifica la app.
+            if (_responsiveHeaderBorder is not null)
             {
-                ApplyWideDocumentToolbar();
+                _responsiveHeaderBorder.Visibility = Visibility.Collapsed;
+                _responsiveHeaderBorder.Height = 0;
+                _responsiveHeaderBorder.MinHeight = 0;
             }
-            else if (width >= 1250)
+            if (_responsiveHeaderHostRow is not null)
             {
-                ApplyTwoRowDocumentToolbar();
+                _responsiveHeaderHostRow.Height = new GridLength(0);
             }
-            else
+            if (_responsiveOllamaBadge is not null)
             {
-                ApplyThreeRowDocumentToolbar();
+                _responsiveOllamaBadge.Visibility = Visibility.Collapsed;
             }
+            if (_responsiveBrandTextPanel is not null)
+            {
+                _responsiveBrandTextPanel.Visibility = Visibility.Collapsed;
+            }
+            if (_responsiveModelLabel is not null)
+            {
+                _responsiveModelLabel.Visibility = Visibility.Collapsed;
+            }
+
+            ConfigureSingleToolbarGrid();
+
+            SetToolbarPanel(
+                _responsiveOpenActionsPanel,
+                0,
+                0,
+                1,
+                HorizontalAlignment.Left,
+                new Thickness(0));
+            SetToolbarPanel(
+                _responsiveZoomPanel,
+                0,
+                2,
+                1,
+                HorizontalAlignment.Right,
+                new Thickness(8, 0, 8, 0));
+            SetToolbarPanel(
+                _responsiveModelPanel,
+                0,
+                3,
+                1,
+                HorizontalAlignment.Right,
+                new Thickness(0, 0, 7, 0));
+            SetToolbarPanel(
+                _responsiveDocumentActionsPanel,
+                0,
+                4,
+                1,
+                HorizontalAlignment.Right,
+                new Thickness(0));
+
+            _responsiveDocumentToolbarGrid.Margin = new Thickness(10, 0, 10, 0);
+            _responsiveDocumentToolbarBorder.MinHeight = 0;
+            _responsiveDocumentToolbarBorder.Height = 48;
+            if (_responsiveDocumentHostRow is not null)
+            {
+                _responsiveDocumentHostRow.Height = new GridLength(48);
+            }
+
+            SetZoomPresentation(showLabel: false, sliderWidth: width < 1250 ? 78 : 96);
+            ZoomText.Width = 38;
+            ZoomText.FontSize = 10;
+
+            ModelComboBox.Width = width < 1250 ? 116 : 138;
+            ModelComboBox.Height = 32;
+            RefreshModelsButton.Width = 32;
+            RefreshModelsButton.Height = 32;
+            RefreshModelsButton.Margin = new Thickness(4, 0, 0, 0);
+
+            CompactCommandButtons(_responsiveOpenActionsPanel);
+            CompactCommandButtons(_responsiveDocumentActionsPanel);
+            CompactToolbarLabels();
         }
         finally
         {
@@ -145,103 +224,76 @@ public partial class MainWindow
         }
     }
 
-    private void ApplyResponsiveHeader(double width)
+    private void ConfigureSingleToolbarGrid()
     {
-        if (_responsiveHeaderGrid is null || _responsiveModelPanel is null)
+        Grid grid = _responsiveDocumentToolbarGrid!;
+
+        if (grid.RowDefinitions.Count != 1)
+        {
+            grid.RowDefinitions.Clear();
+            grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(48) });
+        }
+
+        if (grid.ColumnDefinitions.Count != 5)
+        {
+            grid.ColumnDefinitions.Clear();
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        }
+    }
+
+    private void CompactToolbarLabels()
+    {
+        SetButtonLabel(OpenImageButton, "Abrir", "Abrir cómic o páginas");
+        SetButtonLabel(_openFolderButton, "Carpeta", "Abrir una carpeta de páginas");
+        SetButtonLabel(AnalyzeButton, "✦ Analizar", "Analizar y traducir las páginas seleccionadas");
+        SetButtonLabel(_saveProjectButton, "Guardar", "Guardar proyecto editable");
+        SetButtonLabel(_exportComicButton, "CBZ", "Exportar páginas seleccionadas a CBZ");
+        SetButtonLabel(_exportPsdButton, "PSD", "Exportar la página actual a PSD");
+        SetButtonLabel(ExportButton, "Imagen", "Exportar la página actual como imagen");
+
+        foreach (Button button in _responsiveOpenActionsPanel!.Children.OfType<Button>())
+        {
+            string current = button.Content?.ToString() ?? string.Empty;
+            if (current.Contains("Visualizar", StringComparison.OrdinalIgnoreCase))
+            {
+                SetButtonLabel(button, "Lector", "Visualizar el cómic");
+            }
+            else if (current.Contains("Páginas", StringComparison.OrdinalIgnoreCase))
+            {
+                SetButtonLabel(button, "+ Páginas", "Añadir páginas al cómic");
+            }
+        }
+    }
+
+    private static void SetButtonLabel(Button? button, string label, string tooltip)
+    {
+        if (button is null)
         {
             return;
         }
 
-        bool compact = width < 1350;
-        bool veryCompact = width < 1050;
-
-        _responsiveHeaderGrid.Margin = compact
-            ? new Thickness(12, 0, 12, 0)
-            : new Thickness(22, 0, 22, 0);
-
-        if (_responsiveOllamaBadge is not null)
-        {
-            _responsiveOllamaBadge.Visibility = compact
-                ? Visibility.Collapsed
-                : Visibility.Visible;
-        }
-        if (_responsiveModelLabel is not null)
-        {
-            _responsiveModelLabel.Visibility = veryCompact
-                ? Visibility.Collapsed
-                : Visibility.Visible;
-        }
-        if (_responsiveBrandTextPanel is not null)
-        {
-            _responsiveBrandTextPanel.Visibility = width < 920
-                ? Visibility.Collapsed
-                : Visibility.Visible;
-        }
-
-        ModelComboBox.Width = veryCompact ? 132 : compact ? 154 : 178;
+        button.Content = label;
+        button.ToolTip = tooltip;
     }
 
-    private void ApplyWideDocumentToolbar()
+    private static void CompactCommandButtons(Panel panel)
     {
-        ConfigureToolbarRows(1);
-        SetToolbarPanel(_responsiveOpenActionsPanel!, 0, 0, 1, HorizontalAlignment.Left, new Thickness(0));
-        SetToolbarPanel(_responsiveZoomPanel!, 0, 1, 1, HorizontalAlignment.Center, new Thickness(0));
-        SetToolbarPanel(_responsiveDocumentActionsPanel!, 0, 2, 1, HorizontalAlignment.Right, new Thickness(0));
-
-        _responsiveDocumentToolbarGrid!.Margin = new Thickness(18, 0, 18, 0);
-        _responsiveDocumentToolbarBorder!.MinHeight = 58;
-        if (_responsiveDocumentHostRow is not null)
+        Button[] buttons = panel.Children.OfType<Button>().ToArray();
+        for (int index = 0; index < buttons.Length; index++)
         {
-            _responsiveDocumentHostRow.Height = new GridLength(58);
-        }
-
-        SetZoomPresentation(showLabel: true, sliderWidth: 170);
-    }
-
-    private void ApplyTwoRowDocumentToolbar()
-    {
-        ConfigureToolbarRows(2);
-        SetToolbarPanel(_responsiveOpenActionsPanel!, 0, 0, 2, HorizontalAlignment.Left, new Thickness(0, 2, 0, 2));
-        SetToolbarPanel(_responsiveZoomPanel!, 0, 2, 1, HorizontalAlignment.Right, new Thickness(12, 2, 0, 2));
-        SetToolbarPanel(_responsiveDocumentActionsPanel!, 1, 0, 3, HorizontalAlignment.Right, new Thickness(0, 2, 0, 2));
-
-        _responsiveDocumentToolbarGrid!.Margin = new Thickness(18, 4, 18, 4);
-        _responsiveDocumentToolbarBorder!.MinHeight = 100;
-        if (_responsiveDocumentHostRow is not null)
-        {
-            _responsiveDocumentHostRow.Height = GridLength.Auto;
-        }
-
-        SetZoomPresentation(showLabel: true, sliderWidth: 145);
-    }
-
-    private void ApplyThreeRowDocumentToolbar()
-    {
-        ConfigureToolbarRows(3);
-        SetToolbarPanel(_responsiveOpenActionsPanel!, 0, 0, 3, HorizontalAlignment.Left, new Thickness(0, 2, 0, 2));
-        SetToolbarPanel(_responsiveDocumentActionsPanel!, 1, 0, 3, HorizontalAlignment.Left, new Thickness(0, 2, 0, 2));
-        SetToolbarPanel(_responsiveZoomPanel!, 2, 0, 3, HorizontalAlignment.Left, new Thickness(0, 2, 0, 2));
-
-        _responsiveDocumentToolbarGrid!.Margin = new Thickness(12, 4, 12, 4);
-        _responsiveDocumentToolbarBorder!.MinHeight = 146;
-        if (_responsiveDocumentHostRow is not null)
-        {
-            _responsiveDocumentHostRow.Height = GridLength.Auto;
-        }
-
-        SetZoomPresentation(showLabel: false, sliderWidth: 128);
-    }
-
-    private void ConfigureToolbarRows(int count)
-    {
-        Grid grid = _responsiveDocumentToolbarGrid!;
-        if (grid.RowDefinitions.Count != count)
-        {
-            grid.RowDefinitions.Clear();
-            for (int index = 0; index < count; index++)
-            {
-                grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            }
+            Button button = buttons[index];
+            button.Height = 32;
+            button.MinHeight = 0;
+            button.Padding = button.Width > 0 && button.Width <= 44
+                ? new Thickness(0)
+                : new Thickness(8, 3, 8, 3);
+            button.Margin = index == buttons.Length - 1
+                ? new Thickness(0)
+                : new Thickness(0, 0, 4, 0);
         }
     }
 
@@ -257,6 +309,7 @@ public partial class MainWindow
         Grid.SetColumn(panel, column);
         Grid.SetColumnSpan(panel, columnSpan);
         panel.HorizontalAlignment = alignment;
+        panel.VerticalAlignment = VerticalAlignment.Center;
         panel.Margin = margin;
     }
 
