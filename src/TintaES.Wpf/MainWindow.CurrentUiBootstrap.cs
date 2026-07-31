@@ -10,7 +10,7 @@ namespace TintaES.Wpf;
 /// </summary>
 public partial class MainWindow
 {
-    private const string CurrentUiBuildStamp = "UI 2026.07.30-r21";
+    private const string CurrentUiBuildStamp = "UI 2026.07.31-r22";
     private const int CurrentUiBootstrapMaxAttempts = 3;
 
     private static readonly bool CurrentUiBootstrapRegistered = RegisterCurrentUiBootstrap();
@@ -68,6 +68,7 @@ public partial class MainWindow
 
         // Primero se crean los comandos y controles externos. Después se construyen los menús y,
         // por último, las herramientas que dependen de todos ellos.
+        RunCurrentUiInstaller(InstallOllamaLongRequests, "peticiones largas de Ollama", failures);
         RunCurrentUiInstaller(InstallComicBookHandlers, "sesión de cómic", failures);
         RunCurrentUiInstaller(InstallProjectCommands, "comandos de proyecto", failures);
         RunCurrentUiInstaller(InstallPsdExportCommand, "exportación PSD", failures);
