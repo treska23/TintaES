@@ -23,7 +23,6 @@ jobs:
         with:
           show-progress: false
           persist-credentials: true
-          ref: ${{ github.event_name == 'push' && github.ref_name || '' }}
 
       - name: Vendor Klee manga font
         if: github.event_name == 'push' && github.ref_name == 'agent/preserve-original-lettering' && github.actor != 'github-actions[bot]'
