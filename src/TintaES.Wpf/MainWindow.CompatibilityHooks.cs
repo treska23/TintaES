@@ -1,9 +1,17 @@
 namespace TintaES.Wpf;
 
+/// <summary>
+/// Puentes mínimos para nombres utilizados por navegación y deshacer. Todos terminan en la
+/// única ruta visual: RebuildOverlay / RefreshRegionSelectionChrome.
+/// </summary>
 public partial class MainWindow
 {
-    // Compatibilidad con el nombre utilizado por la optimización de deshacer/rehacer.
-    // El editor nativo conserva un único marco de selección y lo actualiza en el siguiente render.
+    private void QueueFastCanvasTextRefresh(bool forceLayout) =>
+        RebuildOverlay();
+
+    private void FinalizeProgressiveOverlayTextLayout(bool finalPass) =>
+        RefreshRegionSelectionChrome();
+
     private void SyncSelectedTextFrameChrome() =>
-        QueueNativeTextFrameRefresh();
+        RefreshRegionSelectionChrome();
 }
