@@ -9,9 +9,8 @@ using TintaES.Wpf.Services;
 namespace TintaES.Wpf;
 
 /// <summary>
-/// Procesa únicamente las páginas seleccionadas, reintenta fallos transitorios y conserva todas
-/// las traducciones válidas aunque Ollama no consiga resolver alguna zona concreta. Una página
-/// parcial se puede revisar en el editor, pero se desmarca para no exportarla como terminada.
+/// Procesa únicamente las páginas seleccionadas, conserva las traducciones válidas y prioriza
+/// bocadillos/cartuchos legibles sobre la reproducción estética de la rotulación original.
 /// </summary>
 public partial class MainWindow
 {
@@ -119,7 +118,6 @@ public partial class MainWindow
                     page.Processed = false;
                     page.Error = message;
                     failures.Add(new ComicPageFailure(humanPage, page.DisplayName, message));
-
                     _selectedComicPageIndices.Remove(pageIndex);
                     _exportedComicPageIndices.Remove(pageIndex);
                 }
@@ -134,9 +132,6 @@ public partial class MainWindow
                         translated,
                         total,
                         page.Error));
-
-                    // La página se conserva y se puede abrir, pero no se exporta accidentalmente
-                    // como si todas sus zonas estuvieran terminadas.
                     _selectedComicPageIndices.Remove(pageIndex);
                     _exportedComicPageIndices.Remove(pageIndex);
                 }
@@ -277,12 +272,16 @@ public partial class MainWindow
             progress,
             cancellationToken);
 
+        ComicRegion[] readableCandidates = organic.Analysis.Regions
+            .Where(IsReadableLetteringCandidate)
+            .ToArray();
+
         DialogueOnlyResult filtered = await Task.Run(
             () => _dialogueOnlyResultService.Build(
                 original,
                 organic.CleanedBitmap,
                 organic.MaskBitmap,
-                organic.Analysis.Regions,
+                readableCandidates,
                 includeAllDetectedText: true),
             cancellationToken);
 
@@ -329,9 +328,6 @@ public partial class MainWindow
                 }
                 catch (Exception exception)
                 {
-                    // TranslateRegionsAsync puede lanzar porque una o varias zonas siguen sin
-                    // traducción. Las traducciones válidas ya están dentro de sus ComicRegion y
-                    // deben conservarse. El siguiente intento recibe únicamente las pendientes.
                     lastTranslationError = exception;
                 }
 
@@ -350,8 +346,6 @@ public partial class MainWindow
             region.IsEnabled && region.HasRenderableTranslation);
         int incompleteCount = Math.Max(0, totalEnabled - translatedCount);
 
-        // Solo se considera fallo total cuando no se ha podido conservar ni una traducción. En
-        // cualquier otro caso guardamos la página y dejamos las zonas restantes vacías.
         if (totalEnabled > 0 && translatedCount == 0)
         {
             throw new InvalidOperationException(
@@ -371,13 +365,34 @@ public partial class MainWindow
 
         foreach (ComicRegion region in analysis.Regions)
         {
-            // El renderizador canónico calcula el mayor tamaño que cabe partiendo de 100 %.
-            // No se aplican multiplicadores ni migraciones posteriores.
+            if (region.BubbleBox is { } bubble
+                && bubble.Area >= region.TextBox.Area * 1.08)
+            {
+                region.RenderBox = bubble.Clamp();
+            }
+
             region.FontScale = 1;
             region.ManualFontScale = 1;
             region.IsManual = false;
             region.ManualBaseFontSize = 0;
             region.ManualLayoutSeedText = string.Empty;
+            region.Rotation = 0;
+            region.Vertical = false;
+
+            // Legibilidad antes que estética: fuente estándar, líneas libres y sin efectos.
+            region.Style.FontCategory = "sans";
+            region.Style.FontFamily = "Arial";
+            region.Style.FontWeight = 600;
+            region.Style.FontWidthRatio = 1;
+            region.Style.LineHeightRatio = 1.02;
+            region.Style.OriginalLineCount = 0;
+            region.Style.Italic = false;
+            region.Style.Uppercase = false;
+            region.Style.OutlineColor = null;
+            region.Style.OutlineWidth = 0;
+            region.Style.Alignment = "center";
+            region.Style.BackgroundColor = null;
+            region.Style.Shadow = false;
         }
 
         page.Regions.Clear();
@@ -391,6 +406,33 @@ public partial class MainWindow
               CompactFailureMessage(lastTranslationError?.Message ?? string.Empty)
             : null;
         MarkActiveDocumentDirty(pageIndex);
+    }
+
+    private static bool IsReadableLetteringCandidate(ComicRegion region)
+    {
+        if (!region.IsEnabled || region.Confidence < 0.40)
+        {
+            return false;
+        }
+
+        bool hasContainerEvidence = region.BubbleBox is not null
+            || region.BubbleConfidence >= 0.025
+            || region.SafePolygon.Count >= 3
+            || region.RenderBox.Area >= region.TextBox.Area * 1.08;
+
+        if (region.Type is "dialogue" or "thought")
+        {
+            return hasContainerEvidence;
+        }
+
+        if (region.Type is "narration" or "caption")
+        {
+            return region.Confidence >= 0.48 && hasContainerEvidence;
+        }
+
+        // No se traducen automáticamente onomatopeyas, carteles, pintadas ni texto suelto
+        // sobre la ilustración. Se conservan intactos desde la página original.
+        return false;
     }
 
     private static string CompactFailureMessage(string message)
