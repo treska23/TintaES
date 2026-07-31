@@ -10,7 +10,7 @@ namespace TintaES.Wpf;
 /// </summary>
 public partial class MainWindow
 {
-    private const string CurrentUiBuildStamp = "UI 2026.07.31-r23";
+    private const string CurrentUiBuildStamp = "UI 2026.07.31-r24";
     private const int CurrentUiBootstrapMaxAttempts = 3;
 
     private static readonly bool CurrentUiBootstrapRegistered = RegisterCurrentUiBootstrap();
@@ -74,6 +74,7 @@ public partial class MainWindow
         RunCurrentUiInstaller(InstallPsdExportCommand, "exportación PSD", failures);
         RunCurrentUiInstaller(InstallComicReaderCommand, "lector de cómic", failures);
         RunCurrentUiInstaller(InstallPageSelectionPanel, "selector de páginas", failures);
+        RunCurrentUiInstaller(InstallSelectedPageProcessing, "procesamiento fiable de páginas", failures);
         RunCurrentUiInstaller(InstallEditorTools, "herramientas de edición", failures);
         RunCurrentUiInstaller(InstallManualMaskEditing, "edición de máscara", failures);
         RunCurrentUiInstaller(InstallSimpleWhiteMaskPainting, "pincel blanco simple", failures);
@@ -89,6 +90,7 @@ public partial class MainWindow
         RunCurrentUiInstaller(InstallResponsiveTopBars, "barra superior única", failures);
         RunCurrentUiInstaller(InstallOrRefreshResizableSidePanels, "paneles laterales ajustables", failures);
         RunCurrentUiInstaller(InstallTransparentTextOverlay, "capa de texto transparente", failures);
+        RunCurrentUiInstaller(InstallAutomaticFontCompensation, "tamaño automático legible", failures);
         RunCurrentUiInstaller(UpdateClassicMenuAvailability, "estado del menú", failures);
 
         if (failures.Count == 0)
