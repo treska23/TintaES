@@ -28,7 +28,8 @@ jobs:
         if: github.actor != 'github-actions[bot]'
         shell: pwsh
         run: |
-          $fontPath = 'engine/manga-image-translator/fonts/klee_one_semibold_es.ttf'
+          $fontPath = 'src/TintaES.Wpf/Resources/Fonts/klee_one_semibold_es.ttf'
+          $licensePath = 'src/TintaES.Wpf/Resources/Fonts/OFL-Klee-One.txt'
           if (Test-Path $fontPath) { exit 0 }
           git fetch origin agent/preserve-original-lettering
           git checkout -B agent/preserve-original-lettering origin/agent/preserve-original-lettering
@@ -42,10 +43,10 @@ jobs:
             --glyph-names --symbol-cmap --legacy-cmap `
             --name-IDs='*' --name-legacy --name-languages='*' `
             --notdef-glyph --notdef-outline --recommended-glyphs
-          Invoke-WebRequest 'https://raw.githubusercontent.com/fontworks-fonts/Klee/master/OFL.txt' -OutFile 'engine/manga-image-translator/fonts/OFL-Klee-One.txt'
+          Invoke-WebRequest 'https://raw.githubusercontent.com/fontworks-fonts/Klee/master/OFL.txt' -OutFile $licensePath
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add $fontPath 'engine/manga-image-translator/fonts/OFL-Klee-One.txt'
+          git add $fontPath $licensePath
           git commit -m 'assets: vendor Klee One manga font'
           git push origin HEAD:agent/preserve-original-lettering
 
