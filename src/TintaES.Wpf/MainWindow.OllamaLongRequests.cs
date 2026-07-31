@@ -1,6 +1,5 @@
 using System.Net.Http;
 using System.Reflection;
-using System.Windows;
 using TintaES.Core;
 
 namespace TintaES.Wpf;
@@ -11,28 +10,15 @@ namespace TintaES.Wpf;
 /// </summary>
 public partial class MainWindow
 {
-    private static readonly bool OllamaLongRequestsRegistered = RegisterOllamaLongRequests();
     private bool _ollamaLongRequestsInstalled;
 
-    private static bool RegisterOllamaLongRequests()
+    protected override void OnInitialized(EventArgs e)
     {
-        EventManager.RegisterClassHandler(
-            typeof(MainWindow),
-            InitializedEvent,
-            new RoutedEventHandler(MainWindow_OllamaLongRequestsInitialized),
-            handledEventsToo: true);
-        return true;
-    }
-
-    private static void MainWindow_OllamaLongRequestsInitialized(object sender, RoutedEventArgs e)
-    {
-        if (sender is MainWindow window)
-        {
-            // Initialized ocurre antes de Loaded y antes de la consulta automática de modelos.
-            // No se aplaza al Dispatcher porque HttpClient.Timeout no puede cambiarse después
-            // de haber enviado la primera petición.
-            window.InstallOllamaLongRequests();
-        }
+        // Debe ejecutarse antes de base.OnInitialized: otros manejadores de inicialización o
+        // Loaded pueden consultar los modelos, y HttpClient.Timeout queda bloqueado después de
+        // la primera petición.
+        InstallOllamaLongRequests();
+        base.OnInitialized(e);
     }
 
     private void InstallOllamaLongRequests()
