@@ -1,94 +1,20 @@
-using System.Collections.Specialized;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
-using TintaES.Core;
-using TintaES.Wpf.Controls;
 
 namespace TintaES.Wpf;
 
 /// <summary>
-/// Gestiona únicamente el desplazamiento con Espacio y la invalidación del renderizador canónico.
-/// No crea previews alternativos para las regiones manuales.
+/// Desplazamiento del lienzo al estilo de un editor gráfico: mantener Espacio y arrastrar.
+/// No participa en la composición ni en el renderizado del texto.
 /// </summary>
 public partial class MainWindow
 {
-    private readonly Dictionary<Guid, string> _automaticLinePreviews = new();
-    private bool _textLayoutHooksInstalled;
     private bool _spacePanHeld;
     private bool _isSpacePanning;
     private Point _panStartPointer;
     private double _panStartHorizontalOffset;
     private double _panStartVerticalOffset;
-
-    protected override void OnActivated(EventArgs e)
-    {
-        base.OnActivated(e);
-        InstallTextLayoutHooks();
-    }
-
-    private void InstallTextLayoutHooks()
-    {
-        if (_textLayoutHooksInstalled)
-        {
-            return;
-        }
-
-        _textLayoutHooksInstalled = true;
-        _regions.CollectionChanged += Regions_CollectionChanged_ForLineLayout;
-    }
-
-    private void Regions_CollectionChanged_ForLineLayout(
-        object? sender,
-        NotifyCollectionChangedEventArgs e)
-    {
-        if (e.Action == NotifyCollectionChangedAction.Reset)
-        {
-            _automaticLinePreviews.Clear();
-        }
-    }
-
-    private void RegionListBox_SelectionChanged_LineLayout(object sender, SelectionChangedEventArgs e)
-    {
-    }
-
-    private void TranslationTextBox_TextChanged_LineLayout(object sender, TextChangedEventArgs e)
-    {
-    }
-
-    private void FontScaleSlider_ValueChanged_ManualLineLayout(
-        object sender,
-        RoutedPropertyChangedEventArgs<double> e)
-    {
-    }
-
-    private void RefreshManualLineVisual(ComicRegion region, bool invalidate = true)
-    {
-        Grid? layer = OverlayCanvas.Children
-            .OfType<Grid>()
-            .FirstOrDefault(candidate => ReferenceEquals(candidate.Tag, region));
-        if (layer is not null)
-        {
-            EnsureManualLineVisual(layer, region, invalidate);
-        }
-    }
-
-    private void EnsureManualLineVisual(Grid layer, ComicRegion region, bool invalidate = true)
-    {
-        InteractiveComicTextElement? renderer = layer.Children
-            .OfType<InteractiveComicTextElement>()
-            .FirstOrDefault();
-        if (renderer is null)
-        {
-            return;
-        }
-
-        renderer.Visibility = region.IsEnabled ? Visibility.Visible : Visibility.Collapsed;
-        if (invalidate)
-        {
-            renderer.InvalidateVisual();
-        }
-    }
 
     protected override void OnPreviewKeyDown(KeyEventArgs e)
     {
