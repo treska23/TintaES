@@ -342,6 +342,24 @@ public partial class MainWindow
             }
         }
 
+        List<ComicRegion> finalRecovery = analysis.Regions
+            .Where(region => region.IsEnabled && !region.HasRenderableTranslation)
+            .ToList();
+        if (finalRecovery.Count > 0)
+        {
+            BusyTitleText.Text =
+                $"Página {humanPage}/{_comicPages.Count} · recuperando " +
+                $"{finalRecovery.Count} bocadillo(s) pendiente(s)…";
+            FooterStatusText.Text =
+                $"Último pase individual para {finalRecovery.Count} bocadillo(s)…";
+            await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Render);
+            await _translationRecoveryService.RecoverAsync(
+                finalRecovery,
+                model,
+                cancellationToken,
+                progress);
+        }
+
         int translatedCount = analysis.Regions.Count(region =>
             region.IsEnabled && region.HasRenderableTranslation);
         int incompleteCount = Math.Max(0, totalEnabled - translatedCount);
@@ -379,10 +397,11 @@ public partial class MainWindow
             region.Rotation = 0;
             region.Vertical = false;
 
-            // Legibilidad antes que estética: fuente estándar, líneas libres y sin efectos.
-            region.Style.FontCategory = "sans";
-            region.Style.FontFamily = "Arial";
-            region.Style.FontWeight = 600;
+            // Una sola tipografía de cómic para toda la aplicación. La fuente no cambia por
+            // zona ni por metadatos heredados del OCR.
+            region.Style.FontCategory = "comic";
+            region.Style.FontFamily = null;
+            region.Style.FontWeight = 700;
             region.Style.FontWidthRatio = 1;
             region.Style.LineHeightRatio = 1.02;
             region.Style.OriginalLineCount = 0;
@@ -410,28 +429,37 @@ public partial class MainWindow
 
     private static bool IsReadableLetteringCandidate(ComicRegion region)
     {
-        if (!region.IsEnabled || region.Confidence < 0.40)
+        if (!region.IsEnabled
+            || region.Confidence < 0.25
+            || string.IsNullOrWhiteSpace(region.Original)
+            || !region.Original.Any(char.IsLetter))
         {
             return false;
         }
 
-        bool hasContainerEvidence = region.BubbleBox is not null
-            || region.BubbleConfidence >= 0.025
-            || region.SafePolygon.Count >= 3
-            || region.RenderBox.Area >= region.TextBox.Area * 1.08;
-
-        if (region.Type is "dialogue" or "thought")
+        // La clase semántica decide qué se traduce. No se vuelve a descartar un diálogo o
+        // cartucho porque falte BubbleBox/SafePolygon: esa ausencia es un problema de
+        // colocación, no una razón para perder el texto.
+        if (region.Type is "dialogue" or "thought" or "narration" or "caption")
         {
-            return hasContainerEvidence;
+            return true;
         }
 
-        if (region.Type is "narration" or "caption")
+        // Algunos diálogos cortos llegan etiquetados como SFX. Solo se rescatan cuando hay
+        // un globo claro y más de una palabra; una onomatopeya exterior de una sola pieza
+        // continúa excluida.
+        if (region.Type == "sfx"
+            && region.BubbleBox is not null
+            && region.BubbleConfidence >= 0.12
+            && region.Original.Split(
+                [' ', '\t', '\r', '\n'],
+                StringSplitOptions.RemoveEmptyEntries).Length >= 2)
         {
-            return region.Confidence >= 0.48 && hasContainerEvidence;
+            region.Type = "dialogue";
+            return true;
         }
 
-        // No se traducen automáticamente onomatopeyas, carteles, pintadas ni texto suelto
-        // sobre la ilustración. Se conservan intactos desde la página original.
+        // Onomatopeyas, carteles, pintadas y texto del escenario no se traducen.
         return false;
     }
 
