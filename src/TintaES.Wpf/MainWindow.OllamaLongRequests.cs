@@ -1,14 +1,13 @@
 using System.Net.Http;
 using System.Reflection;
 using System.Windows;
-using System.Windows.Threading;
 using TintaES.Core;
 
 namespace TintaES.Wpf;
 
 /// <summary>
-/// Ollama puede tardar más de 75 segundos al traducir una página completa. El cliente base
-/// conserva la cancelación explícita del usuario, pero deja de abortar la petición por tiempo.
+/// Configura Ollama para operaciones largas antes de que la ventana envíe su primera petición.
+/// La cancelación sigue dependiendo exclusivamente del usuario y del token de la operación.
 /// </summary>
 public partial class MainWindow
 {
@@ -19,19 +18,20 @@ public partial class MainWindow
     {
         EventManager.RegisterClassHandler(
             typeof(MainWindow),
-            LoadedEvent,
-            new RoutedEventHandler(MainWindow_OllamaLongRequestsLoaded),
+            InitializedEvent,
+            new RoutedEventHandler(MainWindow_OllamaLongRequestsInitialized),
             handledEventsToo: true);
         return true;
     }
 
-    private static void MainWindow_OllamaLongRequestsLoaded(object sender, RoutedEventArgs e)
+    private static void MainWindow_OllamaLongRequestsInitialized(object sender, RoutedEventArgs e)
     {
         if (sender is MainWindow window)
         {
-            window.Dispatcher.BeginInvoke(
-                window.InstallOllamaLongRequests,
-                DispatcherPriority.Loaded);
+            // Initialized ocurre antes de Loaded y antes de la consulta automática de modelos.
+            // No se aplaza al Dispatcher porque HttpClient.Timeout no puede cambiarse después
+            // de haber enviado la primera petición.
+            window.InstallOllamaLongRequests();
         }
     }
 
@@ -51,7 +51,27 @@ public partial class MainWindow
                 "No se pudo configurar el cliente local de Ollama para tareas largas.");
         }
 
-        client.Timeout = Timeout.InfiniteTimeSpan;
+        try
+        {
+            client.Timeout = Timeout.InfiniteTimeSpan;
+        }
+        catch (InvalidOperationException)
+        {
+            // Respaldo para una posible petición extremadamente temprana: se sustituye el
+            // HttpClient ya usado por otro configurado antes de su primera solicitud.
+            var replacement = new HttpClient
+            {
+                BaseAddress = client.BaseAddress,
+                Timeout = Timeout.InfiniteTimeSpan
+            };
+            foreach (var header in client.DefaultRequestHeaders)
+            {
+                replacement.DefaultRequestHeaders.TryAddWithoutValidation(header.Key, header.Value);
+            }
+
+            field.SetValue(_ollama, replacement);
+        }
+
         _ollamaLongRequestsInstalled = true;
     }
 }
