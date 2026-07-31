@@ -4,13 +4,12 @@ using System.Windows.Threading;
 namespace TintaES.Wpf;
 
 /// <summary>
-/// Instala de forma explícita la interfaz actual. La ventana XAML conserva la composición base y
-/// muchas funciones se añaden desde archivos parciales; este punto único evita que la aplicación
-/// pueda arrancar con la carcasa antigua si cambia el orden de los eventos de WPF.
+/// Instala de forma explícita la interfaz actual. La rotulación ya nace correctamente desde
+/// AddRegionVisual; aquí solo se inicializan las funciones independientes de la aplicación.
 /// </summary>
 public partial class MainWindow
 {
-    private const string CurrentUiBuildStamp = "UI 2026.07.31-r25";
+    private const string CurrentUiBuildStamp = "UI 2026.07.31-r26";
     private const int CurrentUiBootstrapMaxAttempts = 3;
 
     private static readonly bool CurrentUiBootstrapRegistered = RegisterCurrentUiBootstrap();
@@ -65,9 +64,6 @@ public partial class MainWindow
         Title = $"Tinta ES · Traductor local de cómics · {CurrentUiBuildStamp}";
 
         var failures = new List<string>();
-
-        // Primero se crean los comandos y controles externos. Después se construyen los menús y,
-        // por último, las herramientas que dependen de todos ellos.
         RunCurrentUiInstaller(InstallOllamaLongRequests, "peticiones largas de Ollama", failures);
         RunCurrentUiInstaller(InstallComicBookHandlers, "sesión de cómic", failures);
         RunCurrentUiInstaller(InstallProjectCommands, "comandos de proyecto", failures);
@@ -89,9 +85,6 @@ public partial class MainWindow
         RunCurrentUiInstaller(InstallIconOnlyFloatingPalette, "iconos de la paleta", failures);
         RunCurrentUiInstaller(InstallResponsiveTopBars, "barra superior única", failures);
         RunCurrentUiInstaller(InstallOrRefreshResizableSidePanels, "paneles laterales ajustables", failures);
-        RunCurrentUiInstaller(InstallTransparentTextOverlay, "capa de texto transparente", failures);
-        RunCurrentUiInstaller(InstallAutomaticFontCompensation, "tamaño automático legible", failures);
-        RunCurrentUiInstaller(InstallFlatRegionBackgroundRepair, "fondos planos de cartuchos", failures);
         RunCurrentUiInstaller(UpdateClassicMenuAvailability, "estado del menú", failures);
 
         if (failures.Count == 0)
