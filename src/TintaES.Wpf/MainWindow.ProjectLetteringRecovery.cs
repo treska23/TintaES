@@ -1,22 +1,17 @@
 using System.Windows;
-using System.Windows.Controls;
-using System.Windows.Controls.Primitives;
 using System.Windows.Threading;
 using TintaES.Core;
-using TintaES.Wpf.Controls;
 
 namespace TintaES.Wpf;
 
 /// <summary>
-/// Organiza una página restaurada usando exclusivamente las previsualizaciones ligeras. Los
-/// renderizadores tipográficos precisos quedan reservados para exportar y no se miden al navegar.
+/// Restaura regiones guardadas y reconstruye el único overlay canónico. No crea previews,
+/// TextBlocks ni controles alternativos.
 /// </summary>
 public partial class MainWindow
 {
     private static readonly bool ProjectLetteringRecoveryRegistered = RegisterProjectLetteringRecovery();
-
     private bool _projectLetteringRecoveryInstalled;
-    private bool _restoringProjectLettering;
     private bool _projectLetteringRefreshPending;
 
     private static bool RegisterProjectLetteringRecovery()
@@ -33,9 +28,7 @@ public partial class MainWindow
     {
         if (sender is MainWindow window)
         {
-            window.Dispatcher.BeginInvoke(
-                window.InstallProjectLetteringRecovery,
-                DispatcherPriority.ApplicationIdle);
+            window.InstallProjectLetteringRecovery();
         }
     }
 
@@ -50,23 +43,22 @@ public partial class MainWindow
         BusyOverlay.IsVisibleChanged += BusyOverlay_ProjectLetteringIsVisibleChanged;
     }
 
-    private void BusyOverlay_ProjectLetteringIsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e)
+    private void BusyOverlay_ProjectLetteringIsVisibleChanged(
+        object sender,
+        DependencyPropertyChangedEventArgs e)
     {
-        if (BusyOverlay.IsVisible
-            || _comicBatchBusy
-            || _pageNavigationBusy
-            || string.IsNullOrWhiteSpace(_currentProjectPath)
-            || _regions.Count == 0)
+        if (!BusyOverlay.IsVisible
+            && !_comicBatchBusy
+            && !_pageNavigationBusy
+            && _regions.Count > 0)
         {
-            return;
+            QueueProjectLetteringRestore();
         }
-
-        QueueProjectLetteringRestore();
     }
 
     private void QueueProjectLetteringRestore()
     {
-        if (_projectLetteringRefreshPending)
+        if (_projectLetteringRefreshPending || Dispatcher.HasShutdownStarted)
         {
             return;
         }
@@ -78,113 +70,28 @@ public partial class MainWindow
                 _projectLetteringRefreshPending = false;
                 RestoreVisibleProjectLettering();
             },
-            DispatcherPriority.Render);
+            DispatcherPriority.Background);
     }
 
     private void RestoreVisibleProjectLettering()
     {
-        if (_restoringProjectLettering
-            || string.IsNullOrWhiteSpace(_currentProjectPath)
-            || _originalBitmap is null
+        if (_originalBitmap is null
             || _regions.Count == 0
             || !string.Equals(_previewMode, "result", StringComparison.Ordinal))
         {
             return;
         }
 
-        _restoringProjectLettering = true;
-        try
+        foreach (ComicRegion region in _regions)
         {
-            foreach (ComicRegion region in _regions)
-            {
-                NormalizeLoadedProjectRegion(region);
-                region.PropertyChanged -= Region_PropertyChanged;
-                region.PropertyChanged += Region_PropertyChanged;
-            }
-
-            RebuildOverlay();
-            OverlayCanvas.Visibility = Visibility.Visible;
-            OverlayCanvas.Width = _originalBitmap.PixelWidth;
-            OverlayCanvas.Height = _originalBitmap.PixelHeight;
-
-            // Prepara los controles de arrastre una sola vez. EnsureManualLineVisual ya no crea ni
-            // mide los renderizadores caros: únicamente instala FastComicTextPreviewElement.
-            OverlayCanvas_PresentationLayoutUpdated(OverlayCanvas, EventArgs.Empty);
-
-            foreach (Grid layer in OverlayCanvas.Children.OfType<Grid>())
-            {
-                if (layer.Tag is not ComicRegion region)
-                {
-                    continue;
-                }
-
-                NormalizedRect box = region.RenderBox;
-                double width = Math.Max(2, box.Width / 1000 * _originalBitmap.PixelWidth);
-                double height = Math.Max(2, box.Height / 1000 * _originalBitmap.PixelHeight);
-                layer.Width = width;
-                layer.Height = height;
-                layer.ClipToBounds = true;
-                Canvas.SetLeft(layer, (box.X + region.TextOffsetX) / 1000 * _originalBitmap.PixelWidth);
-                Canvas.SetTop(layer, (box.Y + region.TextOffsetY) / 1000 * _originalBitmap.PixelHeight);
-
-                EnsureManualLineVisual(layer, region, invalidate: false);
-                FastComicTextPreviewElement? preview = layer.Children
-                    .OfType<FastComicTextPreviewElement>()
-                    .FirstOrDefault();
-
-                bool usesManualPreview = region.IsManual && region.Type != "sfx";
-                foreach (ComicTextElement renderer in layer.Children.OfType<ComicTextElement>())
-                {
-                    renderer.Width = width;
-                    renderer.Height = height;
-                    renderer.RenderTransform = System.Windows.Media.Transform.Identity;
-                    renderer.Visibility = region.IsEnabled && !usesManualPreview
-                        ? Visibility.Visible
-                        : Visibility.Collapsed;
-                    if (!usesManualPreview)
-                    {
-                        renderer.InvalidateVisual();
-                    }
-                }
-                foreach (ManualComicTextElement renderer in layer.Children.OfType<ManualComicTextElement>())
-                {
-                    renderer.Visibility = Visibility.Collapsed;
-                }
-                foreach (Border border in layer.Children.OfType<Border>())
-                {
-                    border.Visibility = Visibility.Collapsed;
-                }
-                foreach (Thumb thumb in layer.Children.OfType<Thumb>().Skip(1))
-                {
-                    thumb.Visibility = Visibility.Collapsed;
-                    thumb.Opacity = 0;
-                }
-
-                if (preview is not null)
-                {
-                    preview.Width = width;
-                    preview.Height = height;
-                    preview.Visibility = region.IsEnabled && usesManualPreview
-                        ? Visibility.Visible
-                        : Visibility.Collapsed;
-                    preview.Measure(new Size(width, height));
-                    preview.Arrange(new Rect(0, 0, width, height));
-                    preview.InvalidateVisual();
-                }
-
-                layer.Measure(new Size(width, height));
-                layer.Arrange(new Rect(0, 0, width, height));
-            }
-
-            OverlayCanvas.Measure(new Size(_originalBitmap.PixelWidth, _originalBitmap.PixelHeight));
-            OverlayCanvas.Arrange(new Rect(0, 0, _originalBitmap.PixelWidth, _originalBitmap.PixelHeight));
-            OverlayCanvas.InvalidateVisual();
-            RefreshSelectedTextFrame();
+            NormalizeLoadedProjectRegion(region);
+            region.PropertyChanged -= Region_PropertyChanged;
+            region.PropertyChanged += Region_PropertyChanged;
         }
-        finally
-        {
-            _restoringProjectLettering = false;
-        }
+
+        RebuildOverlay();
+        OverlayCanvas.Visibility = Visibility.Visible;
+        FinalizeProgressiveOverlayTextLayout(finalPass: false);
     }
 
     private static void NormalizeLoadedProjectRegion(ComicRegion region)
@@ -197,6 +104,7 @@ public partial class MainWindow
         {
             region.Translation = string.Empty;
         }
+
         region.TextBox = (region.TextBox ?? new NormalizedRect(100, 100, 200, 80)).Clamp();
         region.RenderBox = (region.RenderBox ?? region.TextBox.Expand(0.1, 0.2)).Clamp();
         region.SafePolygon ??= [];
