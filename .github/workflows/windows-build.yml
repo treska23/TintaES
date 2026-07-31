@@ -10,7 +10,7 @@ on:
       - main
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -22,7 +22,31 @@ jobs:
         uses: actions/checkout@v4
         with:
           show-progress: false
-          persist-credentials: false
+          persist-credentials: true
+          ref: ${{ github.event_name == 'push' && github.ref_name || '' }}
+
+      - name: Vendor Klee manga font
+        if: github.event_name == 'push' && github.ref_name == 'agent/preserve-original-lettering' && github.actor != 'github-actions[bot]'
+        shell: pwsh
+        run: |
+          $fontPath = 'engine/manga-image-translator/fonts/klee_one_semibold_es.ttf'
+          if (Test-Path $fontPath) { exit 0 }
+          New-Item -ItemType Directory -Force -Path (Split-Path $fontPath) | Out-Null
+          python -m pip install --quiet fonttools
+          Invoke-WebRequest 'https://raw.githubusercontent.com/fontworks-fonts/Klee/master/fonts/ttf/KleeOne-SemiBold.ttf' -OutFile "$env:RUNNER_TEMP/KleeOne-SemiBold.ttf"
+          pyftsubset "$env:RUNNER_TEMP/KleeOne-SemiBold.ttf" `
+            --output-file=$fontPath `
+            --unicodes='U+0020-007E,U+00A0-00FF,U+0100-017F,U+2010-2027,U+2030-205E,U+20AC' `
+            --layout-features='*' `
+            --glyph-names --symbol-cmap --legacy-cmap `
+            --name-IDs='*' --name-legacy --name-languages='*' `
+            --notdef-glyph --notdef-outline --recommended-glyphs
+          Invoke-WebRequest 'https://raw.githubusercontent.com/fontworks-fonts/Klee/master/OFL.txt' -OutFile 'engine/manga-image-translator/fonts/OFL-Klee-One.txt'
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add $fontPath 'engine/manga-image-translator/fonts/OFL-Klee-One.txt'
+          git commit -m 'assets: vendor Klee One manga font'
+          git push origin HEAD:agent/preserve-original-lettering
 
       - name: Build WPF project
         shell: pwsh
