@@ -13,6 +13,9 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\TintaES.Core\TintaES.Core.csproj" />
+    <Resource Include="..\..\engine\manga-image-translator\fonts\klee_one_semibold_es.ttf"
+              Link="Resources\Fonts\klee_one_semibold_es.ttf"
+              Condition="Exists('..\..\engine\manga-image-translator\fonts\klee_one_semibold_es.ttf')" />
     <Resource Include="..\..\engine\manga-image-translator\fonts\comic shanns 2.ttf"
               Link="Resources\Fonts\comic_shanns_2.ttf"
               Condition="Exists('..\..\engine\manga-image-translator\fonts\comic shanns 2.ttf')" />
