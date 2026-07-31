@@ -113,7 +113,15 @@ public partial class MainWindow
                         BusyTitleText.Text = $"Página {humanPage}/{_comicPages.Count} · traduciendo {analysis.Regions.Count} bocadillos…";
                         FooterStatusText.Text = $"Traduciendo página {humanPage} con {model}…";
                         await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Render);
-                        translate = _ollama.TranslateRegionsAsync(analysis.Regions, model, cancellationToken);
+                        translate = RunLongOperationWithPromptAsync(
+                            token => _ollama.TranslateRegionsAsync(
+                                analysis.Regions,
+                                model,
+                                token,
+                                progress),
+                            $"La traducción de la página {humanPage}",
+                            () => $"Traduciendo {analysis.Regions.Count} bocadillos con {model}",
+                            cancellationToken);
                     }
 
                     await Task.WhenAll(translate, persistImages);
