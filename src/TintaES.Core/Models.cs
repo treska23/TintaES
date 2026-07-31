@@ -85,7 +85,11 @@ public sealed class ComicRegion : INotifyPropertyChanged
             StringComparison.OrdinalIgnoreCase);
 
     public string DisplayText => HasRenderableTranslation ? Translation : string.Empty;
-    public string Type { get => _type; set => Set(ref _type, value); }
+
+    // El color no decide por sí solo que un bloque sea una onomatopeya. Algunos cómics usan
+    // palabras rojas dentro de diálogos normales. Cuando la geometría demuestra que el bloque
+    // vive dentro de un bocadillo, el tipo efectivo pasa a diálogo aunque CTD dijera «sfx».
+    public string Type { get => ResolveEffectiveType(); set => Set(ref _type, value); }
     public double Confidence { get; set; } = 0.75;
 
     // Confianza independiente de que el bloque de texto esté realmente dentro de un
@@ -131,6 +135,63 @@ public sealed class ComicRegion : INotifyPropertyChanged
     public void NotifyVisualChange()
     {
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(DisplayText)));
+    }
+
+    private string ResolveEffectiveType()
+    {
+        if (!string.Equals(_type, "sfx", StringComparison.OrdinalIgnoreCase)
+            || IsManual
+            || BubbleConfidence < 0.10
+            || string.IsNullOrWhiteSpace(Original))
+        {
+            return _type;
+        }
+
+        int wordCount = Original.Split(
+            [' ', '\t', '\r', '\n'],
+            StringSplitOptions.RemoveEmptyEntries).Length;
+        bool sentenceLike = wordCount >= 2
+                            || Original.Any(character => character is ',' or ';' or ':' or '?' or '!');
+
+        bool insideContainer = BubbleBox is { } bubble
+            && IsStrongContainer(bubble, TextBox);
+        if (!insideContainer && SafePolygon.Count >= 3)
+        {
+            double left = SafePolygon.Min(point => point.X);
+            double top = SafePolygon.Min(point => point.Y);
+            double right = SafePolygon.Max(point => point.X);
+            double bottom = SafePolygon.Max(point => point.Y);
+            var bounds = new NormalizedRect(
+                left,
+                top,
+                Math.Max(5, right - left),
+                Math.Max(5, bottom - top)).Clamp();
+            insideContainer = IsStrongContainer(bounds, TextBox);
+        }
+
+        // Una palabra sola también puede ser diálogo («¡CORRE!»), pero solo se rescata con
+        // una confianza de bocadillo alta para no empezar a traducir SFX exteriores.
+        if (insideContainer && (sentenceLike || BubbleConfidence >= 0.28))
+        {
+            return "dialogue";
+        }
+
+        return _type;
+    }
+
+    private static bool IsStrongContainer(NormalizedRect outer, NormalizedRect text)
+    {
+        double centerX = text.X + text.Width / 2;
+        double centerY = text.Y + text.Height / 2;
+        double ratio = outer.Area / Math.Max(1, text.Area);
+        return centerX >= outer.X
+               && centerX <= outer.Right
+               && centerY >= outer.Y
+               && centerY <= outer.Bottom
+               && ratio >= 1.12
+               && ratio <= 22
+               && outer.Width <= text.Width * 6.5
+               && outer.Height <= text.Height * 6.5;
     }
 
     private void Set<T>(ref T field, T value, [CallerMemberName] string? propertyName = null)
