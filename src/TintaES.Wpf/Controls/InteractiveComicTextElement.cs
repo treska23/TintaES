@@ -8,12 +8,12 @@ namespace TintaES.Wpf.Controls;
 
 /// <summary>
 /// Capa de texto transparente compartida por la vista y la exportación. Toda la aplicación usa
-/// la misma fuente de cómic y el mismo motor de composición dentro de la silueta del bocadillo.
+/// la misma fuente de manga y el texto se recorta únicamente por geometría segura.
 /// </summary>
 public sealed class InteractiveComicTextElement : FrameworkElement
 {
     private static readonly ShapeTextLayoutEngine LayoutEngine = new();
-    private static readonly FontFamily FixedComicFont = ComicFontResolver.Resolve(null, "comic");
+    private static readonly FontFamily FixedComicFont = ComicFontResolver.ResolveMangaDialogue();
     private bool _subscribed;
 
     public required ComicRegion Region { get; init; }
@@ -97,24 +97,9 @@ public sealed class InteractiveComicTextElement : FrameworkElement
 
     private IReadOnlyList<Point> CreateLocalSafePolygon()
     {
-        // BubbleBox representa el contenedor completo y es la referencia preferida para
-        // maquetar. SafePolygon puede proceder de una máscara de glifos y ser mucho más
-        // estrecho que el bocadillo, por lo que solo se usa cuando no hay caja de globo.
-        if (Region.BubbleBox is { } bubble)
-        {
-            Rect local = ToLocal(bubble);
-            if (local.Width >= 4 && local.Height >= 4)
-            {
-                Rect inset = Inset(
-                    local,
-                    Math.Max(2, local.Width * 0.035),
-                    Math.Max(2, local.Height * 0.045));
-                return Region.Type is "dialogue" or "thought"
-                    ? Ellipse(inset)
-                    : Rectangle(inset);
-            }
-        }
-
+        // SafePolygon es la única silueta aceptada como contenedor completo. BubbleBox es una
+        // caja aproximada del detector y puede abarcar dibujo exterior; nunca vuelve a usarse
+        // como permiso para escribir.
         if (Region.SafePolygon.Count >= 3)
         {
             Point[] detected = Region.SafePolygon
@@ -129,10 +114,23 @@ public sealed class InteractiveComicTextElement : FrameworkElement
             }
         }
 
-        Rect fallback = ToLocal(Region.TextBox.Expand(0.36, 0.54));
-        return fallback.Width >= 4 && fallback.Height >= 4
-            ? Rectangle(fallback)
-            : [];
+        // Sin una silueta fiable se conserva una zona moderada alrededor del texto original.
+        // Desaprovecha parte del globo, pero no invade la viñeta ni utiliza BubbleBox a ciegas.
+        bool rectangular = Region.Type is "narration" or "caption";
+        NormalizedRect fallbackBox = rectangular
+            ? Region.TextBox.Expand(0.18, 0.30)
+            : Region.TextBox.Expand(0.24, 0.40);
+        Rect fallback = ToLocal(fallbackBox);
+        if (fallback.Width < 4 || fallback.Height < 4)
+        {
+            return [];
+        }
+
+        Rect inset = Inset(
+            fallback,
+            Math.Max(1.5, fallback.Width * 0.025),
+            Math.Max(1.5, fallback.Height * 0.035));
+        return rectangular ? Rectangle(inset) : Ellipse(inset);
     }
 
     private Point ToLocal(NormalizedPoint point)
