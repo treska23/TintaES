@@ -5,7 +5,7 @@ namespace TintaES.Wpf;
 
 /// <summary>
 /// Hace que los checkboxes del panel izquierdo controlen también qué páginas se analizan y
-/// traducen. La selección sigue reutilizándose para la exportación CBZ.
+/// traducen. El procesamiento fiable se encarga de reintentar, marcar y desmarcar los fallos.
 /// </summary>
 public partial class MainWindow
 {
@@ -45,8 +45,6 @@ public partial class MainWindow
             return;
         }
 
-        // InstallComicBookHandlers añadió el manejador general. Lo sustituimos una vez que la
-        // interfaz actual ya está montada para aplicar la selección del panel izquierdo.
         AnalyzeButton.Click -= AnalyzeComicButton_Click;
         AnalyzeButton.Click += AnalyzeSelectedComicPagesButton_Click;
         _selectedPageProcessingInstalled = true;
@@ -67,30 +65,12 @@ public partial class MainWindow
             return;
         }
 
-        var selectedSet = selected.ToHashSet();
-        var temporarilySuppressed = new List<ComicBookPageState>();
-        foreach ((ComicBookPageState page, int index) in _comicPages.Select((page, index) => (page, index)))
+        if (ModelComboBox.SelectedValue is not string model || string.IsNullOrWhiteSpace(model))
         {
-            if (!selectedSet.Contains(index) && PageNeedsTranslation(page))
-            {
-                page.SuppressBatchProcessing = true;
-                temporarilySuppressed.Add(page);
-            }
+            SetFooterStatus("Selecciona un modelo de traducción antes de continuar.", "#C99A35");
+            return;
         }
 
-        try
-        {
-            // El manejador original captura inmediatamente la lista pending antes de su primer
-            // await. Restauramos después el estado de las páginas no seleccionadas; no se pierden
-            // ni se marcan como traducidas.
-            AnalyzeComicButton_Click(sender, e);
-        }
-        finally
-        {
-            foreach (ComicBookPageState page in temporarilySuppressed)
-            {
-                page.SuppressBatchProcessing = false;
-            }
-        }
+        _ = AnalyzeSelectedComicPagesReliablyAsync(selected, model);
     }
 }
