@@ -6,7 +6,7 @@ namespace TintaES.Wpf;
 
 /// <summary>
 /// Pregunta si debe seguir esperando una página lenta. No toma ninguna decisión por tiempo:
-/// cerrar con el aspa equivale a seguir esperando y solo el botón explícito omite la página.
+/// la ventana exige elegir expresamente entre continuar o cancelar esta página.
 /// </summary>
 internal sealed class CbzPageWaitPromptWindow : Window
 {
@@ -84,11 +84,11 @@ internal sealed class CbzPageWaitPromptWindow : Window
         Content = root;
 
         Loaded += (_, _) => continueButton.Focus();
-        Closing += (_, _) =>
+        Closing += (_, e) =>
         {
             if (!_choiceMade)
             {
-                ContinueWaiting = true;
+                e.Cancel = true;
             }
         };
     }
@@ -97,6 +97,6 @@ internal sealed class CbzPageWaitPromptWindow : Window
     {
         _choiceMade = true;
         ContinueWaiting = continueWaiting;
-        Close();
+        DialogResult = continueWaiting;
     }
 }
