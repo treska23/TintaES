@@ -4,12 +4,12 @@ using System.Windows.Threading;
 namespace TintaES.Wpf;
 
 /// <summary>
-/// Instala de forma explícita la interfaz actual. La rotulación ya nace correctamente desde
-/// AddRegionVisual; aquí solo se inicializan las funciones independientes de la aplicación.
+/// Instala de forma explícita la interfaz actual. La rotulación nace desde AddRegionVisual y
+/// aquí solo se inicializan funciones independientes de la aplicación.
 /// </summary>
 public partial class MainWindow
 {
-    private const string CurrentUiBuildStamp = "UI 2026.07.31-r29";
+    private const string CurrentUiBuildStamp = "UI 2026.07.31-r30";
     private const int CurrentUiBootstrapMaxAttempts = 3;
 
     private static readonly bool CurrentUiBootstrapRegistered = RegisterCurrentUiBootstrap();
