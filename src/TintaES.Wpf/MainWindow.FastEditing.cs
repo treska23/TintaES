@@ -1,50 +1,40 @@
 using System.Globalization;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
-using System.Windows.Threading;
 using TintaES.Core;
 using TintaES.Wpf.Controls;
-using TintaES.Wpf.Services;
 
 namespace TintaES.Wpf;
 
 /// <summary>
-/// Añade el análisis responsivo, las coordenadas y los microajustes. No sustituye los eventos
-/// normales del XAML ni instala una segunda ruta de renderizado.
+/// Herramientas ligeras de posicionamiento del texto. No sustituye el análisis, la traducción,
+/// la selección ni el renderizador canónico.
 /// </summary>
 public partial class MainWindow
 {
-    private readonly DialogueOnlyResultService _dialogueOnlyResultService = new();
-    private bool _fastEditingHandlersInstalled;
+    private bool _textPositionEditingInstalled;
     private bool _syncingPositionEditor;
     private TextBox? _positionXTextBox;
     private TextBox? _positionYTextBox;
-    private RegionVisual? _activeMoveVisual;
-    private Point _dragStartPointer;
-    private double _dragStartOffsetX;
-    private double _dragStartOffsetY;
 
     protected override void OnInitialized(EventArgs e)
     {
         base.OnInitialized(e);
-        InstallFastEditingHandlers();
+        InstallTextPositionEditing();
     }
 
-    private void InstallFastEditingHandlers()
+    private void InstallTextPositionEditing()
     {
-        if (_fastEditingHandlersInstalled)
+        if (_textPositionEditingInstalled)
         {
             return;
         }
 
-        _fastEditingHandlersInstalled = true;
-
-        AnalyzeButton.Click -= AnalyzeButton_Click;
-        AnalyzeButton.Click += AnalyzeButton_Click_Responsive;
-        PreviewKeyDown += MainWindow_PreviewKeyDown_Fast;
+        _textPositionEditingInstalled = true;
+        PreviewKeyDown += MainWindow_PreviewKeyDown_TextPosition;
+        RegionListBox.SelectionChanged += RegionListBox_TextPositionSelectionChanged;
         InstallPositionEditors();
 
         FontScaleSlider.Minimum = 25;
@@ -124,197 +114,20 @@ public partial class MainWindow
         return panel;
     }
 
-    private async void AnalyzeButton_Click_Responsive(object sender, RoutedEventArgs e)
+    // Firma temporal para que el instalador antiguo pueda desconectarla. No se registra ni
+    // contiene una segunda ruta de análisis.
+    private void AnalyzeButton_Click_Responsive(object sender, RoutedEventArgs e) =>
+        AnalyzeButton_Click(sender, e);
+
+    private void RegionListBox_TextPositionSelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (_originalBitmap is null
-            || ModelComboBox.SelectedValue is not string model
-            || string.IsNullOrWhiteSpace(model))
+        if (_selectedRegion is not null)
         {
-            return;
-        }
-
-        _analysisCancellation?.Cancel();
-        _analysisCancellation?.Dispose();
-        _analysisCancellation = new CancellationTokenSource();
-        CancellationToken cancellationToken = _analysisCancellation.Token;
-
-        SetBusy(true);
-        BusyTitleText.Text = "Localizando las letras…";
-        BusyProgressBar.IsIndeterminate = false;
-        BusyProgressBar.Value = 2;
-        FooterProgressBar.IsIndeterminate = false;
-        FooterProgressBar.Value = 2;
-        FooterStatusText.Text = "Preparando CTD y LaMa…";
-        await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Render);
-
-        try
-        {
-            var progress = new Progress<AnalysisProgress>(value =>
-            {
-                BusyTitleText.Text = value.Message;
-                BusyProgressBar.IsIndeterminate = false;
-                BusyProgressBar.Value = value.Percentage;
-                FooterProgressBar.IsIndeterminate = false;
-                FooterProgressBar.Value = value.Percentage;
-                FooterStatusText.Text = value.Message;
-            });
-
-            OrganicAnalysisResult organic = await _organicEngine.AnalyzeAsync(
-                _sourcePath ?? throw new InvalidOperationException("No hay una página cargada."),
-                progress,
-                cancellationToken);
-
-            BusyTitleText.Text = "Preparando todo el texto detectado…";
-            FooterStatusText.Text = "Aplicando la limpieza solo sobre letras verificadas…";
-            DialogueOnlyResult filtered = await Task.Run(
-                () => _dialogueOnlyResultService.Build(
-                    _originalBitmap,
-                    organic.CleanedBitmap,
-                    organic.MaskBitmap,
-                    organic.Analysis.Regions,
-                    includeAllDetectedText: true),
-                cancellationToken);
-
-            var analysis = new ComicAnalysis(organic.Analysis.SourceLanguage, filtered.Regions);
-            if (analysis.Regions.Count > 0)
-            {
-                BusyTitleText.Text = $"Traduciendo {analysis.Regions.Count} textos con contexto…";
-                BusyProgressBar.Value = 96;
-                FooterProgressBar.Value = 96;
-                FooterStatusText.Text = $"Traduciendo {analysis.Regions.Count} textos con {model}…";
-                await _ollama.TranslateRegionsAsync(
-                    analysis.Regions,
-                    model,
-                    cancellationToken,
-                    progress);
-
-                ComicRegion[] incomplete = analysis.Regions
-                    .Where(region => region.IsEnabled && !region.HasRenderableTranslation)
-                    .ToArray();
-                if (incomplete.Length > 0)
-                {
-                    throw new InvalidOperationException(
-                        $"La traducción no devolvió texto para {incomplete.Length} de " +
-                        $"{analysis.Regions.Count} zonas. No se aplicará un resultado incompleto.");
-                }
-            }
-
-            _cleanedBaseBitmap = filtered.CleanedBitmap;
-            _cleanedBitmap = filtered.CleanedBitmap;
-            _maskBitmap = filtered.MaskBitmap;
-            MaskPreviewButton.IsEnabled = true;
-            CleanPreviewButton.IsEnabled = true;
-            ResultPreviewButton.IsEnabled = true;
-
-            _regions.Clear();
-            foreach (ComicRegion region in analysis.Regions)
-            {
-                region.FontScale = 1;
-                region.ManualFontScale = 1;
-                region.PropertyChanged += Region_PropertyChanged;
-                _regions.Add(region);
-            }
-
-            LanguageText.Text = $"{analysis.SourceLanguage.ToUpperInvariant()} → ES";
-            PageImage.Source = _cleanedBitmap;
-            ShowPreviewMode("result");
-            RebuildOverlay();
-            FinalizeProgressiveOverlayTextLayout(finalPass: true);
-            UpdateRegionCount();
-
-            if (_regions.Count > 0)
-            {
-                RegionListBox.SelectedIndex = 0;
-                string timing = organic.FromCache
-                    ? "análisis recuperado de la caché"
-                    : $"fondo reconstruido en {organic.ElapsedSeconds:0.#} s";
-                SetFooterStatus($"Listo · {_regions.Count} textos · {timing}", "#58A77D");
-            }
-            else
-            {
-                SetFooterStatus("No se encontró texto legible. Puedes añadir una zona manual.", "#C99A35");
-            }
-        }
-        catch (OperationCanceledException)
-        {
-            SetFooterStatus("Análisis cancelado.", "#C99A35");
-        }
-        catch (Exception exception)
-        {
-            SetFooterStatus("El análisis ha fallado. Consulta el mensaje de error.", "#EE594B");
-            MessageBox.Show(
-                this,
-                $"No se pudo completar el análisis.\n\n{exception.Message}",
-                "Tinta ES",
-                MessageBoxButton.OK,
-                MessageBoxImage.Error);
-        }
-        finally
-        {
-            SetBusy(false);
+            SyncPositionEditor(_selectedRegion);
         }
     }
 
-    // Firmas conservadas para que los antiguos instaladores puedan desconectarse sin volver a
-    // introducir una segunda ruta. Ninguna se registra desde este archivo.
-    private void ZoomSlider_ValueChanged_Fast(object sender, RoutedPropertyChangedEventArgs<double> e) =>
-        ZoomSlider_ValueChanged(sender, e);
-
-    private void RegionListBox_SelectionChanged_Fast(object sender, SelectionChangedEventArgs e) =>
-        RegionListBox_SelectionChanged(sender, e);
-
-    private void TranslationTextBox_TextChanged_Fast(object sender, TextChangedEventArgs e) =>
-        TranslationTextBox_TextChanged(sender, e);
-
-    private void FontScaleSlider_ValueChanged_Fast(
-        object sender,
-        RoutedPropertyChangedEventArgs<double> e) =>
-        FontScaleSlider_ValueChanged(sender, e);
-
-    private void RegionMoveThumb_DragStarted_Fast(object sender, DragStartedEventArgs e)
-    {
-        if (sender is not Thumb { Tag: RegionVisual visual })
-        {
-            return;
-        }
-
-        SelectRegionFromCanvas(visual.Region);
-        _activeMoveVisual = visual;
-        _dragStartPointer = Mouse.GetPosition(OverlayCanvas);
-        _dragStartOffsetX = visual.Region.TextOffsetX;
-        _dragStartOffsetY = visual.Region.TextOffsetY;
-        Keyboard.Focus(this);
-    }
-
-    private void RegionMoveThumb_DragDelta_Fast(object sender, DragDeltaEventArgs e)
-    {
-        if (_originalBitmap is null
-            || sender is not Thumb { Tag: RegionVisual visual }
-            || _activeMoveVisual is null
-            || !ReferenceEquals(_activeMoveVisual.Region, visual.Region))
-        {
-            return;
-        }
-
-        Point pointer = Mouse.GetPosition(OverlayCanvas);
-        double deltaX = (pointer.X - _dragStartPointer.X) / _originalBitmap.PixelWidth * 1000;
-        double deltaY = (pointer.Y - _dragStartPointer.Y) / _originalBitmap.PixelHeight * 1000;
-        visual.Region.TextOffsetX = ClampOffsetX(visual.Region, _dragStartOffsetX + deltaX);
-        visual.Region.TextOffsetY = ClampOffsetY(visual.Region, _dragStartOffsetY + deltaY);
-        ApplyRegionPlacement(visual.Layer, visual.Text, visual.Region);
-        SyncPositionEditor(visual.Region);
-    }
-
-    private void RegionMoveThumb_DragCompleted_Fast(object sender, DragCompletedEventArgs e)
-    {
-        if (sender is Thumb { Tag: RegionVisual visual })
-        {
-            SyncPositionEditor(visual.Region);
-        }
-        _activeMoveVisual = null;
-    }
-
-    private void MainWindow_PreviewKeyDown_Fast(object sender, KeyEventArgs e)
+    private void MainWindow_PreviewKeyDown_TextPosition(object sender, KeyEventArgs e)
     {
         if (_selectedRegion is null || _originalBitmap is null)
         {
@@ -468,8 +281,6 @@ public partial class MainWindow
         NormalizedRect box = region.RenderBox;
         Canvas.SetLeft(layer, (box.X + region.TextOffsetX) / 1000 * _originalBitmap.PixelWidth);
         Canvas.SetTop(layer, (box.Y + region.TextOffsetY) / 1000 * _originalBitmap.PixelHeight);
-        text.RenderTransformOrigin = new Point(0.5, 0.5);
-        text.RenderTransform = Transform.Identity;
         text.InvalidateVisual();
     }
 
