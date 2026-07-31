@@ -1,29 +1,26 @@
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
-using System.Windows.Threading;
 
 namespace TintaES.Wpf;
 
 /// <summary>
-/// Pregunta si debe seguir esperando una página lenta. Si el usuario no responde en treinta
-/// segundos, devuelve false para que la exportación salte automáticamente a la siguiente página.
+/// Pregunta si debe seguir esperando una página lenta. No toma ninguna decisión por tiempo:
+/// cerrar con el aspa equivale a seguir esperando y solo el botón explícito omite la página.
 /// </summary>
 internal sealed class CbzPageWaitPromptWindow : Window
 {
-    private const int ResponseTimeoutSeconds = 30;
+    private bool _choiceMade;
 
-    private readonly DispatcherTimer _countdownTimer;
-    private readonly TextBlock _countdownText;
-    private int _secondsRemaining = ResponseTimeoutSeconds;
+    public bool ContinueWaiting { get; private set; } = true;
 
     public CbzPageWaitPromptWindow(int pageNumber)
     {
         Title = "Página lenta · Tinta ES";
         Width = 470;
-        Height = 235;
+        Height = 225;
         MinWidth = 440;
-        MinHeight = 220;
+        MinHeight = 210;
         ResizeMode = ResizeMode.NoResize;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         ShowInTaskbar = false;
@@ -31,7 +28,6 @@ internal sealed class CbzPageWaitPromptWindow : Window
         Foreground = Brushes.White;
 
         var root = new Grid { Margin = new Thickness(24) };
-        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         root.RowDefinitions.Add(new RowDefinition());
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -47,7 +43,7 @@ internal sealed class CbzPageWaitPromptWindow : Window
 
         var explanation = new TextBlock
         {
-            Text = "Ya han pasado 2 minutos. ¿Quieres esperar otros 2 minutos o saltar esta página?",
+            Text = "Ya han pasado 2 minutos. La página continúa trabajando. ¿Quieres seguir esperando o cancelar únicamente esta página?",
             Margin = new Thickness(0, 14, 0, 0),
             FontSize = 13,
             Foreground = new SolidColorBrush(Color.FromRgb(205, 209, 214)),
@@ -55,16 +51,6 @@ internal sealed class CbzPageWaitPromptWindow : Window
         };
         Grid.SetRow(explanation, 1);
         root.Children.Add(explanation);
-
-        _countdownText = new TextBlock
-        {
-            Margin = new Thickness(0, 18, 0, 0),
-            FontSize = 12,
-            Foreground = new SolidColorBrush(Color.FromRgb(238, 89, 75)),
-            TextWrapping = TextWrapping.Wrap
-        };
-        Grid.SetRow(_countdownText, 2);
-        root.Children.Add(_countdownText);
 
         var buttons = new StackPanel
         {
@@ -75,8 +61,8 @@ internal sealed class CbzPageWaitPromptWindow : Window
 
         var skipButton = new Button
         {
-            Content = "Saltar página",
-            MinWidth = 125,
+            Content = "Cancelar esta página",
+            MinWidth = 145,
             Height = 34,
             Margin = new Thickness(0, 0, 10, 0)
         };
@@ -93,47 +79,24 @@ internal sealed class CbzPageWaitPromptWindow : Window
 
         buttons.Children.Add(skipButton);
         buttons.Children.Add(continueButton);
-        Grid.SetRow(buttons, 3);
+        Grid.SetRow(buttons, 2);
         root.Children.Add(buttons);
-
         Content = root;
 
-        _countdownTimer = new DispatcherTimer
+        Loaded += (_, _) => continueButton.Focus();
+        Closing += (_, _) =>
         {
-            Interval = TimeSpan.FromSeconds(1)
+            if (!_choiceMade)
+            {
+                ContinueWaiting = true;
+            }
         };
-        _countdownTimer.Tick += CountdownTimer_Tick;
-
-        Loaded += (_, _) =>
-        {
-            UpdateCountdownText();
-            _countdownTimer.Start();
-            continueButton.Focus();
-        };
-        Closed += (_, _) => _countdownTimer.Stop();
-    }
-
-    private void CountdownTimer_Tick(object? sender, EventArgs e)
-    {
-        _secondsRemaining--;
-        if (_secondsRemaining <= 0)
-        {
-            Finish(continueWaiting: false);
-            return;
-        }
-
-        UpdateCountdownText();
-    }
-
-    private void UpdateCountdownText()
-    {
-        _countdownText.Text =
-            $"Si no respondes en {_secondsRemaining} segundos, Tinta ES saltará esta página y la dejará marcada como pendiente.";
     }
 
     private void Finish(bool continueWaiting)
     {
-        _countdownTimer.Stop();
-        DialogResult = continueWaiting;
+        _choiceMade = true;
+        ContinueWaiting = continueWaiting;
+        Close();
     }
 }
