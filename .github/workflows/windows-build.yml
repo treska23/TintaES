@@ -24,19 +24,6 @@ jobs:
           show-progress: false
           persist-credentials: false
 
-      - name: Package current source for editor refactor
-        shell: pwsh
-        run: |
-          Compress-Archive -Path src/TintaES.Core,src/TintaES.Wpf -DestinationPath tinta-source.zip -Force
-
-      - name: Upload current source
-        uses: actions/upload-artifact@v4
-        with:
-          name: tinta-source-r30
-          path: tinta-source.zip
-          if-no-files-found: error
-          retention-days: 1
-
       - name: Build WPF project
         shell: pwsh
         run: |
