@@ -7,8 +7,8 @@ using TintaES.Wpf.Services;
 namespace TintaES.Wpf.Controls;
 
 /// <summary>
-/// Capa de texto transparente compartida por la vista y la exportación. Toda la aplicación usa
-/// la misma fuente de manga y el texto se recorta únicamente por geometría segura.
+/// Capa local de un único bocadillo. El texto se compone en el recorte independiente y se
+/// enmascara con la selección irregular del interior antes de volver a dibujarse en la página.
 /// </summary>
 public sealed class InteractiveComicTextElement : FrameworkElement
 {
@@ -17,7 +17,7 @@ public sealed class InteractiveComicTextElement : FrameworkElement
     private bool _subscribed;
 
     public required ComicRegion Region { get; init; }
-    public double PageWidth { get; init; } = 1000;
+    public required BalloonCrop Crop { get; init; }
     public double PageHeight { get; init; } = 1000;
 
     public InteractiveComicTextElement()
@@ -37,22 +37,25 @@ public sealed class InteractiveComicTextElement : FrameworkElement
         if (!Region.IsEnabled
             || string.IsNullOrWhiteSpace(text)
             || ActualWidth < 4
-            || ActualHeight < 4)
+            || ActualHeight < 4
+            || Crop.LayoutPolygon.Count < 3)
         {
             return;
         }
 
-        IReadOnlyList<Point> polygon = CreateLocalSafePolygon();
-        if (polygon.Count < 3)
-        {
-            return;
-        }
+        double sourceWidth = Math.Max(1, Crop.InteriorMask.PixelWidth);
+        double sourceHeight = Math.Max(1, Crop.InteriorMask.PixelHeight);
+        double scaleX = ActualWidth / sourceWidth;
+        double scaleY = ActualHeight / sourceHeight;
+        Point[] polygon = Crop.LayoutPolygon
+            .Select(point => new Point(point.X * scaleX, point.Y * scaleY))
+            .ToArray();
 
         double pixelsPerDip = VisualTreeHelper.GetDpi(this).PixelsPerDip;
         var typeface = new Typeface(
             FixedComicFont,
             FontStyles.Normal,
-            FontWeights.SemiBold,
+            FontWeights.Bold,
             FontStretches.Normal);
         Brush fill = ResolveFill(Region.Style.TextColor);
         double scale = Region.IsManual ? Region.ManualFontScale : Region.FontScale;
@@ -65,16 +68,25 @@ public sealed class InteractiveComicTextElement : FrameworkElement
                 pixelsPerDip,
                 PageHeight,
                 scale,
-                1.02,
+                1.0,
                 out ShapeTextLayout? layout))
         {
             return;
         }
 
-        drawingContext.PushClip(CreateGeometry(polygon));
+        var opacityMask = new ImageBrush(Crop.InteriorMask)
+        {
+            Stretch = Stretch.Fill,
+            AlignmentX = AlignmentX.Left,
+            AlignmentY = AlignmentY.Top,
+            TileMode = TileMode.None
+        };
+
+        drawingContext.PushClip(new RectangleGeometry(new Rect(0, 0, ActualWidth, ActualHeight)));
+        drawingContext.PushOpacityMask(opacityMask);
         try
         {
-            Pen outline = CreateOutline(fill, layout!.FontSize);
+            Pen weightStroke = CreateWeightStroke(fill, layout!.FontSize);
             foreach (ShapeTextLine line in layout.Lines)
             {
                 FormattedText formatted = ShapeTextLayoutEngine.CreateText(
@@ -85,129 +97,15 @@ public sealed class InteractiveComicTextElement : FrameworkElement
                     pixelsPerDip);
                 drawingContext.DrawGeometry(
                     fill,
-                    outline,
+                    weightStroke,
                     formatted.BuildGeometry(new Point(line.X, line.Y)));
             }
         }
         finally
         {
             drawingContext.Pop();
+            drawingContext.Pop();
         }
-    }
-
-    private IReadOnlyList<Point> CreateLocalSafePolygon()
-    {
-        // SafePolygon es la única silueta aceptada como contenedor completo. BubbleBox es una
-        // caja aproximada del detector y puede abarcar dibujo exterior; nunca vuelve a usarse
-        // como permiso para escribir.
-        if (Region.SafePolygon.Count >= 3)
-        {
-            Point[] detected = Region.SafePolygon
-                .Select(ToLocal)
-                .Where(point => double.IsFinite(point.X) && double.IsFinite(point.Y))
-                .Select(Clamp)
-                .Distinct()
-                .ToArray();
-            if (detected.Length >= 3)
-            {
-                return detected;
-            }
-        }
-
-        // Sin una silueta fiable se conserva una zona moderada alrededor del texto original.
-        // Desaprovecha parte del globo, pero no invade la viñeta ni utiliza BubbleBox a ciegas.
-        bool rectangular = Region.Type is "narration" or "caption";
-        NormalizedRect fallbackBox = rectangular
-            ? Region.TextBox.Expand(0.18, 0.30)
-            : Region.TextBox.Expand(0.24, 0.40);
-        Rect fallback = ToLocal(fallbackBox);
-        if (fallback.Width < 4 || fallback.Height < 4)
-        {
-            return [];
-        }
-
-        Rect inset = Inset(
-            fallback,
-            Math.Max(1.5, fallback.Width * 0.025),
-            Math.Max(1.5, fallback.Height * 0.035));
-        return rectangular ? Rectangle(inset) : Ellipse(inset);
-    }
-
-    private Point ToLocal(NormalizedPoint point)
-    {
-        NormalizedRect box = Region.RenderBox;
-        return new Point(
-            (point.X - box.X) / 1000 * PageWidth,
-            (point.Y - box.Y) / 1000 * PageHeight);
-    }
-
-    private Rect ToLocal(NormalizedRect source)
-    {
-        NormalizedRect box = Region.RenderBox;
-        double left = Math.Clamp(
-            (source.X - box.X) / 1000 * PageWidth,
-            0,
-            ActualWidth);
-        double top = Math.Clamp(
-            (source.Y - box.Y) / 1000 * PageHeight,
-            0,
-            ActualHeight);
-        double right = Math.Clamp(
-            (source.Right - box.X) / 1000 * PageWidth,
-            left,
-            ActualWidth);
-        double bottom = Math.Clamp(
-            (source.Bottom - box.Y) / 1000 * PageHeight,
-            top,
-            ActualHeight);
-        return new Rect(left, top, right - left, bottom - top);
-    }
-
-    private Point Clamp(Point point) =>
-        new(
-            Math.Clamp(point.X, 0, ActualWidth),
-            Math.Clamp(point.Y, 0, ActualHeight));
-
-    private static IReadOnlyList<Point> Ellipse(Rect rect)
-    {
-        var points = new Point[64];
-        double centerX = rect.Left + rect.Width / 2;
-        double centerY = rect.Top + rect.Height / 2;
-        for (int index = 0; index < points.Length; index++)
-        {
-            double angle = Math.PI * 2 * index / points.Length;
-            points[index] = new Point(
-                centerX + Math.Cos(angle) * rect.Width / 2,
-                centerY + Math.Sin(angle) * rect.Height / 2);
-        }
-        return points;
-    }
-
-    private static IReadOnlyList<Point> Rectangle(Rect rect) =>
-    [
-        new Point(rect.Left, rect.Top),
-        new Point(rect.Right, rect.Top),
-        new Point(rect.Right, rect.Bottom),
-        new Point(rect.Left, rect.Bottom)
-    ];
-
-    private static Rect Inset(Rect rect, double x, double y) =>
-        new(
-            rect.Left + x,
-            rect.Top + y,
-            Math.Max(0, rect.Width - x * 2),
-            Math.Max(0, rect.Height - y * 2));
-
-    private static Geometry CreateGeometry(IReadOnlyList<Point> polygon)
-    {
-        var geometry = new StreamGeometry();
-        using (StreamGeometryContext context = geometry.Open())
-        {
-            context.BeginFigure(polygon[0], true, true);
-            context.PolyLineTo(polygon.Skip(1).ToArray(), true, true);
-        }
-        geometry.Freeze();
-        return geometry;
     }
 
     private static Brush ResolveFill(string? value)
@@ -230,12 +128,12 @@ public sealed class InteractiveComicTextElement : FrameworkElement
             : Brushes.Black;
     }
 
-    private static Pen CreateOutline(Brush fill, double fontSize) =>
-        new(
-            ReferenceEquals(fill, Brushes.White) ? Brushes.Black : Brushes.White,
-            Math.Clamp(fontSize * 0.028, 0.55, 1.6))
+    private static Pen CreateWeightStroke(Brush fill, double fontSize) =>
+        new(fill, Math.Clamp(fontSize * 0.045, 0.9, 2.8))
         {
-            LineJoin = PenLineJoin.Round
+            LineJoin = PenLineJoin.Round,
+            StartLineCap = PenLineCap.Round,
+            EndLineCap = PenLineCap.Round
         };
 
     private static string Normalize(string text) =>
