@@ -8,8 +8,8 @@ using TintaES.Core;
 namespace TintaES.Wpf;
 
 /// <summary>
-/// Sustituye visualmente el antiguo porcentaje por un tamaño tipográfico numérico en píxeles.
-/// El valor solo se aplica al confirmar, para no renderizar por cada carácter escrito.
+/// Muestra y aplica un tamaño tipográfico numérico sin crear un editor visual alternativo.
+/// El valor se guarda en la región y el renderizador canónico se invalida directamente.
 /// </summary>
 public partial class MainWindow
 {
@@ -55,9 +55,6 @@ public partial class MainWindow
         }
 
         _fontSizeNumberInstalled = true;
-
-        // Conservamos los controles antiguos únicamente como compatibilidad interna con código y
-        // proyectos previos. No participan en el layout ni pueden recibir foco.
         oldHeader.Visibility = Visibility.Collapsed;
         FontScaleSlider.Visibility = Visibility.Collapsed;
         FontScaleSlider.IsEnabled = false;
@@ -201,20 +198,24 @@ public partial class MainWindow
             return region.ManualBaseFontSize * Math.Clamp(region.ManualFontScale, 0.25, 2.5);
         }
 
-        if (_selectedNativeTextBlock is not null
-            && _selectedTextFrameLayer?.Tag is ComicRegion selected
-            && selected.Id == region.Id
-            && double.IsFinite(_selectedNativeTextBlock.FontSize))
-        {
-            return _selectedNativeTextBlock.FontSize;
-        }
-
         if (_originalBitmap is not null && region.Style.FontSize > 0)
         {
+            double scale = region.IsManual && region.Type != "sfx"
+                ? region.ManualFontScale
+                : region.FontScale;
             return Math.Max(
                 1.2,
                 region.Style.FontSize / 1000 * _originalBitmap.PixelHeight
-                * Math.Clamp(region.FontScale, 0.35, 1.6));
+                * Math.Clamp(scale, 0.25, 2.5));
+        }
+
+        if (_originalBitmap is not null)
+        {
+            double height = Math.Max(
+                2,
+                region.RenderBox.Height / 1000 * _originalBitmap.PixelHeight);
+            int lines = Math.Max(1, region.Style.OriginalLineCount);
+            return Math.Max(1.2, height * 0.72 / lines);
         }
 
         return 12;
@@ -246,16 +247,13 @@ public partial class MainWindow
         }
 
         PushEditorUndoSnapshot();
-        EnsureRegionUsesNativeTextFrame(_selectedRegion);
-
-        // El número es el tamaño real. No es un porcentaje, no depende del alto de la caja y no
-        // consulta la máscara. Redimensionar la caja después no puede modificar este valor.
         _selectedRegion.ManualBaseFontSize = requested;
         _selectedRegion.ManualFontScale = 1;
         _selectedRegion.FontScale = 1;
         _selectedRegion.IsManual = true;
         _selectedRegion.Vertical = false;
         _validatedNativeBaseSizes.Add(_selectedRegion.Id);
+        _selectedRegion.NotifyVisualChange();
 
         bool previousSyncingEditor = _syncingEditor;
         _syncingEditor = true;
@@ -269,8 +267,7 @@ public partial class MainWindow
             _syncingEditor = previousSyncingEditor;
         }
 
-        _selectedRegion.NotifyVisualChange();
-        UpdateSelectedTextLayerGeometry();
+        InvalidateRegionVisual(_selectedRegion);
         PersistVisibleComicPageRegions();
 
         _syncingFontSizeNumber = true;
