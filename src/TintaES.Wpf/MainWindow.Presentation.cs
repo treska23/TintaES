@@ -1,16 +1,16 @@
-using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Controls.Primitives;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Threading;
-using TintaES.Core;
-using TintaES.Wpf.Controls;
 
 namespace TintaES.Wpf;
 
+/// <summary>
+/// Responsabilidad exclusiva de ventana, DPI y distribución. La presentación ya no modifica
+/// hijos del OverlayCanvas ni instala correcciones de texto durante LayoutUpdated.
+/// </summary>
 public partial class MainWindow
 {
     private const int WmDpiChanged = 0x02E0;
@@ -18,7 +18,6 @@ public partial class MainWindow
     private const double PreferredMinimumWidth = 840;
     private const double PreferredMinimumHeight = 600;
 
-    private readonly ConditionalWeakTable<Grid, object> _preparedOverlayLayers = new();
     private bool _presentationHooksAttached;
     private bool _monitorLayoutRefreshPending;
     private HwndSource? _presentationHwndSource;
@@ -57,13 +56,10 @@ public partial class MainWindow
         }
 
         _presentationHooksAttached = true;
-
         if (FindResource("InkBrush") is Brush inkBrush)
         {
             RegionListBox.Foreground = inkBrush;
         }
-
-        OverlayCanvas.LayoutUpdated += OverlayCanvas_PresentationLayoutUpdated;
     }
 
     private IntPtr PresentationWindowProc(
@@ -75,8 +71,6 @@ public partial class MainWindow
     {
         if (message == WmDpiChanged)
         {
-            // Dejamos que WPF procese el rectángulo sugerido por Windows y recalculamos el
-            // layout después. Marcarlo como tratado impediría el comportamiento Per-Monitor V2.
             QueueMonitorLayoutRefresh(DispatcherPriority.Render);
         }
 
@@ -203,69 +197,6 @@ public partial class MainWindow
         {
             _presentationHwndSource.RemoveHook(PresentationWindowProc);
             _presentationHwndSource = null;
-        }
-    }
-
-    private void OverlayCanvas_PresentationLayoutUpdated(object? sender, EventArgs e)
-    {
-        foreach (Grid layer in OverlayCanvas.Children.OfType<Grid>())
-        {
-            if (_preparedOverlayLayers.TryGetValue(layer, out _))
-            {
-                continue;
-            }
-
-            // Marcamos la capa antes de añadir posibles hijos manuales para que un nuevo ciclo
-            // de LayoutUpdated no vuelva a preparar la misma capa.
-            _preparedOverlayLayers.Add(layer, new object());
-
-            Border? border = layer.Children.OfType<Border>().FirstOrDefault();
-            Thumb[] thumbs = layer.Children.OfType<Thumb>().ToArray();
-            ComicTextElement? text = layer.Children.OfType<ComicTextElement>().FirstOrDefault();
-            ComicRegion? region = layer.Tag as ComicRegion;
-
-            if (thumbs.Length > 0)
-            {
-                Thumb moveThumb = thumbs[0];
-                moveThumb.Background = Brushes.Transparent;
-                moveThumb.BorderBrush = Brushes.Transparent;
-                moveThumb.Opacity = 0;
-                moveThumb.Focusable = false;
-                Panel.SetZIndex(moveThumb, 20);
-
-                moveThumb.DragStarted -= RegionMoveThumb_DragStarted;
-                moveThumb.DragDelta -= RegionMoveThumb_DragDelta;
-                moveThumb.DragCompleted -= RegionThumb_DragCompleted;
-                moveThumb.DragStarted += RegionMoveThumb_DragStarted_Fast;
-                moveThumb.DragDelta += RegionMoveThumb_DragDelta_Fast;
-                moveThumb.DragCompleted += RegionMoveThumb_DragCompleted_Fast;
-            }
-
-            if (text is not null)
-            {
-                Panel.SetZIndex(text, 10);
-                text.Visibility = Visibility.Visible;
-                if (region is not null)
-                {
-                    ApplyRegionPlacement(layer, text, region);
-                }
-                text.InvalidateVisual();
-            }
-
-            if (region is not null)
-            {
-                EnsureManualLineVisual(layer, region, invalidate: false);
-            }
-
-            if (border is not null)
-            {
-                border.Visibility = Visibility.Collapsed;
-            }
-            foreach (Thumb thumb in thumbs.Skip(1))
-            {
-                thumb.Visibility = Visibility.Collapsed;
-                thumb.Opacity = 0;
-            }
         }
     }
 
