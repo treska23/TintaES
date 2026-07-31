@@ -75,7 +75,8 @@ public sealed class ImageExportService
             Stretch = Stretch.Fill
         });
 
-        foreach (ComicRegion region in regions.Where(region => region.IsEnabled))
+        foreach (ComicRegion region in regions.Where(region =>
+                     region.IsEnabled && region.HasRenderableTranslation))
         {
             NormalizedRect box = region.RenderBox;
             double left = (box.X + region.TextOffsetX) / 1000 * width;
@@ -86,37 +87,20 @@ public sealed class ImageExportService
             {
                 Width = elementWidth,
                 Height = elementHeight,
-                // La exportación usa exactamente la misma caja que el lienzo. Ningún glifo,
-                // contorno o sombra puede invadir el dibujo aunque una fuente tenga métricas
-                // inesperadas o el usuario haya aumentado la escala manual.
-                ClipToBounds = true,
-                RenderTransformOrigin = new Point(0.5, 0.5),
-                RenderTransform = new RotateTransform(region.Rotation)
+                Background = null,
+                ClipToBounds = true
             };
 
-            FrameworkElement text;
-            if (region.Type != "sfx" && region.IsManual)
+            // Vista y exportación comparten el mismo renderizador legible. No se vuelve a
+            // calcular la composición con el número de líneas, fuente o rotación originales.
+            var text = new InteractiveComicTextElement
             {
-                text = new TextFrameComicTextElement
-                {
-                    Region = region,
-                    PageWidth = width,
-                    PageHeight = height,
-                    Width = elementWidth,
-                    Height = elementHeight
-                };
-            }
-            else
-            {
-                text = new ComicTextElement
-                {
-                    Region = region,
-                    PageWidth = width,
-                    PageHeight = height,
-                    Width = elementWidth,
-                    Height = elementHeight
-                };
-            }
+                Region = region,
+                PageWidth = width,
+                PageHeight = height,
+                Width = elementWidth,
+                Height = elementHeight
+            };
 
             layer.Children.Add(text);
             Canvas.SetLeft(layer, left);
