@@ -25,8 +25,8 @@ public partial class MainWindow
         }
 
         region.TextBox = (region.TextBox ?? new NormalizedRect(100, 100, 200, 80)).Clamp();
-        region.RenderBox = (region.RenderBox ?? region.TextBox.Expand(0.1, 0.2)).Clamp();
         region.SafePolygon ??= [];
+        region.RenderBox = ResolveConservativeTextFrame(region);
 
         if (!double.IsFinite(region.FontScale) || region.FontScale <= 0)
         {
@@ -48,5 +48,36 @@ public partial class MainWindow
         {
             region.TextOffsetY = 0;
         }
+    }
+
+    /// <summary>
+    /// RenderBox solo puede derivarse de la silueta segura o del bloque OCR original. BubbleBox
+    /// es una aproximación del detector y no vuelve a ensanchar automáticamente la capa.
+    /// </summary>
+    private static NormalizedRect ResolveConservativeTextFrame(ComicRegion region)
+    {
+        if (region.SafePolygon.Count >= 3)
+        {
+            double left = region.SafePolygon.Min(point => point.X);
+            double top = region.SafePolygon.Min(point => point.Y);
+            double right = region.SafePolygon.Max(point => point.X);
+            double bottom = region.SafePolygon.Max(point => point.Y);
+            if (double.IsFinite(left)
+                && double.IsFinite(top)
+                && double.IsFinite(right)
+                && double.IsFinite(bottom)
+                && right - left >= 5
+                && bottom - top >= 5)
+            {
+                return new NormalizedRect(left, top, right - left, bottom - top)
+                    .Expand(0.035, 0.045)
+                    .Clamp();
+            }
+        }
+
+        bool rectangular = region.Type is "narration" or "caption";
+        return region.TextBox
+            .Expand(rectangular ? 0.18 : 0.24, rectangular ? 0.30 : 0.40)
+            .Clamp();
     }
 }
