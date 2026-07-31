@@ -23,6 +23,7 @@ public partial class MainWindow : Window
     private readonly ImageProcessingService _processingService = new();
     private readonly ImageExportService _exportService = new();
     private readonly ObservableCollection<ComicRegion> _regions = [];
+    private static readonly ControlTemplate TransparentRegionThumbTemplate = CreateTransparentRegionThumbTemplate();
     private BitmapSource? _originalBitmap;
     private BitmapSource? _cleanedBaseBitmap;
     private BitmapSource? _cleanedBitmap;
@@ -354,9 +355,6 @@ public partial class MainWindow : Window
         FooterProgressBar.IsIndeterminate = busy;
         FooterProgressBar.Value = 0;
         CancelButton.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
-        // Abrir cómic no sustituye el trabajo actual: crea una pestaña independiente.
-        // Por eso permanece disponible incluso mientras el documento activo termina o cancela
-        // una operación.
         OpenImageButton.IsEnabled = true;
         if (_openFolderButton is not null)
         {
@@ -437,6 +435,7 @@ public partial class MainWindow : Window
     private void RebuildOverlay()
     {
         OverlayCanvas.Children.Clear();
+        OverlayCanvas.Background = null;
         if (_originalBitmap is null)
         {
             return;
@@ -446,6 +445,7 @@ public partial class MainWindow : Window
         {
             AddRegionVisual(region);
         }
+        RefreshRegionSelectionChrome();
     }
 
     private void AddRegionVisual(ComicRegion region)
@@ -454,34 +454,48 @@ public partial class MainWindow : Window
         {
             return;
         }
+
         var layer = new Grid
         {
             Tag = region,
+            Background = null,
             ClipToBounds = true,
             RenderTransformOrigin = new Point(0.5, 0.5),
             RenderTransform = new RotateTransform(region.Rotation)
         };
-        var text = new ComicTextElement
+
+        var text = new InteractiveComicTextElement
         {
             Region = region,
             PageWidth = _originalBitmap.PixelWidth,
             PageHeight = _originalBitmap.PixelHeight,
-            IsHitTestVisible = false
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Stretch,
+            IsHitTestVisible = false,
+            Focusable = false
         };
+        Panel.SetZIndex(text, 10);
         layer.Children.Add(text);
 
+        var visual = new RegionVisual(region, layer, text);
         var moveThumb = new Thumb
         {
-            Background = Brushes.Transparent,
+            Background = null,
+            BorderBrush = null,
+            BorderThickness = new Thickness(0),
+            Template = TransparentRegionThumbTemplate,
             Cursor = Cursors.SizeAll,
-            Tag = new RegionVisual(region, layer, text)
+            Focusable = false,
+            Tag = visual
         };
+        Panel.SetZIndex(moveThumb, 20);
         moveThumb.DragStarted += RegionMoveThumb_DragStarted;
         moveThumb.DragDelta += RegionMoveThumb_DragDelta;
         moveThumb.DragCompleted += RegionThumb_DragCompleted;
         layer.Children.Add(moveThumb);
 
         double handleSize = Math.Clamp(16 / CurrentZoom, 24, 72);
+        Brush handleColor = region == _selectedRegion ? BrushFrom("#EE594B") : BrushFrom("#4CB2BB");
         var resizeThumb = new Thumb
         {
             Width = handleSize,
@@ -489,11 +503,15 @@ public partial class MainWindow : Window
             HorizontalAlignment = HorizontalAlignment.Right,
             VerticalAlignment = VerticalAlignment.Bottom,
             Cursor = Cursors.SizeNWSE,
-            Background = region == _selectedRegion ? BrushFrom("#EE594B") : BrushFrom("#4CB2BB"),
-            BorderBrush = Brushes.White,
-            BorderThickness = new Thickness(Math.Max(1, 1 / CurrentZoom)),
-            Tag = new RegionVisual(region, layer, text)
+            Background = null,
+            BorderBrush = null,
+            BorderThickness = new Thickness(0),
+            Template = CreateResizeRegionThumbTemplate(handleColor, Math.Max(1, 1 / CurrentZoom)),
+            Focusable = false,
+            Tag = visual,
+            Visibility = region == _selectedRegion ? Visibility.Visible : Visibility.Collapsed
         };
+        Panel.SetZIndex(resizeThumb, 30);
         resizeThumb.DragStarted += RegionResizeThumb_DragStarted;
         resizeThumb.DragDelta += RegionResizeThumb_DragDelta;
         resizeThumb.DragCompleted += RegionThumb_DragCompleted;
@@ -503,22 +521,59 @@ public partial class MainWindow : Window
         OverlayCanvas.Children.Add(layer);
     }
 
-    private void PositionLayer(Grid layer, ComicTextElement text, ComicRegion region)
+    private static ControlTemplate CreateTransparentRegionThumbTemplate()
+    {
+        var root = new FrameworkElementFactory(typeof(Border));
+        root.SetValue(Border.BackgroundProperty, Brushes.Transparent);
+        root.SetValue(Border.BorderBrushProperty, Brushes.Transparent);
+        root.SetValue(Border.BorderThicknessProperty, new Thickness(0));
+        return new ControlTemplate(typeof(Thumb)) { VisualTree = root };
+    }
+
+    private static ControlTemplate CreateResizeRegionThumbTemplate(Brush color, double borderThickness)
+    {
+        var root = new FrameworkElementFactory(typeof(Border));
+        root.SetValue(Border.BackgroundProperty, color);
+        root.SetValue(Border.BorderBrushProperty, Brushes.White);
+        root.SetValue(Border.BorderThicknessProperty, new Thickness(borderThickness));
+        root.SetValue(Border.CornerRadiusProperty, new CornerRadius(2));
+        return new ControlTemplate(typeof(Thumb)) { VisualTree = root };
+    }
+
+    private void PositionLayer(Grid layer, FrameworkElement text, ComicRegion region)
     {
         if (_originalBitmap is null)
         {
             return;
         }
         NormalizedRect box = region.RenderBox;
-        double width = box.Width / 1000 * _originalBitmap.PixelWidth;
-        double height = box.Height / 1000 * _originalBitmap.PixelHeight;
+        double width = Math.Max(2, box.Width / 1000 * _originalBitmap.PixelWidth);
+        double height = Math.Max(2, box.Height / 1000 * _originalBitmap.PixelHeight);
         layer.Width = width;
         layer.Height = height;
         text.Width = width;
         text.Height = height;
-        Canvas.SetLeft(layer, box.X / 1000 * _originalBitmap.PixelWidth);
-        Canvas.SetTop(layer, box.Y / 1000 * _originalBitmap.PixelHeight);
+        Canvas.SetLeft(layer, (box.X + region.TextOffsetX) / 1000 * _originalBitmap.PixelWidth);
+        Canvas.SetTop(layer, (box.Y + region.TextOffsetY) / 1000 * _originalBitmap.PixelHeight);
         text.InvalidateVisual();
+    }
+
+    private void RefreshRegionSelectionChrome()
+    {
+        foreach (Grid layer in OverlayCanvas.Children.OfType<Grid>())
+        {
+            if (layer.Tag is not ComicRegion region)
+            {
+                continue;
+            }
+            Thumb? resize = layer.Children.OfType<Thumb>().FirstOrDefault(thumb => thumb.Cursor == Cursors.SizeNWSE);
+            if (resize is not null)
+            {
+                bool selected = ReferenceEquals(region, _selectedRegion);
+                resize.Visibility = selected ? Visibility.Visible : Visibility.Collapsed;
+                resize.IsHitTestVisible = selected;
+            }
+        }
     }
 
     private void RegionMoveThumb_DragStarted(object sender, DragStartedEventArgs e)
@@ -582,10 +637,8 @@ public partial class MainWindow : Window
                 old.X + (point.X - old.X) * width / old.Width,
                 old.Y + (point.Y - old.Y) * height / old.Height))
             .ToArray();
-        if (visual.Region.IsManual)
-        {
-            visual.Region.TextBox = visual.Region.RenderBox;
-        }
+        visual.Region.IsManual = true;
+        visual.Region.TextBox = visual.Region.RenderBox;
         PositionLayer(visual.Layer, visual.Text, visual.Region);
     }
 
@@ -609,6 +662,7 @@ public partial class MainWindow : Window
         _suppressSelectionRebuild = false;
         RegionListBox.ScrollIntoView(region);
         ShowRegionEditor(region);
+        RefreshRegionSelectionChrome();
     }
 
     private void RegionListBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -618,6 +672,10 @@ public partial class MainWindow : Window
         if (!_suppressSelectionRebuild)
         {
             RebuildOverlay();
+        }
+        else
+        {
+            RefreshRegionSelectionChrome();
         }
     }
 
@@ -640,8 +698,11 @@ public partial class MainWindow : Window
             TypeComboBox.SelectedValue = region.Type;
             CleanupComboBox.SelectedValue = region.CleanupMode;
             FontCategoryComboBox.SelectedValue = region.Style.FontCategory;
-            FontScaleSlider.Value = region.FontScale * 100;
-            FontScaleText.Text = $"{Math.Round(region.FontScale * 100)} %";
+            double editorScale = region.IsManual && region.Type != "sfx"
+                ? region.ManualFontScale
+                : region.FontScale;
+            FontScaleSlider.Value = editorScale * 100;
+            FontScaleText.Text = $"{Math.Round(editorScale * 100)} %";
             BoldCheckBox.IsChecked = region.Style.FontWeight >= 650;
             ItalicCheckBox.IsChecked = region.Style.Italic;
             UppercaseCheckBox.IsChecked = region.Style.Uppercase;
@@ -651,6 +712,7 @@ public partial class MainWindow : Window
         finally
         {
             _syncingEditor = false;
+            RefreshRegionSelectionChrome();
         }
     }
 
@@ -717,7 +779,15 @@ public partial class MainWindow : Window
         {
             return;
         }
-        _selectedRegion.FontScale = FontScaleSlider.Value / 100;
+        double scale = FontScaleSlider.Value / 100;
+        if (_selectedRegion.IsManual && _selectedRegion.Type != "sfx")
+        {
+            _selectedRegion.ManualFontScale = scale;
+        }
+        else
+        {
+            _selectedRegion.FontScale = scale;
+        }
         RebuildOverlay();
     }
 
@@ -772,7 +842,7 @@ public partial class MainWindow : Window
             RegionListBox.Items.Refresh();
         }
 
-        if (sender is ComicRegion region && !region.IsManual)
+        if (sender is ComicRegion region)
         {
             InvalidateRegionVisual(region);
         }
@@ -813,7 +883,7 @@ public partial class MainWindow : Window
         {
             ExportButton.IsEnabled = false;
             SetFooterStatus("Preparando la exportación…", "#4CB2BB");
-            await Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.Render);
+            await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Render);
             BitmapSource result = await _exportService.RenderAsync(_cleanedBitmap, _regions);
             await Task.Run(() => _exportService.Save(result, dialog.FileName));
             SetFooterStatus($"Exportado: {Path.GetFileName(dialog.FileName)}", "#58A77D");
@@ -887,5 +957,5 @@ public partial class MainWindow : Window
     }
 
     private sealed record Choice(string Label, string Value);
-    private sealed record RegionVisual(ComicRegion Region, Grid Layer, ComicTextElement Text);
+    private sealed record RegionVisual(ComicRegion Region, Grid Layer, FrameworkElement Text);
 }
