@@ -10,8 +10,6 @@ namespace TintaES.Wpf.Services;
 
 public sealed class SupplementalTextDetectionService
 {
-    private static readonly TimeSpan DetectionTimeout = TimeSpan.FromMinutes(4);
-
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         PropertyNameCaseInsensitive = true,
@@ -28,49 +26,37 @@ public sealed class SupplementalTextDetectionService
     {
         progress?.Report(new AnalysisProgress(2, 100, "Buscando textos pequeños que podrían quedar visibles…"));
         BitmapSource original = LoadBitmap(sourcePath);
-        using var detectorCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        detectorCancellation.CancelAfter(DetectionTimeout);
-        CancellationToken detectorToken = detectorCancellation.Token;
 
-        try
-        {
-            Task<ComicAnalysis> windowsTask =
-                new WindowsOcrService().RecognizeAsync(original, detectorToken);
-            Task<BrightCandidateManifest> brightTask = RunBrightCandidateDetectorAsync(
-                sourcePath,
-                outputDirectory,
-                projectRoot,
-                pythonPath,
-                detectorToken);
+        Task<ComicAnalysis> windowsTask =
+            new WindowsOcrService().RecognizeAsync(original, cancellationToken);
+        Task<BrightCandidateManifest> brightTask = RunBrightCandidateDetectorAsync(
+            sourcePath,
+            outputDirectory,
+            projectRoot,
+            pythonPath,
+            cancellationToken);
 
-            await Task.WhenAll(windowsTask, brightTask);
-            ComicAnalysis windows = await windowsTask;
-            BrightCandidateManifest bright = await brightTask;
+        await Task.WhenAll(windowsTask, brightTask);
+        ComicAnalysis windows = await windowsTask;
+        BrightCandidateManifest bright = await brightTask;
 
-            IReadOnlyList<ComicRegion> merged = RegionMerger.Merge(
-                NormalizeWindowsRegions(windows.Regions)
-                    .Where(region => IsPlausibleText(region.Original)));
+        IReadOnlyList<ComicRegion> merged = RegionMerger.Merge(
+            NormalizeWindowsRegions(windows.Regions)
+                .Where(region => IsPlausibleText(region.Original)));
 
-            var payload = new SupplementalManifest(
-                bright.Width,
-                bright.Height,
-                bright.Candidates,
-                merged.Select(region => ToPayload(region, bright.Width, bright.Height)).ToArray());
-            string manifestPath = Path.Combine(outputDirectory, "supplemental-text.json");
-            await File.WriteAllTextAsync(
-                manifestPath,
-                JsonSerializer.Serialize(payload, JsonOptions),
-                Encoding.UTF8,
-                detectorToken);
-            progress?.Report(new AnalysisProgress(7, 100, "Textos auxiliares localizados. Preparando el motor principal…"));
-            return manifestPath;
-        }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-        {
-            throw new TimeoutException(
-                "La búsqueda auxiliar de textos superó cuatro minutos y se detuvo. " +
-                "La aplicación no seguirá esperando indefinidamente.");
-        }
+        var payload = new SupplementalManifest(
+            bright.Width,
+            bright.Height,
+            bright.Candidates,
+            merged.Select(region => ToPayload(region, bright.Width, bright.Height)).ToArray());
+        string manifestPath = Path.Combine(outputDirectory, "supplemental-text.json");
+        await File.WriteAllTextAsync(
+            manifestPath,
+            JsonSerializer.Serialize(payload, JsonOptions),
+            Encoding.UTF8,
+            cancellationToken);
+        progress?.Report(new AnalysisProgress(7, 100, "Textos auxiliares localizados. Preparando el motor principal…"));
+        return manifestPath;
     }
 
     private static async Task<BrightCandidateManifest> RunBrightCandidateDetectorAsync(
