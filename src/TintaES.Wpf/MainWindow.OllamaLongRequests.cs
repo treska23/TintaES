@@ -1,5 +1,6 @@
 using System.Net.Http;
 using System.Reflection;
+using System.Windows;
 using TintaES.Core;
 
 namespace TintaES.Wpf;
@@ -10,15 +11,28 @@ namespace TintaES.Wpf;
 /// </summary>
 public partial class MainWindow
 {
+    private static readonly bool OllamaLongRequestsRegistered = RegisterOllamaLongRequests();
     private bool _ollamaLongRequestsInstalled;
 
-    protected override void OnInitialized(EventArgs e)
+    private static bool RegisterOllamaLongRequests()
     {
-        // Debe ejecutarse antes de base.OnInitialized: otros manejadores de inicialización o
-        // Loaded pueden consultar los modelos, y HttpClient.Timeout queda bloqueado después de
-        // la primera petición.
-        InstallOllamaLongRequests();
-        base.OnInitialized(e);
+        EventManager.RegisterClassHandler(
+            typeof(MainWindow),
+            LoadedEvent,
+            new RoutedEventHandler(MainWindow_OllamaLongRequestsLoaded),
+            handledEventsToo: true);
+        return true;
+    }
+
+    private static void MainWindow_OllamaLongRequestsLoaded(object sender, RoutedEventArgs e)
+    {
+        if (sender is MainWindow window)
+        {
+            // Los manejadores de clase se ejecutan antes que MainWindow_Loaded. Debe hacerse
+            // aquí mismo, sin BeginInvoke: aplazarlo permitiría que RefreshModelsAsync enviara
+            // la primera petición y bloqueara después cualquier cambio de HttpClient.Timeout.
+            window.InstallOllamaLongRequests();
+        }
     }
 
     private void InstallOllamaLongRequests()
@@ -43,8 +57,8 @@ public partial class MainWindow
         }
         catch (InvalidOperationException)
         {
-            // Respaldo para una posible petición extremadamente temprana: se sustituye el
-            // HttpClient ya usado por otro configurado antes de su primera solicitud.
+            // Respaldo por si en el futuro alguna inicialización llega a consultar Ollama antes
+            // de Loaded. Se sustituye el cliente usado por otro sin límite temporal.
             var replacement = new HttpClient
             {
                 BaseAddress = client.BaseAddress,
