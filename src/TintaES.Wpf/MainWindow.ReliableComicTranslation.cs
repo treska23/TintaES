@@ -9,9 +9,9 @@ using TintaES.Wpf.Services;
 namespace TintaES.Wpf;
 
 /// <summary>
-/// Procesa únicamente las páginas seleccionadas, reintenta fallos transitorios y nunca presenta
-/// un lote incompleto como si hubiera terminado correctamente. Las páginas que finalmente fallen
-/// quedan marcadas, desmarcadas y resumidas al usuario al terminar el resto del cómic.
+/// Procesa únicamente las páginas seleccionadas, reintenta fallos transitorios y conserva todas
+/// las traducciones válidas aunque Ollama no consiga resolver alguna zona concreta. Una página
+/// parcial se puede revisar en el editor, pero se desmarca para no exportarla como terminada.
 /// </summary>
 public partial class MainWindow
 {
@@ -50,6 +50,7 @@ public partial class MainWindow
 
         var stopwatch = Stopwatch.StartNew();
         var failures = new List<ComicPageFailure>();
+        var partialPages = new List<ComicPagePartial>();
         bool cancelled = false;
 
         _comicBatchBusy = true;
@@ -122,6 +123,23 @@ public partial class MainWindow
                     _selectedComicPageIndices.Remove(pageIndex);
                     _exportedComicPageIndices.Remove(pageIndex);
                 }
+                else if (!string.IsNullOrWhiteSpace(page.Error))
+                {
+                    int total = page.Regions.Count(region => region.IsEnabled);
+                    int translated = page.Regions.Count(region =>
+                        region.IsEnabled && region.HasRenderableTranslation);
+                    partialPages.Add(new ComicPagePartial(
+                        humanPage,
+                        page.DisplayName,
+                        translated,
+                        total,
+                        page.Error));
+
+                    // La página se conserva y se puede abrir, pero no se exporta accidentalmente
+                    // como si todas sus zonas estuvieran terminadas.
+                    _selectedComicPageIndices.Remove(pageIndex);
+                    _exportedComicPageIndices.Remove(pageIndex);
+                }
 
                 SyncPageSelectionCheckBoxes();
                 RefreshPageSelectionVisuals();
@@ -131,18 +149,26 @@ public partial class MainWindow
                 BusyProgressBar.Value = completedPercent;
                 FooterProgressBar.Value = completedPercent;
 
-                if (completed)
+                if (!completed)
+                {
+                    FooterStatusText.Text =
+                        $"Página {humanPage} sin traducir · continúa el resto del lote";
+                }
+                else if (!string.IsNullOrWhiteSpace(page.Error))
+                {
+                    int total = page.Regions.Count(region => region.IsEnabled);
+                    int translated = page.Regions.Count(region =>
+                        region.IsEnabled && region.HasRenderableTranslation);
+                    FooterStatusText.Text =
+                        $"Página {humanPage} parcial · {translated}/{total} zonas traducidas";
+                }
+                else
                 {
                     double secondsPerPage = stopwatch.Elapsed.TotalSeconds / Math.Max(1, pendingPosition + 1);
                     double remainingSeconds = secondsPerPage * Math.Max(0, pending.Length - pendingPosition - 1);
                     FooterStatusText.Text = remainingSeconds > 1
                         ? $"Página {humanPage} terminada · quedan aproximadamente {FormatDuration(remainingSeconds)}"
                         : $"Página {humanPage} terminada";
-                }
-                else
-                {
-                    FooterStatusText.Text =
-                        $"Página {humanPage} sin traducir · continúa el resto del lote";
                 }
 
                 await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Render);
@@ -171,12 +197,12 @@ public partial class MainWindow
         if (cancelled)
         {
             SetFooterStatus(
-                "Traducción cancelada. Las páginas terminadas se conservan.",
+                "Traducción cancelada. Las páginas y zonas terminadas se conservan.",
                 "#C99A35");
             return;
         }
 
-        if (failures.Count == 0)
+        if (failures.Count == 0 && partialPages.Count == 0)
         {
             SetFooterStatus(
                 $"Cómic traducido · {pending.Length} páginas · {FormatDuration(stopwatch.Elapsed.TotalSeconds)}",
@@ -184,27 +210,37 @@ public partial class MainWindow
             return;
         }
 
-        string failedPages = string.Join(", ", failures.Select(failure => failure.PageNumber));
         SetFooterStatus(
-            $"Traducción incompleta · {failures.Count} página(s) sin traducir: {failedPages}",
-            "#EE594B");
+            $"Resultado parcial · {partialPages.Count} página(s) incompleta(s) y " +
+            $"{failures.Count} sin procesar",
+            "#C99A35");
 
-        string details = string.Join(
-            Environment.NewLine,
-            failures.Take(12).Select(failure =>
-                $"Página {failure.PageNumber} · {failure.DisplayName}: {CompactFailureMessage(failure.Message)}"));
-        if (failures.Count > 12)
+        var detailLines = new List<string>();
+        detailLines.AddRange(partialPages.Take(12).Select(partial =>
+            $"Página {partial.PageNumber} · {partial.DisplayName}: " +
+            $"{partial.Translated}/{partial.Total} zonas traducidas."));
+        detailLines.AddRange(failures.Take(Math.Max(0, 12 - detailLines.Count)).Select(failure =>
+            $"Página {failure.PageNumber} · {failure.DisplayName}: " +
+            CompactFailureMessage(failure.Message)));
+
+        int omitted = partialPages.Count + failures.Count - detailLines.Count;
+        if (omitted > 0)
         {
-            details += Environment.NewLine + $"…y {failures.Count - 12} página(s) más.";
+            detailLines.Add($"…y {omitted} página(s) más.");
         }
+
+        string introduction = partialPages.Count > 0
+            ? "Se han conservado y colocado todas las traducciones válidas. Las zonas que Ollama " +
+              "no pudo resolver se han dejado vacías, sin borrar el trabajo correcto.\n\n"
+            : string.Empty;
 
         MessageBox.Show(
             this,
-            $"El proceso terminó, pero {failures.Count} página(s) no pudieron traducirse.\n\n" +
-            "Se han marcado como error y se les ha quitado el checkbox para que no se exporten " +
-            "como si estuvieran terminadas. Puedes volver a marcarlas y pulsar Traducir cómic " +
-            "para reintentarlas.\n\n" + details,
-            "Traducción incompleta",
+            introduction +
+            "Las páginas parciales o fallidas se han desmarcado para que no se exporten como " +
+            "terminadas. Puedes volver a marcarlas y pulsar Traducir cómic para reintentar solo " +
+            "lo que falta.\n\n" + string.Join(Environment.NewLine, detailLines),
+            "Traducción parcial",
             MessageBoxButton.OK,
             MessageBoxImage.Warning);
     }
@@ -251,13 +287,17 @@ public partial class MainWindow
             cancellationToken);
 
         var analysis = new ComicAnalysis(organic.Analysis.SourceLanguage, filtered.Regions);
+        int totalEnabled = analysis.Regions.Count(region => region.IsEnabled);
+        Exception? lastTranslationError = null;
 
-        if (analysis.Regions.Count > 0)
+        if (totalEnabled > 0)
         {
-            Exception? translationError = null;
-            bool translated = false;
+            List<ComicRegion> remaining = analysis.Regions
+                .Where(region => region.IsEnabled && !region.HasRenderableTranslation)
+                .ToList();
+
             for (int translationAttempt = 1;
-                 translationAttempt <= ComicTranslationAutomaticAttempts;
+                 translationAttempt <= ComicTranslationAutomaticAttempts && remaining.Count > 0;
                  translationAttempt++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -265,27 +305,23 @@ public partial class MainWindow
                 {
                     BusyTitleText.Text =
                         $"Página {humanPage}/{_comicPages.Count} · traduciendo " +
-                        $"{analysis.Regions.Count} textos…";
+                        $"{remaining.Count} texto(s) pendiente(s)…";
                     FooterStatusText.Text = translationAttempt == 1
                         ? $"Traduciendo página {humanPage} con {model}…"
-                        : $"Reintentando los textos de la página {humanPage} " +
+                        : $"Reintentando solo {remaining.Count} zona(s) de la página {humanPage} " +
                           $"({translationAttempt}/{ComicTranslationAutomaticAttempts})…";
                     await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Render);
 
                     await RunLongOperationWithPromptAsync(
                         token => _ollama.TranslateRegionsAsync(
-                            analysis.Regions,
+                            remaining,
                             model,
                             token,
                             progress),
                         $"La traducción de la página {humanPage}",
-                        () => $"Traduciendo {analysis.Regions.Count} textos con {model}",
+                        () => $"Traduciendo {remaining.Count} textos con {model}",
                         cancellationToken);
-
-                    EnsureTranslationsAreComplete(analysis.Regions);
-                    translated = true;
-                    translationError = null;
-                    break;
+                    lastTranslationError = null;
                 }
                 catch (OperationCanceledException)
                 {
@@ -293,21 +329,35 @@ public partial class MainWindow
                 }
                 catch (Exception exception)
                 {
-                    translationError = exception;
-                    if (translationAttempt < ComicTranslationAutomaticAttempts)
-                    {
-                        await Task.Delay(450, cancellationToken);
-                    }
+                    // TranslateRegionsAsync puede lanzar porque una o varias zonas siguen sin
+                    // traducción. Las traducciones válidas ya están dentro de sus ComicRegion y
+                    // deben conservarse. El siguiente intento recibe únicamente las pendientes.
+                    lastTranslationError = exception;
+                }
+
+                remaining = analysis.Regions
+                    .Where(region => region.IsEnabled && !region.HasRenderableTranslation)
+                    .ToList();
+
+                if (remaining.Count > 0 && translationAttempt < ComicTranslationAutomaticAttempts)
+                {
+                    await Task.Delay(450, cancellationToken);
                 }
             }
+        }
 
-            if (!translated)
-            {
-                throw new InvalidOperationException(
-                    translationError?.Message ??
-                    "La traducción no devolvió un resultado completo para esta página.",
-                    translationError);
-            }
+        int translatedCount = analysis.Regions.Count(region =>
+            region.IsEnabled && region.HasRenderableTranslation);
+        int incompleteCount = Math.Max(0, totalEnabled - translatedCount);
+
+        // Solo se considera fallo total cuando no se ha podido conservar ni una traducción. En
+        // cualquier otro caso guardamos la página y dejamos las zonas restantes vacías.
+        if (totalEnabled > 0 && translatedCount == 0)
+        {
+            throw new InvalidOperationException(
+                lastTranslationError?.Message ??
+                "Ollama no devolvió ninguna traducción utilizable para esta página.",
+                lastTranslationError);
         }
 
         string processedDirectory = Path.Combine(_comicWorkspace!, "processed");
@@ -336,7 +386,10 @@ public partial class MainWindow
         page.CleanedPath = cleanedPath;
         page.MaskPath = maskPath;
         page.Processed = true;
-        page.Error = null;
+        page.Error = incompleteCount > 0
+            ? $"Traducción parcial: {translatedCount} de {totalEnabled} zonas traducidas. " +
+              CompactFailureMessage(lastTranslationError?.Message ?? string.Empty)
+            : null;
         MarkActiveDocumentDirty(pageIndex);
     }
 
@@ -355,4 +408,11 @@ public partial class MainWindow
     }
 
     private sealed record ComicPageFailure(int PageNumber, string DisplayName, string Message);
+
+    private sealed record ComicPagePartial(
+        int PageNumber,
+        string DisplayName,
+        int Translated,
+        int Total,
+        string Message);
 }
