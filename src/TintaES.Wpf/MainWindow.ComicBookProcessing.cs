@@ -36,4 +36,15 @@ public partial class MainWindow
 
         _ = AnalyzeSelectedComicPagesReliablyAsync(pending, model);
     }
+
+    private static bool PageNeedsTranslation(ComicBookPageState page) =>
+        !page.Processed
+        || page.Regions.Any(region => region.IsEnabled && !region.HasRenderableTranslation);
+
+    /// <summary>
+    /// Nombre heredado que todavía desconectan algunos instaladores. Toda exportación CBZ pasa
+    /// directamente por la implementación robusta; no existe ya una segunda ruta de exportación.
+    /// </summary>
+    private void ExportComicButton_Click(object sender, RoutedEventArgs e) =>
+        ExportComicButton_Click_Robust(sender, e);
 }
