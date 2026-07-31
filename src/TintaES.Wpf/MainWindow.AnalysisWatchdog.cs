@@ -6,15 +6,13 @@ using TintaES.Wpf.Services;
 namespace TintaES.Wpf;
 
 /// <summary>
-/// Vigila el motor local durante el análisis de una página. La interfaz nunca debe quedar
-/// bloqueada indefinidamente si Python, CTD, LaMa u OCR dejan de responder.
+/// Mantiene informada la interfaz durante operaciones largas. Ninguna fase se cancela por
+/// alcanzar un tiempo fijo: cada dos minutos el usuario decide si continúa o cancela.
 /// </summary>
 public partial class MainWindow
 {
-    private static readonly TimeSpan InitialEngineResponseTimeout = TimeSpan.FromMinutes(3);
-    private static readonly TimeSpan EngineStageTimeout = TimeSpan.FromMinutes(6);
-    private static readonly TimeSpan EngineAbsoluteTimeout = TimeSpan.FromMinutes(20);
-    private static readonly TimeSpan EngineCancellationGrace = TimeSpan.FromSeconds(8);
+    private static readonly TimeSpan LongOperationReviewInterval = TimeSpan.FromMinutes(2);
+    private static readonly TimeSpan OperationCancellationGrace = TimeSpan.FromSeconds(8);
     private static readonly TimeSpan AnalysisHeartbeatInterval = TimeSpan.FromSeconds(12);
 
     private async Task<OrganicAnalysisResult> AnalyzePageWithWatchdogAsync(
@@ -26,17 +24,14 @@ public partial class MainWindow
             CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
         long startedAt = Stopwatch.GetTimestamp();
-        long lastProgressAt = startedAt;
         long lastHeartbeatAt = startedAt;
-        int receivedProgress = 0;
+        long nextReviewAt = startedAt + ToStopwatchTicks(LongOperationReviewInterval);
         double lastPercentage = 0;
         string lastMessage = "Iniciando el motor local";
         object stateLock = new();
 
         var monitoredProgress = new ImmediateProgress<AnalysisProgress>(value =>
         {
-            Interlocked.Exchange(ref lastProgressAt, Stopwatch.GetTimestamp());
-            Interlocked.Increment(ref receivedProgress);
             lock (stateLock)
             {
                 lastPercentage = value.Percentage;
@@ -55,19 +50,18 @@ public partial class MainWindow
 
         while (!analysisTask.IsCompleted)
         {
-            await Task.Delay(1000, cancellationToken);
+            Task pulse = Task.Delay(1000, cancellationToken);
+            Task completed = await Task.WhenAny(analysisTask, pulse);
+            if (ReferenceEquals(completed, analysisTask))
+            {
+                break;
+            }
 
+            cancellationToken.ThrowIfCancellationRequested();
             long now = Stopwatch.GetTimestamp();
             TimeSpan totalElapsed = Stopwatch.GetElapsedTime(startedAt, now);
-            TimeSpan stalledFor = Stopwatch.GetElapsedTime(
-                Interlocked.Read(ref lastProgressAt),
-                now);
-            bool hasProgress = Volatile.Read(ref receivedProgress) > 0;
-            TimeSpan allowedStall = hasProgress
-                ? EngineStageTimeout
-                : InitialEngineResponseTimeout;
 
-            if (totalElapsed >= EngineAbsoluteTimeout || stalledFor >= allowedStall)
+            if (now >= nextReviewAt)
             {
                 string stage;
                 lock (stateLock)
@@ -75,19 +69,28 @@ public partial class MainWindow
                     stage = lastMessage;
                 }
 
-                linkedCancellation.Cancel();
-                await Task.WhenAny(
-                    analysisTask,
-                    Task.Delay(EngineCancellationGrace, CancellationToken.None));
+                bool continueWaiting = ShowSlowOperationPrompt(
+                    "El análisis de la página",
+                    stage,
+                    totalElapsed);
 
-                string reason = totalElapsed >= EngineAbsoluteTimeout
-                    ? $"El análisis superó el límite total de {EngineAbsoluteTimeout.TotalMinutes:0} minutos"
-                    : hasProgress
-                        ? $"El motor no avanzó durante {allowedStall.TotalMinutes:0} minutos"
-                        : $"El motor no respondió durante {allowedStall.TotalMinutes:0} minutos";
+                // La fase puede haber terminado mientras el usuario leía la pregunta.
+                if (analysisTask.IsCompleted)
+                {
+                    break;
+                }
 
-                throw new TimeoutException(
-                    $"{reason} en «{stage}». Se ha detenido para que Tinta ES no quede bloqueado.");
+                if (!continueWaiting)
+                {
+                    linkedCancellation.Cancel();
+                    await Task.WhenAny(
+                        analysisTask,
+                        Task.Delay(OperationCancellationGrace, CancellationToken.None));
+                    throw new OperationCanceledException(linkedCancellation.Token);
+                }
+
+                nextReviewAt = Stopwatch.GetTimestamp()
+                               + ToStopwatchTicks(LongOperationReviewInterval);
             }
 
             if (Stopwatch.GetElapsedTime(lastHeartbeatAt, now) >= AnalysisHeartbeatInterval)
@@ -111,6 +114,76 @@ public partial class MainWindow
 
         return await analysisTask;
     }
+
+    private async Task RunLongOperationWithPromptAsync(
+        Func<CancellationToken, Task> operationFactory,
+        string operationName,
+        Func<string> stageProvider,
+        CancellationToken cancellationToken)
+    {
+        using var linkedCancellation =
+            CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+
+        Task operationTask = operationFactory(linkedCancellation.Token);
+        var elapsed = Stopwatch.StartNew();
+        TimeSpan nextReview = LongOperationReviewInterval;
+
+        while (!operationTask.IsCompleted)
+        {
+            Task pulse = Task.Delay(1000, cancellationToken);
+            Task completed = await Task.WhenAny(operationTask, pulse);
+            if (ReferenceEquals(completed, operationTask))
+            {
+                break;
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            if (elapsed.Elapsed < nextReview)
+            {
+                continue;
+            }
+
+            bool continueWaiting = ShowSlowOperationPrompt(
+                operationName,
+                stageProvider(),
+                elapsed.Elapsed);
+
+            // La operación puede terminar mientras la pregunta está abierta.
+            if (operationTask.IsCompleted)
+            {
+                break;
+            }
+
+            if (!continueWaiting)
+            {
+                linkedCancellation.Cancel();
+                await Task.WhenAny(
+                    operationTask,
+                    Task.Delay(OperationCancellationGrace, CancellationToken.None));
+                throw new OperationCanceledException(linkedCancellation.Token);
+            }
+
+            nextReview = elapsed.Elapsed + LongOperationReviewInterval;
+        }
+
+        await operationTask;
+    }
+
+    private bool ShowSlowOperationPrompt(
+        string operationName,
+        string stage,
+        TimeSpan elapsed)
+    {
+        var prompt = new SlowOperationPromptWindow(operationName, stage, elapsed)
+        {
+            Owner = this
+        };
+        _ = prompt.ShowDialog();
+        return prompt.ContinueWaiting;
+    }
+
+    private static long ToStopwatchTicks(TimeSpan duration) =>
+        (long)Math.Ceiling(duration.TotalSeconds * Stopwatch.Frequency);
 
     private sealed class ImmediateProgress<T>(Action<T> report) : IProgress<T>
     {
