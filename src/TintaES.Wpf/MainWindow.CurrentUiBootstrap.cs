@@ -9,7 +9,7 @@ namespace TintaES.Wpf;
 /// </summary>
 public partial class MainWindow
 {
-    private const string CurrentUiBuildStamp = "UI 2026.07.31-r31";
+    private const string CurrentUiBuildStamp = "UI 2026.07.31-r32";
     private const int CurrentUiBootstrapMaxAttempts = 3;
 
     private static readonly bool CurrentUiBootstrapRegistered = RegisterCurrentUiBootstrap();
@@ -62,6 +62,9 @@ public partial class MainWindow
 
         _currentUiBootstrapAttempt++;
         Title = $"Tinta ES · Traductor local de cómics · {CurrentUiBuildStamp}";
+        FontCategoryComboBox.SelectedValue = "comic";
+        FontCategoryComboBox.IsEnabled = false;
+        FontCategoryComboBox.ToolTip = "TintaES utiliza una única tipografía de cómic legible";
 
         var failures = new List<string>();
         RunCurrentUiInstaller(InstallOllamaLongRequests, "peticiones largas de Ollama", failures);
