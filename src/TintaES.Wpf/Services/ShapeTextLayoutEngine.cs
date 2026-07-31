@@ -5,14 +5,36 @@ using System.Windows.Media;
 namespace TintaES.Wpf.Services;
 
 /// <summary>
-/// Compone el texto línea a línea dentro de la silueta del bocadillo. Cada línea usa el tramo
-/// común disponible en cinco alturas distintas, dejando margen para acentos y trazo grueso.
+/// Compone rotulación española dentro de una silueta irregular. Elige conjuntamente el tamaño,
+/// el número de líneas y los puntos de corte: no limita el problema a "meter palabras hasta
+/// llenar la línea", porque eso produce líneas huérfanas y cortes antinaturales.
 /// </summary>
 public sealed class ShapeTextLayoutEngine
 {
     private static readonly CultureInfo Spanish = CultureInfo.GetCultureInfo("es-ES");
-    private static readonly double[] VerticalShifts = [0, -0.07, 0.07, -0.14, 0.14];
-    private static readonly double[] LineSamples = [0.10, 0.28, 0.50, 0.72, 0.90];
+    private static readonly double[] VerticalShifts = [0, -0.055, 0.055, -0.11, 0.11];
+    private static readonly double[] LineSamples = [0.18, 0.50, 0.82];
+
+    private static readonly HashSet<string> WeakLineEndWords = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "a", "al", "ante", "bajo", "con", "contra", "de", "del", "desde", "durante",
+        "e", "el", "en", "entre", "hacia", "hasta", "la", "las", "lo", "los", "o",
+        "para", "pero", "por", "que", "según", "sin", "sobre", "tras", "u", "un",
+        "una", "unas", "unos", "y"
+    };
+
+    private static readonly HashSet<string> WeakLineStartWords = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "al", "del", "el", "la", "las", "lo", "los", "me", "se", "su", "sus",
+        "te", "tu", "tus", "un", "una", "unas", "unos"
+    };
+
+    private static readonly HashSet<string> ArticlesAndDeterminers = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "el", "la", "las", "lo", "los", "un", "una", "unas", "unos", "mi", "mis",
+        "tu", "tus", "su", "sus", "este", "esta", "estos", "estas", "ese", "esa",
+        "esos", "esas", "aquel", "aquella", "aquellos", "aquellas"
+    };
 
     public bool TryLayout(
         string text,
@@ -26,93 +48,59 @@ public sealed class ShapeTextLayoutEngine
         out ShapeTextLayout? layout)
     {
         layout = null;
+        string normalized = Normalize(text);
         Rect bounds = Bounds(polygon);
-        if (polygon.Count < 3 || bounds.Width < 8 || bounds.Height < 8)
+        if (polygon.Count < 3
+            || bounds.Width < 12
+            || bounds.Height < 12
+            || string.IsNullOrWhiteSpace(normalized))
         {
             return false;
         }
 
-        double preferredMinimum = Math.Clamp(pageHeight * 0.0058, 14, 22);
-        const double absoluteMinimum = 8;
+        // En una página de unas 3.000 px, 8-14 px es ilegible. El motor deja de sacrificar
+        // lectura para fingir que el texto "cabe". Si no entra a este tamaño, queda pendiente.
+        double readableMinimum = Math.Clamp(pageHeight * 0.0072, 18, 28);
         double maximum = Math.Clamp(
-            Math.Min(bounds.Height * 0.52, bounds.Width * 0.30)
-            * Math.Clamp(scale, 0.55, 2.0),
-            preferredMinimum,
-            160);
+            Math.Min(bounds.Height * 0.50, bounds.Width * 0.29)
+            * Math.Clamp(scale, 0.70, 1.80),
+            readableMinimum,
+            170);
 
-        double foundMinimum = preferredMinimum;
         if (!TryAtSize(
-                text,
+                normalized,
                 polygon,
                 typeface,
                 fill,
                 pixelsPerDip,
-                foundMinimum,
+                readableMinimum,
                 lineHeightRatio,
                 out layout))
         {
-            bool found = false;
-            for (double candidate = preferredMinimum - 1.5;
-                 candidate >= absoluteMinimum;
-                 candidate -= 1.5)
-            {
-                if (TryAtSize(
-                        text,
-                        polygon,
-                        typeface,
-                        fill,
-                        pixelsPerDip,
-                        candidate,
-                        lineHeightRatio,
-                        out layout))
-                {
-                    foundMinimum = candidate;
-                    found = true;
-                    break;
-                }
-            }
-
-            if (!found
-                && !TryContainedRectangleFallback(
-                    text,
-                    polygon,
-                    typeface,
-                    fill,
-                    pixelsPerDip,
-                    absoluteMinimum,
-                    lineHeightRatio,
-                    out layout))
-            {
-                return false;
-            }
-
-            if (!found)
-            {
-                return layout is not null;
-            }
+            return false;
         }
 
-        double low = foundMinimum;
+        double low = readableMinimum;
         double high = Math.Max(low, maximum);
-        for (int index = 0; index < 10; index++)
+        for (int index = 0; index < 11; index++)
         {
-            double candidate = (low + high) / 2;
+            double candidateSize = (low + high) / 2;
             if (TryAtSize(
-                    text,
+                    normalized,
                     polygon,
                     typeface,
                     fill,
                     pixelsPerDip,
-                    candidate,
+                    candidateSize,
                     lineHeightRatio,
-                    out ShapeTextLayout? next))
+                    out ShapeTextLayout? candidate))
             {
-                layout = next;
-                low = candidate;
+                layout = candidate;
+                low = candidateSize;
             }
             else
             {
-                high = candidate;
+                high = candidateSize;
             }
         }
 
@@ -131,12 +119,14 @@ public sealed class ShapeTextLayoutEngine
     {
         layout = null;
         Rect bounds = Bounds(polygon);
-        double lineHeight = fontSize * Math.Clamp(lineHeightRatio, 1.04, 1.22);
-        int maxLines = Math.Clamp((int)Math.Floor(bounds.Height / lineHeight), 1, 24);
+        double lineHeight = fontSize * Math.Clamp(lineHeightRatio, 1.03, 1.16);
+        int geometricMaximum = Math.Clamp((int)Math.Floor(bounds.Height / lineHeight), 1, 20);
         string[] rawTokens = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        int preferredLineCount = PreferredLineCount(rawTokens.Length, bounds);
         ShapeTextLayout? best = null;
+        Geometry container = CreatePolygonGeometry(polygon);
 
-        for (int lineCount = 1; lineCount <= maxLines; lineCount++)
+        for (int lineCount = 1; lineCount <= geometricMaximum; lineCount++)
         {
             foreach (double shift in VerticalShifts)
             {
@@ -172,13 +162,16 @@ public sealed class ShapeTextLayoutEngine
                         fill,
                         pixelsPerDip,
                         out IReadOnlyList<string>? lines,
-                        out double score))
+                        out double breakScore))
                 {
                     continue;
                 }
 
                 var rendered = new List<ShapeTextLine>(lineCount);
+                var lineWidths = new double[lineCount];
+                var geometry = new GeometryGroup();
                 bool invalid = false;
+
                 for (int lineIndex = 0; lineIndex < lineCount; lineIndex++)
                 {
                     FormattedText formatted = CreateText(
@@ -188,41 +181,48 @@ public sealed class ShapeTextLayoutEngine
                         fill,
                         pixelsPerDip);
                     ShapeLineSlot slot = slots[lineIndex];
-                    if (formatted.WidthIncludingTrailingWhitespace > slot.Width + 0.25
-                        || formatted.Height > lineHeight + 0.25)
+                    double measuredWidth = formatted.WidthIncludingTrailingWhitespace;
+                    if (measuredWidth > slot.Width + 0.20
+                        || formatted.Height > lineHeight + 0.20)
                     {
                         invalid = true;
                         break;
                     }
 
-                    double x = slot.Left + Math.Max(
-                        0,
-                        (slot.Width - formatted.WidthIncludingTrailingWhitespace) / 2);
+                    double x = slot.Left + Math.Max(0, (slot.Width - measuredWidth) / 2);
                     double y = slot.Top + Math.Max(0, (lineHeight - formatted.Height) / 2);
                     Geometry glyphs = formatted.BuildGeometry(new Point(x, y));
                     Rect glyphBounds = glyphs.Bounds;
-                    if (glyphBounds.Left < slot.Left - 0.25
-                        || glyphBounds.Right > slot.Left + slot.Width + 0.25
-                        || glyphBounds.Top < slot.Top - 0.25
-                        || glyphBounds.Bottom > slot.Top + lineHeight + 0.25)
+                    if (glyphBounds.Left < slot.Left - 0.20
+                        || glyphBounds.Right > slot.Left + slot.Width + 0.20
+                        || glyphBounds.Top < slot.Top - 0.20
+                        || glyphBounds.Bottom > slot.Top + lineHeight + 0.20)
                     {
                         invalid = true;
                         break;
                     }
 
+                    geometry.Children.Add(glyphs);
+                    lineWidths[lineIndex] = measuredWidth / Math.Max(1, slot.Width);
                     rendered.Add(new ShapeTextLine(lines[lineIndex], x, y));
                 }
 
-                if (!invalid)
+                if (invalid
+                    || geometry.Children.Count == 0
+                    || container.FillContainsWithDetail(geometry)
+                       != IntersectionDetail.FullyContains)
                 {
-                    var candidate = new ShapeTextLayout(
-                        fontSize,
-                        rendered,
-                        score + Math.Abs(shift) * 0.20 + lineCount * 0.002);
-                    if (best is null || candidate.Score < best.Score)
-                    {
-                        best = candidate;
-                    }
+                    continue;
+                }
+
+                double score = breakScore
+                               + BalancePenalty(lines!, lineWidths)
+                               + Math.Abs(lineCount - preferredLineCount) * 0.045
+                               + Math.Abs(shift) * 0.18;
+                var candidate = new ShapeTextLayout(fontSize, rendered, score);
+                if (best is null || candidate.Score < best.Score)
+                {
+                    best = candidate;
                 }
             }
         }
@@ -231,91 +231,18 @@ public sealed class ShapeTextLayoutEngine
         return best is not null;
     }
 
-    private static bool TryContainedRectangleFallback(
-        string text,
-        IReadOnlyList<Point> polygon,
-        Typeface typeface,
-        Brush fill,
-        double pixelsPerDip,
-        double fontSize,
-        double lineHeightRatio,
-        out ShapeTextLayout? layout)
+    private static int PreferredLineCount(int wordCount, Rect bounds)
     {
-        layout = null;
-        Rect bounds = Bounds(polygon);
-        var candidate = new Rect(
-            bounds.Left + bounds.Width * 0.20,
-            bounds.Top + bounds.Height * 0.17,
-            bounds.Width * 0.60,
-            bounds.Height * 0.66);
-
-        for (int attempt = 0;
-             attempt < 28 && candidate.Width >= 8 && candidate.Height >= 8;
-             attempt++)
+        double aspect = bounds.Width / Math.Max(1, bounds.Height);
+        double wordsPerLine = aspect switch
         {
-            if (RectangleInside(candidate, polygon))
-            {
-                double lineHeight = fontSize * Math.Clamp(lineHeightRatio, 1.04, 1.22);
-                int maxLines = Math.Clamp((int)Math.Floor(candidate.Height / lineHeight), 1, 28);
-                string[] tokens = SplitOversizedTokens(
-                    text.Split(' ', StringSplitOptions.RemoveEmptyEntries),
-                    candidate.Width,
-                    typeface,
-                    fontSize,
-                    fill,
-                    pixelsPerDip);
-
-                for (int lineCount = 1; lineCount <= maxLines; lineCount++)
-                {
-                    var slots = Enumerable.Range(0, lineCount)
-                        .Select(index => new ShapeLineSlot(
-                            candidate.Left,
-                            candidate.Top
-                            + (candidate.Height - lineCount * lineHeight) / 2
-                            + index * lineHeight,
-                            candidate.Width))
-                        .ToArray();
-                    if (!TryBreak(
-                            tokens,
-                            slots,
-                            typeface,
-                            fontSize,
-                            fill,
-                            pixelsPerDip,
-                            out IReadOnlyList<string>? lines,
-                            out double score))
-                    {
-                        continue;
-                    }
-
-                    var rendered = new List<ShapeTextLine>(lineCount);
-                    for (int index = 0; index < lineCount; index++)
-                    {
-                        FormattedText formatted = CreateText(
-                            lines![index],
-                            typeface,
-                            fontSize,
-                            fill,
-                            pixelsPerDip);
-                        rendered.Add(new ShapeTextLine(
-                            lines[index],
-                            slots[index].Left
-                            + Math.Max(
-                                0,
-                                (slots[index].Width
-                                 - formatted.WidthIncludingTrailingWhitespace) / 2),
-                            slots[index].Top
-                            + Math.Max(0, (lineHeight - formatted.Height) / 2)));
-                    }
-                    layout = new ShapeTextLayout(fontSize, rendered, score + 1);
-                    return true;
-                }
-            }
-
-            candidate = ScaleAroundCenter(candidate, 0.94);
-        }
-
-        return false;
+            >= 1.75 => 5.2,
+            >= 1.30 => 4.4,
+            >= 0.95 => 3.7,
+            >= 0.70 => 3.1,
+            _ => 2.5
+        };
+        return Math.Clamp((int)Math.Round(wordCount / wordsPerLine), 1, 16);
     }
 
     private static IReadOnlyList<ShapeLineSlot> CreateSlots(
@@ -336,7 +263,7 @@ public sealed class ShapeTextLayoutEngine
         }
 
         var slots = new List<ShapeLineSlot>(lineCount);
-        double margin = Math.Max(3, fontSize * 0.30);
+        double margin = Math.Max(2.2, fontSize * 0.17);
         for (int line = 0; line < lineCount; line++)
         {
             double top = startY + line * lineHeight;
@@ -357,7 +284,7 @@ public sealed class ShapeTextLayoutEngine
                     : new HorizontalSegment(
                         Math.Max(common.Value.Left, segment.Value.Left),
                         Math.Min(common.Value.Right, segment.Value.Right));
-                if (common.Value.Right - common.Value.Left <= margin * 2 + 3)
+                if (common.Value.Width <= margin * 2 + 4)
                 {
                     common = null;
                     break;
@@ -372,7 +299,7 @@ public sealed class ShapeTextLayoutEngine
             slots.Add(new ShapeLineSlot(
                 common.Value.Left + margin,
                 top,
-                common.Value.Right - common.Value.Left - margin * 2));
+                common.Value.Width - margin * 2));
         }
 
         return slots;
@@ -409,7 +336,7 @@ public sealed class ShapeTextLayoutEngine
             var candidate = new HorizontalSegment(
                 intersections[index],
                 intersections[index + 1]);
-            if (candidate.Right > candidate.Left
+            if (candidate.Width > 0
                 && (widest is null || candidate.Width > widest.Value.Width))
             {
                 widest = candidate;
@@ -437,6 +364,7 @@ public sealed class ShapeTextLayoutEngine
         double space = Measure(" ", typeface, fontSize, fill, pixelsPerDip);
         double[,] costs = new double[lineCount + 1, tokenCount + 1];
         int[,] previous = new int[lineCount + 1, tokenCount + 1];
+
         for (int line = 0; line <= lineCount; line++)
         {
             for (int token = 0; token <= tokenCount; token++)
@@ -461,7 +389,7 @@ public sealed class ShapeTextLayoutEngine
                 for (int end = start + 1; end <= tokenCount; end++)
                 {
                     width += widths[end - 1] + (end - start > 1 ? space : 0);
-                    if (width > slots[line].Width + 0.25)
+                    if (width > slots[line].Width + 0.20)
                     {
                         break;
                     }
@@ -470,14 +398,35 @@ public sealed class ShapeTextLayoutEngine
                         continue;
                     }
 
+                    int wordsOnLine = end - start;
                     double fillRatio = Math.Clamp(width / slots[line].Width, 0, 1);
-                    double raggedness = Math.Pow(1 - fillRatio, 2)
-                                        * (line == lineCount - 1 ? 0.42 : 1);
-                    if (end - start == 1 && tokenCount > lineCount)
+                    double targetFill = line == lineCount - 1 ? 0.68 : 0.82;
+                    double lineCost = Math.Pow(fillRatio - targetFill, 2);
+                    lineCost += WordCountPenalty(
+                        tokens,
+                        start,
+                        end,
+                        line == lineCount - 1,
+                        tokenCount,
+                        lineCount);
+                    lineCost += BreakBoundaryPenalty(
+                        tokens[end - 1],
+                        end < tokenCount ? tokens[end] : null);
+
+                    if (fillRatio < 0.34)
                     {
-                        raggedness += 0.10;
+                        lineCost += 0.26;
                     }
-                    double candidate = costs[line, start] + raggedness;
+                    if (fillRatio > 0.97)
+                    {
+                        lineCost += 0.05;
+                    }
+                    if (wordsOnLine == 1 && tokenCount > lineCount)
+                    {
+                        lineCost += line == lineCount - 1 ? 0.62 : 0.42;
+                    }
+
+                    double candidate = costs[line, start] + lineCost;
                     if (candidate < costs[line + 1, end])
                     {
                         costs[line + 1, end] = candidate;
@@ -512,8 +461,134 @@ public sealed class ShapeTextLayoutEngine
         }
 
         lines = result;
-        score = costs[lineCount, tokenCount] / lineCount;
+        score = costs[lineCount, tokenCount] / Math.Max(1, lineCount);
         return true;
+    }
+
+    private static double WordCountPenalty(
+        IReadOnlyList<string> tokens,
+        int start,
+        int end,
+        bool isLastLine,
+        int totalTokens,
+        int totalLines)
+    {
+        int wordCount = end - start;
+        int characterCount = tokens
+            .Skip(start)
+            .Take(wordCount)
+            .Sum(token => TrimToken(token).Length);
+
+        double penalty = 0;
+        if (wordCount == 1 && totalTokens > totalLines)
+        {
+            penalty += isLastLine ? 0.55 : 0.34;
+        }
+        else if (wordCount == 2 && characterCount < 9)
+        {
+            penalty += isLastLine ? 0.20 : 0.10;
+        }
+
+        if (characterCount <= 4)
+        {
+            penalty += 0.28;
+        }
+        else if (characterCount <= 7)
+        {
+            penalty += 0.10;
+        }
+
+        return penalty;
+    }
+
+    private static double BreakBoundaryPenalty(string previousToken, string? nextToken)
+    {
+        if (nextToken is null)
+        {
+            return 0;
+        }
+
+        string previous = TrimToken(previousToken);
+        string next = TrimToken(nextToken);
+        double penalty = 0;
+
+        if (EndsWithStrongPause(previousToken))
+        {
+            penalty -= 0.16;
+        }
+        else if (EndsWithSoftPause(previousToken))
+        {
+            penalty -= 0.08;
+        }
+
+        if (WeakLineEndWords.Contains(previous))
+        {
+            penalty += 0.34;
+        }
+        if (WeakLineStartWords.Contains(next))
+        {
+            penalty += 0.12;
+        }
+
+        if ((previous.Equals("de", StringComparison.OrdinalIgnoreCase)
+             || previous.Equals("a", StringComparison.OrdinalIgnoreCase)
+             || previous.Equals("con", StringComparison.OrdinalIgnoreCase)
+             || previous.Equals("por", StringComparison.OrdinalIgnoreCase)
+             || previous.Equals("sin", StringComparison.OrdinalIgnoreCase))
+            && ArticlesAndDeterminers.Contains(next))
+        {
+            penalty += 0.52;
+        }
+
+        if (previous.Equals("para", StringComparison.OrdinalIgnoreCase)
+            && next.Equals("que", StringComparison.OrdinalIgnoreCase))
+        {
+            penalty += 0.56;
+        }
+
+        if (previous.Equals("que", StringComparison.OrdinalIgnoreCase)
+            && (ArticlesAndDeterminers.Contains(next)
+                || next.Equals("me", StringComparison.OrdinalIgnoreCase)
+                || next.Equals("te", StringComparison.OrdinalIgnoreCase)
+                || next.Equals("se", StringComparison.OrdinalIgnoreCase)))
+        {
+            penalty += 0.48;
+        }
+
+        return penalty;
+    }
+
+    private static double BalancePenalty(
+        IReadOnlyList<string> lines,
+        IReadOnlyList<double> fillRatios)
+    {
+        if (fillRatios.Count == 0)
+        {
+            return 0;
+        }
+
+        double average = fillRatios.Average();
+        double variance = fillRatios
+            .Select(value => Math.Pow(value - average, 2))
+            .Average();
+        double penalty = variance * 0.70;
+
+        if (fillRatios.Count > 1)
+        {
+            double last = fillRatios[^1];
+            if (last < 0.34)
+            {
+                penalty += 0.30;
+            }
+            if (lines[^1].Split(
+                    ' ',
+                    StringSplitOptions.RemoveEmptyEntries).Length == 1)
+            {
+                penalty += 0.42;
+            }
+        }
+
+        return penalty;
     }
 
     private static string[] SplitOversizedTokens(
@@ -528,37 +603,22 @@ public sealed class ShapeTextLayoutEngine
         foreach (string token in source)
         {
             string remaining = token;
-            while (Measure(
+            while (remaining.Length > 4
+                   && Measure(
                        remaining,
                        typeface,
                        fontSize,
                        fill,
-                       pixelsPerDip) > maxWidth
-                   && remaining.Length > 1)
+                       pixelsPerDip) > maxWidth)
             {
-                int low = 1;
-                int high = remaining.Length - 1;
-                int best = 0;
-                while (low <= high)
-                {
-                    int middle = (low + high) / 2;
-                    if (Measure(
-                            remaining[..middle] + "-",
-                            typeface,
-                            fontSize,
-                            fill,
-                            pixelsPerDip) <= maxWidth)
-                    {
-                        best = middle;
-                        low = middle + 1;
-                    }
-                    else
-                    {
-                        high = middle - 1;
-                    }
-                }
-
-                if (best <= 0)
+                int best = FindSplitPoint(
+                    remaining,
+                    maxWidth,
+                    typeface,
+                    fontSize,
+                    fill,
+                    pixelsPerDip);
+                if (best < 2 || remaining.Length - best < 2)
                 {
                     break;
                 }
@@ -575,6 +635,75 @@ public sealed class ShapeTextLayoutEngine
 
         return result.ToArray();
     }
+
+    private static int FindSplitPoint(
+        string word,
+        double maxWidth,
+        Typeface typeface,
+        double fontSize,
+        Brush fill,
+        double pixelsPerDip)
+    {
+        int best = 0;
+        for (int index = 2; index <= word.Length - 2; index++)
+        {
+            if (Measure(
+                    word[..index] + "-",
+                    typeface,
+                    fontSize,
+                    fill,
+                    pixelsPerDip) <= maxWidth)
+            {
+                best = index;
+            }
+            else
+            {
+                break;
+            }
+        }
+
+        if (best <= 2)
+        {
+            return best;
+        }
+
+        // Se acerca al último corte silábico razonable sin pretender implementar un
+        // silabeador completo. Es preferible a partir mecánicamente en cualquier carácter.
+        for (int index = best; index >= Math.Max(2, best - 3); index--)
+        {
+            if (IsVowel(word[index - 1]) != IsVowel(word[index]))
+            {
+                return index;
+            }
+        }
+        return best;
+    }
+
+    private static bool IsVowel(char value) =>
+        "aeiouáéíóúüAEIOUÁÉÍÓÚÜ".Contains(value);
+
+    private static bool EndsWithStrongPause(string token) =>
+        token.EndsWith('.')
+        || token.EndsWith('!')
+        || token.EndsWith('?')
+        || token.EndsWith('…');
+
+    private static bool EndsWithSoftPause(string token) =>
+        token.EndsWith(',')
+        || token.EndsWith(';')
+        || token.EndsWith(':');
+
+    private static string TrimToken(string token) =>
+        token.Trim(
+            '¡', '!', '¿', '?', '.', ',', ';', ':', '…',
+            '"', '\'', '«', '»', '(', ')', '[', ']', '{', '}');
+
+    private static string Normalize(string text) =>
+        string.Join(
+            ' ',
+            text.Split(
+                [' ', '\t', '\r', '\n'],
+                StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
 
     public static FormattedText CreateText(
         string text,
@@ -604,63 +733,16 @@ public sealed class ShapeTextLayoutEngine
         CreateText(text, typeface, fontSize, fill, pixelsPerDip)
             .WidthIncludingTrailingWhitespace;
 
-    private static bool RectangleInside(
-        Rect rectangle,
-        IReadOnlyList<Point> polygon)
+    private static Geometry CreatePolygonGeometry(IReadOnlyList<Point> polygon)
     {
-        foreach (Point point in new[]
-                 {
-                     rectangle.TopLeft,
-                     rectangle.TopRight,
-                     rectangle.BottomLeft,
-                     rectangle.BottomRight,
-                     new Point(rectangle.Left + rectangle.Width / 2, rectangle.Top),
-                     new Point(rectangle.Left + rectangle.Width / 2, rectangle.Bottom),
-                     new Point(rectangle.Left, rectangle.Top + rectangle.Height / 2),
-                     new Point(rectangle.Right, rectangle.Top + rectangle.Height / 2)
-                 })
+        var geometry = new StreamGeometry();
+        using (StreamGeometryContext context = geometry.Open())
         {
-            if (!ContainsPoint(polygon, point))
-            {
-                return false;
-            }
+            context.BeginFigure(polygon[0], true, true);
+            context.PolyLineTo(polygon.Skip(1).ToArray(), true, true);
         }
-        return true;
-    }
-
-    private static bool ContainsPoint(
-        IReadOnlyList<Point> polygon,
-        Point point)
-    {
-        bool inside = false;
-        int previous = polygon.Count - 1;
-        for (int current = 0; current < polygon.Count; current++)
-        {
-            Point first = polygon[previous];
-            Point second = polygon[current];
-            bool crosses = (second.Y > point.Y) != (first.Y > point.Y)
-                           && point.X < (first.X - second.X)
-                           * (point.Y - second.Y)
-                           / (first.Y - second.Y)
-                           + second.X;
-            if (crosses)
-            {
-                inside = !inside;
-            }
-            previous = current;
-        }
-        return inside;
-    }
-
-    private static Rect ScaleAroundCenter(Rect rectangle, double scale)
-    {
-        double width = rectangle.Width * scale;
-        double height = rectangle.Height * scale;
-        return new Rect(
-            rectangle.Left + (rectangle.Width - width) / 2,
-            rectangle.Top + (rectangle.Height - height) / 2,
-            width,
-            height);
+        geometry.Freeze();
+        return geometry;
     }
 
     private static Rect Bounds(IReadOnlyList<Point> polygon)
