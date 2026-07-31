@@ -1,23 +1,28 @@
 using System.ComponentModel;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using TintaES.Core;
 using TintaES.Wpf.Services;
 
 namespace TintaES.Wpf.Controls;
 
 /// <summary>
-/// Capa local de un único bocadillo. El texto se compone en el recorte independiente y se
-/// enmascara con la selección irregular del interior antes de volver a dibujarse en la página.
+/// Capa local de un único bocadillo. El texto se compone dentro de una selección irregular
+/// extraída de la página limpia y se vuelve a colocar como una capa transparente independiente.
 /// </summary>
 public sealed class InteractiveComicTextElement : FrameworkElement
 {
     private static readonly ShapeTextLayoutEngine LayoutEngine = new();
+    private static readonly BalloonCropService CropService = new();
     private static readonly FontFamily FixedComicFont = ComicFontResolver.ResolveMangaDialogue();
+    private BalloonCrop? _resolvedCrop;
     private bool _subscribed;
 
     public required ComicRegion Region { get; init; }
-    public required BalloonCrop Crop { get; init; }
+    public BalloonCrop? Crop { get; init; }
+    public double PageWidth { get; init; } = 1000;
     public double PageHeight { get; init; } = 1000;
 
     public InteractiveComicTextElement()
@@ -34,21 +39,29 @@ public sealed class InteractiveComicTextElement : FrameworkElement
     {
         base.OnRender(drawingContext);
         string text = Normalize(Region.DisplayText);
+        BalloonCrop? crop = ResolveCrop();
         if (!Region.IsEnabled
             || string.IsNullOrWhiteSpace(text)
             || ActualWidth < 4
             || ActualHeight < 4
-            || Crop.LayoutPolygon.Count < 3)
+            || crop is null
+            || crop.LayoutPolygon.Count < 3)
         {
             return;
         }
 
-        double sourceWidth = Math.Max(1, Crop.InteriorMask.PixelWidth);
-        double sourceHeight = Math.Max(1, Crop.InteriorMask.PixelHeight);
-        double scaleX = ActualWidth / sourceWidth;
-        double scaleY = ActualHeight / sourceHeight;
-        Point[] polygon = Crop.LayoutPolygon
-            .Select(point => new Point(point.X * scaleX, point.Y * scaleY))
+        Rect destination = ResolveDestination(crop);
+        if (destination.Width < 4 || destination.Height < 4)
+        {
+            return;
+        }
+
+        double scaleX = destination.Width / Math.Max(1, crop.InteriorMask.PixelWidth);
+        double scaleY = destination.Height / Math.Max(1, crop.InteriorMask.PixelHeight);
+        Point[] polygon = crop.LayoutPolygon
+            .Select(point => new Point(
+                destination.X + point.X * scaleX,
+                destination.Y + point.Y * scaleY))
             .ToArray();
 
         double pixelsPerDip = VisualTreeHelper.GetDpi(this).PixelsPerDip;
@@ -56,9 +69,9 @@ public sealed class InteractiveComicTextElement : FrameworkElement
             FixedComicFont,
             FontStyles.Normal,
             FontWeights.Bold,
-            FontStretches.Normal);
+            FontStretches.SemiExpanded);
         Brush fill = ResolveFill(Region.Style.TextColor);
-        double scale = Region.IsManual ? Region.ManualFontScale : Region.FontScale;
+        double fontScale = Region.IsManual ? Region.ManualFontScale : Region.FontScale;
 
         if (!LayoutEngine.TryLayout(
                 text,
@@ -67,19 +80,23 @@ public sealed class InteractiveComicTextElement : FrameworkElement
                 fill,
                 pixelsPerDip,
                 PageHeight,
-                scale,
+                fontScale,
                 1.0,
                 out ShapeTextLayout? layout))
         {
             return;
         }
 
-        var opacityMask = new ImageBrush(Crop.InteriorMask)
+        var opacityMask = new ImageBrush(crop.InteriorMask)
         {
             Stretch = Stretch.Fill,
             AlignmentX = AlignmentX.Left,
             AlignmentY = AlignmentY.Top,
-            TileMode = TileMode.None
+            TileMode = TileMode.None,
+            ViewportUnits = BrushMappingMode.Absolute,
+            Viewport = destination,
+            ViewboxUnits = BrushMappingMode.RelativeToBoundingBox,
+            Viewbox = new Rect(0, 0, 1, 1)
         };
 
         drawingContext.PushClip(new RectangleGeometry(new Rect(0, 0, ActualWidth, ActualHeight)));
@@ -108,6 +125,75 @@ public sealed class InteractiveComicTextElement : FrameworkElement
         }
     }
 
+    private BalloonCrop? ResolveCrop()
+    {
+        if (Crop is not null)
+        {
+            return Crop;
+        }
+        if (_resolvedCrop is not null)
+        {
+            return _resolvedCrop;
+        }
+
+        BitmapSource? page = ResolvePageBitmap();
+        if (page is null)
+        {
+            return null;
+        }
+
+        _resolvedCrop = CropService.Create(page, Region);
+        return _resolvedCrop;
+    }
+
+    private BitmapSource? ResolvePageBitmap()
+    {
+        if (Window.GetWindow(this) is MainWindow window)
+        {
+            return window.CurrentBalloonSourceBitmap;
+        }
+
+        DependencyObject? current = this;
+        while (current is not null)
+        {
+            if (current is Canvas canvas)
+            {
+                BitmapSource? source = canvas.Children
+                    .OfType<Image>()
+                    .Select(image => image.Source)
+                    .OfType<BitmapSource>()
+                    .FirstOrDefault();
+                if (source is not null)
+                {
+                    return source;
+                }
+            }
+            current = VisualTreeHelper.GetParent(current);
+        }
+        return null;
+    }
+
+    private Rect ResolveDestination(BalloonCrop crop)
+    {
+        if (PageWidth <= 0 || PageHeight <= 0)
+        {
+            return new Rect(0, 0, ActualWidth, ActualHeight);
+        }
+
+        NormalizedRect frame = Region.RenderBox;
+        double frameX = frame.X / 1000 * PageWidth;
+        double frameY = frame.Y / 1000 * PageHeight;
+        double frameWidth = Math.Max(1, frame.Width / 1000 * PageWidth);
+        double frameHeight = Math.Max(1, frame.Height / 1000 * PageHeight);
+        double localScaleX = ActualWidth / frameWidth;
+        double localScaleY = ActualHeight / frameHeight;
+        return new Rect(
+            (crop.PageBounds.X - frameX) * localScaleX,
+            (crop.PageBounds.Y - frameY) * localScaleY,
+            crop.PageBounds.Width * localScaleX,
+            crop.PageBounds.Height * localScaleY);
+    }
+
     private static Brush ResolveFill(string? value)
     {
         Color color = Colors.Black;
@@ -129,7 +215,7 @@ public sealed class InteractiveComicTextElement : FrameworkElement
     }
 
     private static Pen CreateWeightStroke(Brush fill, double fontSize) =>
-        new(fill, Math.Clamp(fontSize * 0.045, 0.9, 2.8))
+        new(fill, Math.Clamp(fontSize * 0.055, 1.0, 3.2))
         {
             LineJoin = PenLineJoin.Round,
             StartLineCap = PenLineCap.Round,
@@ -153,6 +239,10 @@ public sealed class InteractiveComicTextElement : FrameworkElement
         _subscribed = true;
         Region.PropertyChanged += RegionChanged;
         Visibility = Region.IsEnabled ? Visibility.Visible : Visibility.Collapsed;
+        if (Window.GetWindow(this) is MainWindow window && ResolveCrop() is { } crop)
+        {
+            window.EnsureBalloonCropFrame(Region, crop);
+        }
     }
 
     private void OnUnloaded(object sender, RoutedEventArgs e)
