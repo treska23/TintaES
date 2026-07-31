@@ -22,9 +22,6 @@ public sealed class OrganicEngineService
     private const string CacheVersion = "organic-layout-v15-dark-sfx";
 
     private static readonly TimeSpan WorkerHeartbeatInterval = TimeSpan.FromSeconds(15);
-    private static readonly TimeSpan WorkerSilenceTimeout = TimeSpan.FromMinutes(12);
-    private static readonly TimeSpan WorkerTotalTimeout = TimeSpan.FromMinutes(30);
-    private static readonly TimeSpan WorkerStartupTimeout = TimeSpan.FromMinutes(3);
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -166,9 +163,7 @@ public sealed class OrganicEngineService
         CancellationToken cancellationToken)
     {
         await WorkerGate.WaitAsync(cancellationToken);
-        using var totalCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        totalCancellation.CancelAfter(WorkerTotalTimeout);
-        CancellationToken workerToken = totalCancellation.Token;
+        CancellationToken workerToken = cancellationToken;
         var elapsed = Stopwatch.StartNew();
 
         try
@@ -245,14 +240,6 @@ public sealed class OrganicEngineService
                     continue;
                 }
 
-                TimeSpan silence = DateTimeOffset.UtcNow - GetLastWorkerActivity();
-                if (silence >= WorkerSilenceTimeout)
-                {
-                    throw new TimeoutException(
-                        $"El motor no produjo actividad durante 12 minutos mientras estaba en: {lastMessage}. " +
-                        "Se ha detenido para evitar que la aplicación quede paralizada.");
-                }
-
                 progress?.Report(new AnalysisProgress(
                     lastPercent,
                     100,
@@ -269,12 +256,6 @@ public sealed class OrganicEngineService
         {
             ResetResidentWorker();
             throw;
-        }
-        catch (OperationCanceledException)
-        {
-            ResetResidentWorker();
-            throw new TimeoutException(
-                "El análisis superó 30 minutos y se detuvo para que la aplicación no quedara bloqueada.");
         }
         catch
         {
@@ -332,25 +313,14 @@ public sealed class OrganicEngineService
         MarkWorkerActivity();
         _residentErrorReader = ReadWorkerErrorsAsync(worker);
 
-        using var startupCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        startupCancellation.CancelAfter(WorkerStartupTimeout);
-        try
+        while (await worker.StandardOutput.ReadLineAsync(cancellationToken) is { } line)
         {
-            while (await worker.StandardOutput.ReadLineAsync(startupCancellation.Token) is { } line)
+            MarkWorkerActivity();
+            if (TryReadMessage(line, out EngineMessage? message)
+                && message?.Type == "ready")
             {
-                MarkWorkerActivity();
-                if (TryReadMessage(line, out EngineMessage? message)
-                    && message?.Type == "ready")
-                {
-                    return worker;
-                }
+                return worker;
             }
-        }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-        {
-            ResetResidentWorker();
-            throw new TimeoutException(
-                "El motor orgánico tardó más de tres minutos en arrancar y se detuvo.");
         }
 
         string errors = GetWorkerErrors();
@@ -388,16 +358,6 @@ public sealed class OrganicEngineService
         lock (WorkerStateLock)
         {
             _lastWorkerActivityUtc = DateTimeOffset.UtcNow;
-        }
-    }
-
-    private static DateTimeOffset GetLastWorkerActivity()
-    {
-        lock (WorkerStateLock)
-        {
-            return _lastWorkerActivityUtc == DateTimeOffset.MinValue
-                ? DateTimeOffset.UtcNow
-                : _lastWorkerActivityUtc;
         }
     }
 
