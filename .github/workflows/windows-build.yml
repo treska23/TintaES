@@ -25,14 +25,14 @@ jobs:
           persist-credentials: true
 
       - name: Vendor Klee manga font
-        if: github.actor != 'github-actions[bot]'
+        if: github.event_name == 'pull_request' && github.actor != 'github-actions[bot]'
         shell: pwsh
         run: |
           $fontPath = 'src/TintaES.Wpf/Resources/Fonts/klee_one_semibold_es.ttf'
           $licensePath = 'src/TintaES.Wpf/Resources/Fonts/OFL-Klee-One.txt'
-          if (Test-Path $fontPath) { exit 0 }
           git fetch origin agent/preserve-original-lettering
           git checkout -B agent/preserve-original-lettering origin/agent/preserve-original-lettering
+          if (Test-Path $fontPath) { exit 0 }
           New-Item -ItemType Directory -Force -Path (Split-Path $fontPath) | Out-Null
           python -m pip install --quiet fonttools
           Invoke-WebRequest 'https://raw.githubusercontent.com/fontworks-fonts/Klee/master/fonts/ttf/KleeOne-SemiBold.ttf' -OutFile "$env:RUNNER_TEMP/KleeOne-SemiBold.ttf"
