@@ -5,63 +5,50 @@ namespace TintaES.Wpf.Services;
 
 public static class ComicFontResolver
 {
-    private static readonly Lazy<FontFamily> ComicFallback = new(ResolveComicFallback);
-    private static readonly char[] RequiredSpanishGlyphs = ['O', 'Y', 'Ó', '¡', '¿'];
+    private static readonly Lazy<FontFamily> MangaDialogueFont = new(ResolveMangaDialogueFont);
+    private static readonly char[] RequiredSpanishGlyphs = ['O', 'Y', 'Ó', '¡', '¿', 'á', 'é', 'í', 'ó', 'ú', 'ñ'];
 
-    public static FontFamily Resolve(string? requestedFamily, string category)
-    {
-        if (!string.IsNullOrWhiteSpace(requestedFamily))
-        {
-            FontFamily? installed = Fonts.SystemFontFamilies.FirstOrDefault(font =>
-                string.Equals(
-                    font.Source,
-                    requestedFamily.Trim(),
-                    StringComparison.OrdinalIgnoreCase));
-            if (installed is not null)
+    /// <summary>
+    /// Fuente única para toda la rotulación. No depende de la clasificación del OCR ni de
+    /// datos guardados por versiones anteriores.
+    /// </summary>
+    public static FontFamily ResolveMangaDialogue() => MangaDialogueFont.Value;
+
+    public static FontFamily Resolve(string? requestedFamily, string category) =>
+        category == "comic"
+            ? MangaDialogueFont.Value
+            : category switch
             {
-                return installed;
-            }
-        }
+                "handwritten" => new FontFamily("Segoe Print"),
+                "sans" => new FontFamily("Arial"),
+                "condensed" => new FontFamily("Arial Narrow"),
+                "serif" => new FontFamily("Georgia"),
+                "display" => new FontFamily("Impact"),
+                "monospace" => new FontFamily("Consolas"),
+                _ => MangaDialogueFont.Value
+            };
 
-        return category switch
-        {
-            "comic" => ComicFallback.Value,
-            "handwritten" => new FontFamily("Segoe Print"),
-            "sans" => new FontFamily("Arial"),
-            "condensed" => new FontFamily("Arial Narrow"),
-            "serif" => new FontFamily("Georgia"),
-            "display" => new FontFamily("Impact"),
-            "monospace" => new FontFamily("Consolas"),
-            _ => ComicFallback.Value
-        };
-    }
-
-    private static FontFamily ResolveComicFallback()
+    private static FontFamily ResolveMangaDialogueFont()
     {
-        FontFamily? packagedComic = TryResolvePackagedFont(
-            "comic_shanns_2.ttf",
-            "Comic Shanns");
-        if (packagedComic is not null)
+        FontFamily? packagedKlee = TryResolvePackagedFont(
+            "klee_one_semibold_es.ttf",
+            "Klee One");
+        if (packagedKlee is not null)
         {
-            return packagedComic;
+            return packagedKlee;
         }
 
-        FontFamily? installedComic = Fonts.SystemFontFamilies.FirstOrDefault(font =>
-            (string.Equals(font.Source, "Comic Shanns", StringComparison.OrdinalIgnoreCase)
-             || string.Equals(font.Source, "Comic Sans MS", StringComparison.OrdinalIgnoreCase))
+        FontFamily? installedKlee = Fonts.SystemFontFamilies.FirstOrDefault(font =>
+            string.Equals(font.Source, "Klee One", StringComparison.OrdinalIgnoreCase)
             && SupportsSpanish(font));
-        if (installedComic is not null)
+        if (installedKlee is not null)
         {
-            return installedComic;
+            return installedKlee;
         }
 
-        // Anime Ace conserva el aspecto de cómic, pero algunas versiones dibujan «Ó»
-        // como «Y» y carecen de los signos de apertura españoles. Solo se utiliza
-        // cuando la copia instalada sí contiene todos los glifos necesarios.
-        FontFamily? animeAce = Fonts.SystemFontFamilies.FirstOrDefault(font =>
-            string.Equals(font.Source, "Anime Ace v3", StringComparison.OrdinalIgnoreCase)
-            && SupportsSpanish(font));
-        return animeAce ?? new FontFamily("Arial");
+        // Respaldo únicamente para que una copia antigua siga arrancando mientras se actualiza
+        // el recurso. No se usa Comic Sans ni una fuente monoespaciada.
+        return new FontFamily("Segoe Print");
     }
 
     private static FontFamily? TryResolvePackagedFont(string fileName, string familyName)
@@ -82,7 +69,8 @@ public static class ComicFontResolver
         }
         catch
         {
-            // La fuente empaquetada es opcional. Se usa una instalada si el recurso no existe.
+            // El recurso se valida también durante la compilación. El respaldo evita que una
+            // instalación parcial impida abrir la aplicación.
         }
 
         return null;
