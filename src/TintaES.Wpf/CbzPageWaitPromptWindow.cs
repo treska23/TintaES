@@ -43,7 +43,7 @@ internal sealed class CbzPageWaitPromptWindow : Window
 
         var explanation = new TextBlock
         {
-            Text = "Ya han pasado 2 minutos. La página continúa trabajando. ¿Quieres seguir esperando o cancelar únicamente esta página?",
+            Text = "La página continúa trabajando. ¿Quieres seguir esperando o cancelar únicamente esta página?",
             Margin = new Thickness(0, 14, 0, 0),
             FontSize = 13,
             Foreground = new SolidColorBrush(Color.FromRgb(205, 209, 214)),
