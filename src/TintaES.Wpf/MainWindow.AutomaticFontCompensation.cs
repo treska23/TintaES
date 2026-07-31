@@ -19,6 +19,7 @@ public partial class MainWindow
         RegisterAutomaticFontCompensation();
 
     private bool _automaticFontCompensationInstalled;
+    private bool _automaticFontCompensationPending;
 
     private static bool RegisterAutomaticFontCompensation()
     {
@@ -44,39 +45,20 @@ public partial class MainWindow
     {
         if (_automaticFontCompensationInstalled)
         {
-            ApplyAutomaticFontCompensationToAllPages();
+            QueueAutomaticFontCompensation();
             return;
         }
 
         _automaticFontCompensationInstalled = true;
         _regions.CollectionChanged += Regions_AutomaticFontCompensationCollectionChanged;
         BusyOverlay.IsVisibleChanged += BusyOverlay_AutomaticFontCompensationVisibilityChanged;
-        ApplyAutomaticFontCompensationToAllPages();
+        QueueAutomaticFontCompensation();
     }
 
     private void Regions_AutomaticFontCompensationCollectionChanged(
         object? sender,
-        NotifyCollectionChangedEventArgs e)
-    {
-        if (e.NewItems is not null)
-        {
-            foreach (object item in e.NewItems)
-            {
-                if (item is ComicRegion region)
-                {
-                    ApplyAutomaticFontCompensation(region, notify: false);
-                }
-            }
-        }
-
-        Dispatcher.BeginInvoke(
-            () =>
-            {
-                QueueFastCanvasTextRefresh(forceLayout: false);
-                RefreshFontSizeNumber();
-            },
-            DispatcherPriority.DataBind);
-    }
+        NotifyCollectionChangedEventArgs e) =>
+        QueueAutomaticFontCompensation();
 
     private void BusyOverlay_AutomaticFontCompensationVisibilityChanged(
         object sender,
@@ -84,8 +66,27 @@ public partial class MainWindow
     {
         if (!BusyOverlay.IsVisible)
         {
-            ApplyAutomaticFontCompensationToAllPages();
+            QueueAutomaticFontCompensation();
         }
+    }
+
+    private void QueueAutomaticFontCompensation()
+    {
+        if (_automaticFontCompensationPending || Dispatcher.HasShutdownStarted)
+        {
+            return;
+        }
+
+        _automaticFontCompensationPending = true;
+        // ImportedFontSizeStability puede normalizar primero proyectos antiguos. Esta pasada se
+        // ejecuta después y deja el tamaño automático definitivo sin carreras entre instaladores.
+        Dispatcher.BeginInvoke(
+            () =>
+            {
+                _automaticFontCompensationPending = false;
+                ApplyAutomaticFontCompensationToAllPages();
+            },
+            DispatcherPriority.ContextIdle);
     }
 
     private void ApplyAutomaticFontCompensationToAllPages()
