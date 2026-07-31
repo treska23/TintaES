@@ -12,9 +12,10 @@ public partial class MainWindow
         region.Style ??= new ComicTextStyle();
         region.Style.FontCategory = "comic";
         region.Style.FontFamily = null;
-        region.Style.FontWeight = 700;
+        region.Style.FontWeight = 900;
+        region.Style.FontWidthRatio = 1.12;
         region.Style.Italic = false;
-        region.Style.LineHeightRatio = 1.02;
+        region.Style.LineHeightRatio = 1.08;
         region.Style.OriginalLineCount = 0;
         if (string.Equals(
                 region.Translation?.Trim(),
