@@ -9,4 +9,5 @@ namespace TintaES.Wpf;
 public partial class MainWindow
 {
     private readonly DialogueOnlyResultService _dialogueOnlyResultService = new();
+    private readonly TranslationRecoveryService _translationRecoveryService = new();
 }
