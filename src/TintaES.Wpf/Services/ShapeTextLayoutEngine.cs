@@ -5,12 +5,14 @@ using System.Windows.Media;
 namespace TintaES.Wpf.Services;
 
 /// <summary>
-/// Compone el texto línea a línea dentro de la silueta del bocadillo. El número de líneas es
-/// libre y el algoritmo nunca usa la caja exterior completa como permiso para invadir el dibujo.
+/// Compone el texto línea a línea dentro de la silueta del bocadillo. Cada línea usa el tramo
+/// común disponible en cinco alturas distintas, dejando margen para acentos y trazo grueso.
 /// </summary>
 public sealed class ShapeTextLayoutEngine
 {
     private static readonly CultureInfo Spanish = CultureInfo.GetCultureInfo("es-ES");
+    private static readonly double[] VerticalShifts = [0, -0.07, 0.07, -0.14, 0.14];
+    private static readonly double[] LineSamples = [0.10, 0.28, 0.50, 0.72, 0.90];
 
     public bool TryLayout(
         string text,
@@ -30,23 +32,39 @@ public sealed class ShapeTextLayoutEngine
             return false;
         }
 
-        // 38 px era demasiado alto para muchas viñetas de páginas de 3.000 px y provocaba
-        // que una traducción válida desapareciera por completo. El mínimo normal sigue siendo
-        // legible, pero existe un suelo de emergencia para no dejar un bocadillo limpio y vacío.
-        double preferredMinimum = Math.Clamp(pageHeight * 0.0065, 16, 24);
-        const double absoluteMinimum = 10;
+        double preferredMinimum = Math.Clamp(pageHeight * 0.0058, 14, 22);
+        const double absoluteMinimum = 8;
         double maximum = Math.Clamp(
-            Math.Min(bounds.Height * 0.60, bounds.Width * 0.36) * Math.Clamp(scale, 0.65, 2.10),
+            Math.Min(bounds.Height * 0.52, bounds.Width * 0.30)
+            * Math.Clamp(scale, 0.55, 2.0),
             preferredMinimum,
-            180);
+            160);
 
         double foundMinimum = preferredMinimum;
-        if (!TryAtSize(text, polygon, typeface, fill, pixelsPerDip, foundMinimum, lineHeightRatio, out layout))
+        if (!TryAtSize(
+                text,
+                polygon,
+                typeface,
+                fill,
+                pixelsPerDip,
+                foundMinimum,
+                lineHeightRatio,
+                out layout))
         {
             bool found = false;
-            for (double candidate = preferredMinimum - 2; candidate >= absoluteMinimum; candidate -= 2)
+            for (double candidate = preferredMinimum - 1.5;
+                 candidate >= absoluteMinimum;
+                 candidate -= 1.5)
             {
-                if (TryAtSize(text, polygon, typeface, fill, pixelsPerDip, candidate, lineHeightRatio, out layout))
+                if (TryAtSize(
+                        text,
+                        polygon,
+                        typeface,
+                        fill,
+                        pixelsPerDip,
+                        candidate,
+                        lineHeightRatio,
+                        out layout))
                 {
                     foundMinimum = candidate;
                     found = true;
@@ -76,10 +94,18 @@ public sealed class ShapeTextLayoutEngine
 
         double low = foundMinimum;
         double high = Math.Max(low, maximum);
-        for (int i = 0; i < 13; i++)
+        for (int index = 0; index < 10; index++)
         {
             double candidate = (low + high) / 2;
-            if (TryAtSize(text, polygon, typeface, fill, pixelsPerDip, candidate, lineHeightRatio, out ShapeTextLayout? next))
+            if (TryAtSize(
+                    text,
+                    polygon,
+                    typeface,
+                    fill,
+                    pixelsPerDip,
+                    candidate,
+                    lineHeightRatio,
+                    out ShapeTextLayout? next))
             {
                 layout = next;
                 low = candidate;
@@ -105,14 +131,14 @@ public sealed class ShapeTextLayoutEngine
     {
         layout = null;
         Rect bounds = Bounds(polygon);
-        double lineHeight = fontSize * Math.Clamp(lineHeightRatio, 0.96, 1.18);
-        int maxLines = Math.Clamp((int)Math.Floor(bounds.Height / lineHeight), 1, 28);
+        double lineHeight = fontSize * Math.Clamp(lineHeightRatio, 1.04, 1.22);
+        int maxLines = Math.Clamp((int)Math.Floor(bounds.Height / lineHeight), 1, 24);
         string[] rawTokens = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         ShapeTextLayout? best = null;
 
         for (int lineCount = 1; lineCount <= maxLines; lineCount++)
         {
-            foreach (double shift in new[] { 0d, -0.06, 0.06, -0.12, 0.12, -0.18, 0.18 })
+            foreach (double shift in VerticalShifts)
             {
                 IReadOnlyList<ShapeLineSlot> slots = CreateSlots(
                     polygon,
@@ -139,41 +165,52 @@ public sealed class ShapeTextLayoutEngine
                 }
 
                 if (!TryBreak(
-                    tokens,
-                    slots,
-                    typeface,
-                    fontSize,
-                    fill,
-                    pixelsPerDip,
-                    out IReadOnlyList<string>? lines,
-                    out double score))
+                        tokens,
+                        slots,
+                        typeface,
+                        fontSize,
+                        fill,
+                        pixelsPerDip,
+                        out IReadOnlyList<string>? lines,
+                        out double score))
                 {
                     continue;
                 }
 
                 var rendered = new List<ShapeTextLine>(lineCount);
                 bool invalid = false;
-                for (int i = 0; i < lineCount; i++)
+                for (int lineIndex = 0; lineIndex < lineCount; lineIndex++)
                 {
                     FormattedText formatted = CreateText(
-                        lines![i],
+                        lines![lineIndex],
                         typeface,
                         fontSize,
                         fill,
                         pixelsPerDip);
-                    ShapeLineSlot slot = slots[i];
-                    if (formatted.WidthIncludingTrailingWhitespace > slot.Width + 0.5)
+                    ShapeLineSlot slot = slots[lineIndex];
+                    if (formatted.WidthIncludingTrailingWhitespace > slot.Width + 0.25
+                        || formatted.Height > lineHeight + 0.25)
                     {
                         invalid = true;
                         break;
                     }
 
-                    rendered.Add(new ShapeTextLine(
-                        lines[i],
-                        slot.Left + Math.Max(
-                            0,
-                            (slot.Width - formatted.WidthIncludingTrailingWhitespace) / 2),
-                        slot.Top + Math.Max(0, (lineHeight - formatted.Height) / 2)));
+                    double x = slot.Left + Math.Max(
+                        0,
+                        (slot.Width - formatted.WidthIncludingTrailingWhitespace) / 2);
+                    double y = slot.Top + Math.Max(0, (lineHeight - formatted.Height) / 2);
+                    Geometry glyphs = formatted.BuildGeometry(new Point(x, y));
+                    Rect glyphBounds = glyphs.Bounds;
+                    if (glyphBounds.Left < slot.Left - 0.25
+                        || glyphBounds.Right > slot.Left + slot.Width + 0.25
+                        || glyphBounds.Top < slot.Top - 0.25
+                        || glyphBounds.Bottom > slot.Top + lineHeight + 0.25)
+                    {
+                        invalid = true;
+                        break;
+                    }
+
+                    rendered.Add(new ShapeTextLine(lines[lineIndex], x, y));
                 }
 
                 if (!invalid)
@@ -181,7 +218,7 @@ public sealed class ShapeTextLayoutEngine
                     var candidate = new ShapeTextLayout(
                         fontSize,
                         rendered,
-                        score + Math.Abs(shift) * 0.18 + lineCount * 0.002);
+                        score + Math.Abs(shift) * 0.20 + lineCount * 0.002);
                     if (best is null || candidate.Score < best.Score)
                     {
                         best = candidate;
@@ -207,17 +244,19 @@ public sealed class ShapeTextLayoutEngine
         layout = null;
         Rect bounds = Bounds(polygon);
         var candidate = new Rect(
-            bounds.Left + bounds.Width * 0.15,
-            bounds.Top + bounds.Height * 0.12,
-            bounds.Width * 0.70,
-            bounds.Height * 0.76);
+            bounds.Left + bounds.Width * 0.20,
+            bounds.Top + bounds.Height * 0.17,
+            bounds.Width * 0.60,
+            bounds.Height * 0.66);
 
-        for (int attempt = 0; attempt < 30 && candidate.Width >= 8 && candidate.Height >= 8; attempt++)
+        for (int attempt = 0;
+             attempt < 28 && candidate.Width >= 8 && candidate.Height >= 8;
+             attempt++)
         {
             if (RectangleInside(candidate, polygon))
             {
-                double lineHeight = fontSize * Math.Clamp(lineHeightRatio, 0.96, 1.18);
-                int maxLines = Math.Clamp((int)Math.Floor(candidate.Height / lineHeight), 1, 32);
+                double lineHeight = fontSize * Math.Clamp(lineHeightRatio, 1.04, 1.22);
+                int maxLines = Math.Clamp((int)Math.Floor(candidate.Height / lineHeight), 1, 28);
                 string[] tokens = SplitOversizedTokens(
                     text.Split(' ', StringSplitOptions.RemoveEmptyEntries),
                     candidate.Width,
@@ -231,23 +270,45 @@ public sealed class ShapeTextLayoutEngine
                     var slots = Enumerable.Range(0, lineCount)
                         .Select(index => new ShapeLineSlot(
                             candidate.Left,
-                            candidate.Top + (candidate.Height - lineCount * lineHeight) / 2 + index * lineHeight,
+                            candidate.Top
+                            + (candidate.Height - lineCount * lineHeight) / 2
+                            + index * lineHeight,
                             candidate.Width))
                         .ToArray();
-                    if (TryBreak(tokens, slots, typeface, fontSize, fill, pixelsPerDip, out IReadOnlyList<string>? lines, out double score))
+                    if (!TryBreak(
+                            tokens,
+                            slots,
+                            typeface,
+                            fontSize,
+                            fill,
+                            pixelsPerDip,
+                            out IReadOnlyList<string>? lines,
+                            out double score))
                     {
-                        var rendered = new List<ShapeTextLine>(lineCount);
-                        for (int i = 0; i < lineCount; i++)
-                        {
-                            FormattedText formatted = CreateText(lines![i], typeface, fontSize, fill, pixelsPerDip);
-                            rendered.Add(new ShapeTextLine(
-                                lines[i],
-                                slots[i].Left + Math.Max(0, (slots[i].Width - formatted.WidthIncludingTrailingWhitespace) / 2),
-                                slots[i].Top + Math.Max(0, (lineHeight - formatted.Height) / 2)));
-                        }
-                        layout = new ShapeTextLayout(fontSize, rendered, score + 1);
-                        return true;
+                        continue;
                     }
+
+                    var rendered = new List<ShapeTextLine>(lineCount);
+                    for (int index = 0; index < lineCount; index++)
+                    {
+                        FormattedText formatted = CreateText(
+                            lines![index],
+                            typeface,
+                            fontSize,
+                            fill,
+                            pixelsPerDip);
+                        rendered.Add(new ShapeTextLine(
+                            lines[index],
+                            slots[index].Left
+                            + Math.Max(
+                                0,
+                                (slots[index].Width
+                                 - formatted.WidthIncludingTrailingWhitespace) / 2),
+                            slots[index].Top
+                            + Math.Max(0, (lineHeight - formatted.Height) / 2)));
+                    }
+                    layout = new ShapeTextLayout(fontSize, rendered, score + 1);
+                    return true;
                 }
             }
 
@@ -266,26 +327,25 @@ public sealed class ShapeTextLayoutEngine
         double shift)
     {
         double blockHeight = lineCount * lineHeight;
-        double startY = bounds.Top + (bounds.Height - blockHeight) / 2 + shift * bounds.Height;
+        double startY = bounds.Top
+                        + (bounds.Height - blockHeight) / 2
+                        + shift * bounds.Height;
         if (startY < bounds.Top || startY + blockHeight > bounds.Bottom)
         {
             return [];
         }
 
         var slots = new List<ShapeLineSlot>(lineCount);
-        double margin = Math.Max(1.8, fontSize * 0.12);
+        double margin = Math.Max(3, fontSize * 0.30);
         for (int line = 0; line < lineCount; line++)
         {
             double top = startY + line * lineHeight;
             HorizontalSegment? common = null;
-            foreach (double y in new[]
-                     {
-                         top + lineHeight * 0.20,
-                         top + lineHeight * 0.50,
-                         top + lineHeight * 0.80
-                     })
+            foreach (double sample in LineSamples)
             {
-                HorizontalSegment? segment = WidestSegment(polygon, y);
+                HorizontalSegment? segment = WidestSegment(
+                    polygon,
+                    top + lineHeight * sample);
                 if (segment is null)
                 {
                     common = null;
@@ -318,18 +378,21 @@ public sealed class ShapeTextLayoutEngine
         return slots;
     }
 
-    private static HorizontalSegment? WidestSegment(IReadOnlyList<Point> polygon, double y)
+    private static HorizontalSegment? WidestSegment(
+        IReadOnlyList<Point> polygon,
+        double y)
     {
         var intersections = new List<double>();
         int previous = polygon.Count - 1;
         for (int current = 0; current < polygon.Count; current++)
         {
-            Point a = polygon[previous];
-            Point b = polygon[current];
-            if ((a.Y <= y && b.Y > y) || (b.Y <= y && a.Y > y))
+            Point first = polygon[previous];
+            Point second = polygon[current];
+            if ((first.Y <= y && second.Y > y)
+                || (second.Y <= y && first.Y > y))
             {
-                double ratio = (y - a.Y) / (b.Y - a.Y);
-                intersections.Add(a.X + (b.X - a.X) * ratio);
+                double ratio = (y - first.Y) / (second.Y - first.Y);
+                intersections.Add(first.X + (second.X - first.X) * ratio);
             }
             previous = current;
         }
@@ -341,9 +404,11 @@ public sealed class ShapeTextLayoutEngine
 
         intersections.Sort();
         HorizontalSegment? widest = null;
-        for (int i = 0; i + 1 < intersections.Count; i += 2)
+        for (int index = 0; index + 1 < intersections.Count; index += 2)
         {
-            var candidate = new HorizontalSegment(intersections[i], intersections[i + 1]);
+            var candidate = new HorizontalSegment(
+                intersections[index],
+                intersections[index + 1]);
             if (candidate.Right > candidate.Left
                 && (widest is null || candidate.Width > widest.Value.Width))
             {
@@ -364,73 +429,74 @@ public sealed class ShapeTextLayoutEngine
         out IReadOnlyList<string>? lines,
         out double score)
     {
-        int n = tokens.Count;
-        int m = slots.Count;
+        int tokenCount = tokens.Count;
+        int lineCount = slots.Count;
         double[] widths = tokens
             .Select(token => Measure(token, typeface, fontSize, fill, pixelsPerDip))
             .ToArray();
         double space = Measure(" ", typeface, fontSize, fill, pixelsPerDip);
-        double[,] cost = new double[m + 1, n + 1];
-        int[,] previous = new int[m + 1, n + 1];
-        for (int line = 0; line <= m; line++)
+        double[,] costs = new double[lineCount + 1, tokenCount + 1];
+        int[,] previous = new int[lineCount + 1, tokenCount + 1];
+        for (int line = 0; line <= lineCount; line++)
         {
-            for (int token = 0; token <= n; token++)
+            for (int token = 0; token <= tokenCount; token++)
             {
-                cost[line, token] = double.PositiveInfinity;
+                costs[line, token] = double.PositiveInfinity;
                 previous[line, token] = -1;
             }
         }
-        cost[0, 0] = 0;
+        costs[0, 0] = 0;
 
-        for (int line = 0; line < m; line++)
+        for (int line = 0; line < lineCount; line++)
         {
-            for (int start = 0; start < n; start++)
+            for (int start = 0; start < tokenCount; start++)
             {
-                if (!double.IsFinite(cost[line, start]))
+                if (!double.IsFinite(costs[line, start]))
                 {
                     continue;
                 }
 
                 double width = 0;
-                int remainingLines = m - line - 1;
-                for (int end = start + 1; end <= n; end++)
+                int remainingLines = lineCount - line - 1;
+                for (int end = start + 1; end <= tokenCount; end++)
                 {
                     width += widths[end - 1] + (end - start > 1 ? space : 0);
-                    if (width > slots[line].Width + 0.5)
+                    if (width > slots[line].Width + 0.25)
                     {
                         break;
                     }
-                    if (n - end < remainingLines)
+                    if (tokenCount - end < remainingLines)
                     {
                         continue;
                     }
 
                     double fillRatio = Math.Clamp(width / slots[line].Width, 0, 1);
-                    double raggedness = Math.Pow(1 - fillRatio, 2) * (line == m - 1 ? 0.42 : 1);
-                    if (end - start == 1 && n > m)
+                    double raggedness = Math.Pow(1 - fillRatio, 2)
+                                        * (line == lineCount - 1 ? 0.42 : 1);
+                    if (end - start == 1 && tokenCount > lineCount)
                     {
                         raggedness += 0.10;
                     }
-                    double candidate = cost[line, start] + raggedness;
-                    if (candidate < cost[line + 1, end])
+                    double candidate = costs[line, start] + raggedness;
+                    if (candidate < costs[line + 1, end])
                     {
-                        cost[line + 1, end] = candidate;
+                        costs[line + 1, end] = candidate;
                         previous[line + 1, end] = start;
                     }
                 }
             }
         }
 
-        if (!double.IsFinite(cost[m, n]))
+        if (!double.IsFinite(costs[lineCount, tokenCount]))
         {
             lines = null;
             score = double.PositiveInfinity;
             return false;
         }
 
-        var result = new string[m];
-        int cursor = n;
-        for (int line = m; line > 0; line--)
+        var result = new string[lineCount];
+        int cursor = tokenCount;
+        for (int line = lineCount; line > 0; line--)
         {
             int start = previous[line, cursor];
             if (start < 0)
@@ -439,12 +505,14 @@ public sealed class ShapeTextLayoutEngine
                 score = double.PositiveInfinity;
                 return false;
             }
-            result[line - 1] = string.Join(' ', tokens.Skip(start).Take(cursor - start));
+            result[line - 1] = string.Join(
+                ' ',
+                tokens.Skip(start).Take(cursor - start));
             cursor = start;
         }
 
         lines = result;
-        score = cost[m, n] / m;
+        score = costs[lineCount, tokenCount] / lineCount;
         return true;
     }
 
@@ -460,7 +528,12 @@ public sealed class ShapeTextLayoutEngine
         foreach (string token in source)
         {
             string remaining = token;
-            while (Measure(remaining, typeface, fontSize, fill, pixelsPerDip) > maxWidth
+            while (Measure(
+                       remaining,
+                       typeface,
+                       fontSize,
+                       fill,
+                       pixelsPerDip) > maxWidth
                    && remaining.Length > 1)
             {
                 int low = 1;
@@ -470,11 +543,11 @@ public sealed class ShapeTextLayoutEngine
                 {
                     int middle = (low + high) / 2;
                     if (Measure(
-                        remaining[..middle] + "-",
-                        typeface,
-                        fontSize,
-                        fill,
-                        pixelsPerDip) <= maxWidth)
+                            remaining[..middle] + "-",
+                            typeface,
+                            fontSize,
+                            fill,
+                            pixelsPerDip) <= maxWidth)
                     {
                         best = middle;
                         low = middle + 1;
@@ -509,7 +582,14 @@ public sealed class ShapeTextLayoutEngine
         double fontSize,
         Brush fill,
         double pixelsPerDip) =>
-        new(text, Spanish, FlowDirection.LeftToRight, typeface, fontSize, fill, pixelsPerDip)
+        new(
+            text,
+            Spanish,
+            FlowDirection.LeftToRight,
+            typeface,
+            fontSize,
+            fill,
+            pixelsPerDip)
         {
             TextAlignment = TextAlignment.Left,
             Trimming = TextTrimming.None
@@ -524,7 +604,9 @@ public sealed class ShapeTextLayoutEngine
         CreateText(text, typeface, fontSize, fill, pixelsPerDip)
             .WidthIncludingTrailingWhitespace;
 
-    private static bool RectangleInside(Rect rectangle, IReadOnlyList<Point> polygon)
+    private static bool RectangleInside(
+        Rect rectangle,
+        IReadOnlyList<Point> polygon)
     {
         foreach (Point point in new[]
                  {
@@ -546,7 +628,9 @@ public sealed class ShapeTextLayoutEngine
         return true;
     }
 
-    private static bool ContainsPoint(IReadOnlyList<Point> polygon, Point point)
+    private static bool ContainsPoint(
+        IReadOnlyList<Point> polygon,
+        Point point)
     {
         bool inside = false;
         int previous = polygon.Count - 1;
@@ -555,8 +639,10 @@ public sealed class ShapeTextLayoutEngine
             Point first = polygon[previous];
             Point second = polygon[current];
             bool crosses = (second.Y > point.Y) != (first.Y > point.Y)
-                && point.X < (first.X - second.X) * (point.Y - second.Y)
-                    / (first.Y - second.Y) + second.X;
+                           && point.X < (first.X - second.X)
+                           * (point.Y - second.Y)
+                           / (first.Y - second.Y)
+                           + second.X;
             if (crosses)
             {
                 inside = !inside;
@@ -583,7 +669,11 @@ public sealed class ShapeTextLayoutEngine
         double top = polygon.Min(point => point.Y);
         double right = polygon.Max(point => point.X);
         double bottom = polygon.Max(point => point.Y);
-        return new Rect(left, top, Math.Max(0, right - left), Math.Max(0, bottom - top));
+        return new Rect(
+            left,
+            top,
+            Math.Max(0, right - left),
+            Math.Max(0, bottom - top));
     }
 
     private readonly record struct HorizontalSegment(double Left, double Right)
