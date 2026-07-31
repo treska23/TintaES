@@ -24,6 +24,19 @@ jobs:
           show-progress: false
           persist-credentials: false
 
+      - name: Package WPF source for cleanup audit
+        shell: pwsh
+        run: |
+          Compress-Archive -Path src/TintaES.Wpf -DestinationPath wpf-source-audit.zip -Force
+
+      - name: Upload WPF source audit
+        uses: actions/upload-artifact@v4
+        with:
+          name: wpf-source-audit
+          path: wpf-source-audit.zip
+          if-no-files-found: error
+          retention-days: 1
+
       - name: Build WPF project
         shell: pwsh
         run: |
