@@ -1,7 +1,6 @@
 using System.Collections.Specialized;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using TintaES.Core;
 using TintaES.Wpf.Controls;
@@ -9,9 +8,8 @@ using TintaES.Wpf.Controls;
 namespace TintaES.Wpf;
 
 /// <summary>
-/// Mantiene el desplazamiento con Espacio y la compatibilidad de los antiguos hooks tipográficos.
-/// Las zonas automáticas usan siempre ComicTextElement, tanto seleccionadas como sin seleccionar.
-/// FastComicTextPreviewElement queda reservado para las cajas manuales durante la edición.
+/// Gestiona únicamente el desplazamiento con Espacio y la invalidación del renderizador canónico.
+/// No crea previews alternativos para las regiones manuales.
 /// </summary>
 public partial class MainWindow
 {
@@ -38,12 +36,11 @@ public partial class MainWindow
 
         _textLayoutHooksInstalled = true;
         _regions.CollectionChanged += Regions_CollectionChanged_ForLineLayout;
-
-        // No añadimos handlers a selección, escritura o escala. MainWindow.ManualTextRegressionFix
-        // instala una sola ruta local para cada gesto.
     }
 
-    private void Regions_CollectionChanged_ForLineLayout(object? sender, NotifyCollectionChangedEventArgs e)
+    private void Regions_CollectionChanged_ForLineLayout(
+        object? sender,
+        NotifyCollectionChangedEventArgs e)
     {
         if (e.Action == NotifyCollectionChangedAction.Reset)
         {
@@ -51,8 +48,6 @@ public partial class MainWindow
         }
     }
 
-    // Se conservan las firmas porque versiones anteriores las desconectan al instalar el editor
-    // rápido. Ya no realizan trabajo.
     private void RegionListBox_SelectionChanged_LineLayout(object sender, SelectionChangedEventArgs e)
     {
     }
@@ -80,58 +75,18 @@ public partial class MainWindow
 
     private void EnsureManualLineVisual(Grid layer, ComicRegion region, bool invalidate = true)
     {
-        if (_originalBitmap is null)
-        {
-            return;
-        }
-
-        bool usesManualPreview = region.IsManual && region.Type != "sfx";
-        foreach (ComicTextElement renderer in layer.Children.OfType<ComicTextElement>())
-        {
-            renderer.Visibility = region.IsEnabled && !usesManualPreview
-                ? Visibility.Visible
-                : Visibility.Collapsed;
-            if (!usesManualPreview && invalidate)
-            {
-                renderer.InvalidateVisual();
-            }
-        }
-        foreach (ManualComicTextElement renderer in layer.Children.OfType<ManualComicTextElement>())
-        {
-            renderer.Visibility = Visibility.Collapsed;
-        }
-
-        FastComicTextPreviewElement? preview = layer.Children
-            .OfType<FastComicTextPreviewElement>()
+        InteractiveComicTextElement? renderer = layer.Children
+            .OfType<InteractiveComicTextElement>()
             .FirstOrDefault();
-        if (!usesManualPreview)
+        if (renderer is null)
         {
-            if (preview is not null)
-            {
-                preview.Visibility = Visibility.Collapsed;
-            }
             return;
         }
 
-        if (preview is null)
-        {
-            preview = new FastComicTextPreviewElement
-            {
-                Region = region,
-                PageWidth = _originalBitmap.PixelWidth,
-                PageHeight = _originalBitmap.PixelHeight,
-                IsHitTestVisible = false
-            };
-            Panel.SetZIndex(preview, 12);
-            layer.Children.Add(preview);
-        }
-
-        preview.Width = Math.Max(2, layer.Width);
-        preview.Height = Math.Max(2, layer.Height);
-        preview.Visibility = region.IsEnabled ? Visibility.Visible : Visibility.Collapsed;
+        renderer.Visibility = region.IsEnabled ? Visibility.Visible : Visibility.Collapsed;
         if (invalidate)
         {
-            preview.InvalidateVisual();
+            renderer.InvalidateVisual();
         }
     }
 
