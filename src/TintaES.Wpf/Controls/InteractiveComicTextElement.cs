@@ -8,10 +8,9 @@ using TintaES.Wpf.Services;
 namespace TintaES.Wpf.Controls;
 
 /// <summary>
-/// Renderizador interactivo de rotulación automática. Este elemento no tiene fondo, borde ni
-/// superficie visual: únicamente dibuja los glifos. El tamaño se calcula buscando el mayor valor
-/// que cabe realmente dentro de la zona segura, de modo que una estimación OCR pequeña nunca se
-/// convierte en texto microscópico.
+/// Único renderizador del lienzo: no tiene fondo, borde ni superficie visual y dibuja únicamente
+/// los glifos. Tanto las regiones automáticas como las manuales buscan el mayor tamaño que cabe;
+/// sus respectivos controles de escala solo modifican el límite de esa búsqueda.
 /// </summary>
 public sealed class InteractiveComicTextElement : FrameworkElement
 {
@@ -135,13 +134,13 @@ public sealed class InteractiveComicTextElement : FrameworkElement
     {
         const double minimum = 2.5;
 
-        // El OCR sirve para identificar el estilo, pero no puede imponer un techo pequeño. El
-        // límite superior procede de la geometría del bocadillo y la búsqueda obtiene el mayor
-        // tamaño que cabe. FontScale sigue permitiendo reducirlo o ampliarlo manualmente.
         double geometricMaximum = Math.Max(
             7,
             Math.Min(availableHeight * 0.94, Math.Max(availableWidth * 0.58, 18)));
-        double scale = Math.Clamp(Region.FontScale, 0.35, 1.6);
+        double rawScale = Region.IsManual && Region.Type != "sfx"
+            ? Region.ManualFontScale
+            : Region.FontScale;
+        double scale = Math.Clamp(rawScale, 0.25, 2.5);
         double high = Math.Max(minimum, geometricMaximum * scale);
         double low = minimum;
         double bestSize = minimum;
@@ -289,8 +288,6 @@ public sealed class InteractiveComicTextElement : FrameworkElement
         double bottom = Math.Clamp(polygon.Max(point => point.Y), top, ActualHeight);
         var bounds = new Rect(new Point(left, top), new Point(right, bottom));
 
-        // El margen anterior del 16 % por cada lado eliminaba casi un tercio del bocadillo y
-        // producía textos diminutos. La propia silueta y el clip ya protegen el borde.
         double insetRatio = Region.Type is "dialogue" or "thought" ? 0.055 : 0.025;
         double insetX = Math.Max(1, bounds.Width * insetRatio);
         double insetY = Math.Max(1, bounds.Height * insetRatio);
