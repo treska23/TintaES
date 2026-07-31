@@ -8,9 +8,9 @@ using TintaES.Wpf.Services;
 namespace TintaES.Wpf.Controls;
 
 /// <summary>
-/// Renderizador canónico: fondo totalmente transparente, tipografía de cómic legible y
-/// distribución libre de líneas. El texto se calcula exclusivamente dentro de una zona
-/// rectangular que está completamente contenida en la silueta segura del bocadillo.
+/// Renderizador canónico: fondo transparente, tipografía de cómic legible y líneas libres.
+/// El texto se calcula exclusivamente dentro de una zona completamente contenida en el
+/// bocadillo. Nunca se usa toda una viñeta o una caja OCR sobredimensionada como espacio útil.
 /// </summary>
 public sealed class InteractiveComicTextElement : FrameworkElement
 {
@@ -69,15 +69,12 @@ public sealed class InteractiveComicTextElement : FrameworkElement
                 out double fontSize,
                 out FormattedText? formatted))
         {
-            // Nunca se fuerza una traducción microscópica. La zona queda pendiente de revisión.
             return;
         }
 
-        double x = contentBounds.Left;
         double y = contentBounds.Top + Math.Max(0, (contentBounds.Height - formatted!.Height) / 2);
-        Geometry geometry = formatted.BuildGeometry(new Point(x, y));
+        Geometry geometry = formatted.BuildGeometry(new Point(contentBounds.Left, y));
         Pen outline = CreateContrastOutline(fill, fontSize);
-
         Geometry clip = safePolygon.Count >= 3
             ? CreatePolygonGeometry(safePolygon)
             : new RectangleGeometry(contentBounds);
@@ -167,9 +164,8 @@ public sealed class InteractiveComicTextElement : FrameworkElement
         double fontSize,
         Brush fill,
         double availableWidth,
-        double pixelsPerDip)
-    {
-        return new FormattedText(
+        double pixelsPerDip) =>
+        new(
             text,
             CultureInfo.GetCultureInfo("es-ES"),
             FlowDirection.LeftToRight,
@@ -183,39 +179,113 @@ public sealed class InteractiveComicTextElement : FrameworkElement
             Trimming = TextTrimming.None,
             LineHeight = fontSize * 1.02
         };
-    }
 
     private IReadOnlyList<Point> CreateLocalSafePolygon()
     {
-        if (Region.SafePolygon.Count < 3 || PageWidth <= 0 || PageHeight <= 0)
+        if (PageWidth <= 0 || PageHeight <= 0)
         {
             return [];
         }
 
-        NormalizedRect box = Region.RenderBox;
-        return Region.SafePolygon
-            .Select(point => new Point(
-                (point.X - box.X) / 1000 * PageWidth,
-                (point.Y - box.Y) / 1000 * PageHeight))
-            .Where(point => double.IsFinite(point.X) && double.IsFinite(point.Y))
-            .Select(point => new Point(
-                Math.Clamp(point.X, 0, ActualWidth),
-                Math.Clamp(point.Y, 0, ActualHeight)))
-            .Distinct()
-            .ToArray();
+        if (Region.SafePolygon.Count >= 3)
+        {
+            Point[] detected = Region.SafePolygon
+                .Select(ToLocalPoint)
+                .Where(point => double.IsFinite(point.X) && double.IsFinite(point.Y))
+                .Select(ClampToElement)
+                .Distinct()
+                .ToArray();
+            if (detected.Length >= 3)
+            {
+                return detected;
+            }
+        }
+
+        // Si el motor conoce el globo pero no su polígono, usamos una elipse interior para
+        // diálogos/pensamientos y un rectángulo interior para cartuchos. Nunca toda la capa.
+        if (Region.BubbleBox is { } bubble)
+        {
+            Rect localBubble = ToLocalRect(bubble);
+            if (localBubble.Width >= 4 && localBubble.Height >= 4)
+            {
+                return Region.Type is "dialogue" or "thought"
+                    ? CreateEllipsePolygon(Inset(localBubble, localBubble.Width * 0.045, localBubble.Height * 0.055))
+                    : CreateRectanglePolygon(Inset(localBubble, localBubble.Width * 0.04, localBubble.Height * 0.06));
+            }
+        }
+
+        // Último recurso: una expansión moderada del bloque de letras original. Esto puede
+        // desaprovechar espacio, pero jamás convierte una viñeta entera en caja de texto.
+        NormalizedRect conservative = Region.TextBox.Expand(0.42, 0.62);
+        Rect localText = ToLocalRect(conservative);
+        return localText.Width >= 4 && localText.Height >= 4
+            ? CreateRectanglePolygon(localText)
+            : [];
     }
+
+    private Point ToLocalPoint(NormalizedPoint point)
+    {
+        NormalizedRect box = Region.RenderBox;
+        return new Point(
+            (point.X - box.X) / 1000 * PageWidth,
+            (point.Y - box.Y) / 1000 * PageHeight);
+    }
+
+    private Rect ToLocalRect(NormalizedRect source)
+    {
+        NormalizedRect box = Region.RenderBox;
+        double left = (source.X - box.X) / 1000 * PageWidth;
+        double top = (source.Y - box.Y) / 1000 * PageHeight;
+        double right = (source.Right - box.X) / 1000 * PageWidth;
+        double bottom = (source.Bottom - box.Y) / 1000 * PageHeight;
+        left = Math.Clamp(left, 0, ActualWidth);
+        top = Math.Clamp(top, 0, ActualHeight);
+        right = Math.Clamp(right, left, ActualWidth);
+        bottom = Math.Clamp(bottom, top, ActualHeight);
+        return new Rect(left, top, right - left, bottom - top);
+    }
+
+    private Point ClampToElement(Point point) =>
+        new(
+            Math.Clamp(point.X, 0, ActualWidth),
+            Math.Clamp(point.Y, 0, ActualHeight));
+
+    private static IReadOnlyList<Point> CreateEllipsePolygon(Rect rectangle)
+    {
+        if (rectangle.Width < 2 || rectangle.Height < 2)
+        {
+            return [];
+        }
+
+        var points = new Point[48];
+        double centerX = rectangle.Left + rectangle.Width / 2;
+        double centerY = rectangle.Top + rectangle.Height / 2;
+        for (int index = 0; index < points.Length; index++)
+        {
+            double angle = Math.PI * 2 * index / points.Length;
+            points[index] = new Point(
+                centerX + Math.Cos(angle) * rectangle.Width / 2,
+                centerY + Math.Sin(angle) * rectangle.Height / 2);
+        }
+        return points;
+    }
+
+    private static IReadOnlyList<Point> CreateRectanglePolygon(Rect rectangle) =>
+        rectangle.Width < 2 || rectangle.Height < 2
+            ? []
+            :
+            [
+                new Point(rectangle.Left, rectangle.Top),
+                new Point(rectangle.Right, rectangle.Top),
+                new Point(rectangle.Right, rectangle.Bottom),
+                new Point(rectangle.Left, rectangle.Bottom)
+            ];
 
     private Rect FindContainedContentRectangle(IReadOnlyList<Point> polygon)
     {
         if (polygon.Count < 3)
         {
-            double insetX = Math.Max(4, ActualWidth * 0.075);
-            double insetY = Math.Max(4, ActualHeight * 0.095);
-            return new Rect(
-                insetX,
-                insetY,
-                Math.Max(2, ActualWidth - insetX * 2),
-                Math.Max(2, ActualHeight - insetY * 2));
+            return Rect.Empty;
         }
 
         double left = Math.Clamp(polygon.Min(point => point.X), 0, ActualWidth);
@@ -223,25 +293,21 @@ public sealed class InteractiveComicTextElement : FrameworkElement
         double right = Math.Clamp(polygon.Max(point => point.X), left, ActualWidth);
         double bottom = Math.Clamp(polygon.Max(point => point.Y), top, ActualHeight);
         var candidate = new Rect(left, top, right - left, bottom - top);
+        candidate = Inset(
+            candidate,
+            Math.Max(3, candidate.Width * 0.045),
+            Math.Max(3, candidate.Height * 0.055));
 
-        double initialInsetX = Math.Max(3, candidate.Width * 0.045);
-        double initialInsetY = Math.Max(3, candidate.Height * 0.055);
-        candidate = Inset(candidate, initialInsetX, initialInsetY);
-
-        // Reducimos simétricamente hasta que toda la caja —no solo sus esquinas— esté dentro
-        // del polígono. Así el ajuste de texto nunca considera parte de la ilustración como espacio.
         for (int attempt = 0; attempt < 90; attempt++)
         {
             if (candidate.Width < 4 || candidate.Height < 4)
             {
                 return Rect.Empty;
             }
-
             if (RectangleIsSafelyInside(candidate, polygon))
             {
                 return candidate;
             }
-
             candidate = ScaleAroundCenter(candidate, 0.965);
         }
 
@@ -252,13 +318,11 @@ public sealed class InteractiveComicTextElement : FrameworkElement
     {
         const int samplesPerEdge = 12;
         double margin = Math.Max(1.5, Math.Min(rectangle.Width, rectangle.Height) * 0.012);
-
         for (int index = 0; index <= samplesPerEdge; index++)
         {
             double ratio = index / (double)samplesPerEdge;
             double x = rectangle.Left + rectangle.Width * ratio;
             double y = rectangle.Top + rectangle.Height * ratio;
-
             if (!PointIsSafelyInside(new Point(x, rectangle.Top), polygon, margin)
                 || !PointIsSafelyInside(new Point(x, rectangle.Bottom), polygon, margin)
                 || !PointIsSafelyInside(new Point(rectangle.Left, y), polygon, margin)
@@ -267,7 +331,6 @@ public sealed class InteractiveComicTextElement : FrameworkElement
                 return false;
             }
         }
-
         return true;
     }
 
@@ -288,7 +351,6 @@ public sealed class InteractiveComicTextElement : FrameworkElement
             }
             previous = current;
         }
-
         return true;
     }
 
@@ -406,7 +468,6 @@ public sealed class InteractiveComicTextElement : FrameworkElement
         {
             return;
         }
-
         _subscribed = true;
         Region.PropertyChanged += Region_PropertyChanged;
         Visibility = Region.IsEnabled ? Visibility.Visible : Visibility.Collapsed;
@@ -418,7 +479,6 @@ public sealed class InteractiveComicTextElement : FrameworkElement
         {
             return;
         }
-
         _subscribed = false;
         Region.PropertyChanged -= Region_PropertyChanged;
     }
