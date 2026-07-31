@@ -11,8 +11,8 @@ using TintaES.Wpf.Services;
 namespace TintaES.Wpf.Controls;
 
 /// <summary>
-/// Capa local de un único bocadillo. El recorte y la geometría final se resuelven una sola vez;
-/// OnRender se limita a pintar recursos congelados y no modifica nunca el modelo ni el lienzo.
+/// Capa local de un único bocadillo. El recorte y la rotulación final se cachean; OnRender solo
+/// pinta recursos congelados. Nunca crea una versión microscópica del texto para fingir que cabe.
 /// </summary>
 public sealed class InteractiveComicTextElement : FrameworkElement
 {
@@ -44,8 +44,7 @@ public sealed class InteractiveComicTextElement : FrameworkElement
         base.OnVisualParentChanged(oldParent);
         if (VisualTreeHelper.GetParent(this) is Grid grid)
         {
-            // El marco técnico puede ser más pequeño que el recorte real. La máscara irregular,
-            // no el rectángulo del Grid, es quien limita físicamente el dibujo.
+            // El rectángulo del Grid es soporte técnico. La barrera física es la máscara.
             grid.ClipToBounds = false;
         }
     }
@@ -68,7 +67,6 @@ public sealed class InteractiveComicTextElement : FrameworkElement
             || crop.LayoutPolygon.Count < 3
             || (!crop.IsReliableContainer && !Region.IsManual))
         {
-            // Una zona dudosa se conserva en el inspector, pero no se borra ni se rotula sola.
             return;
         }
 
@@ -107,12 +105,13 @@ public sealed class InteractiveComicTextElement : FrameworkElement
             return;
         }
 
-        drawingContext.PushClip(new RectangleGeometry(new Rect(0, 0, ActualWidth, ActualHeight)));
+        drawingContext.PushClip(
+            new RectangleGeometry(new Rect(0, 0, ActualWidth, ActualHeight)));
         drawingContext.PushOpacityMask(plan.OpacityMask);
         try
         {
-            // Primero se cubre todo el interior erosionado. Así no quedan restos de las letras
-            // originales aunque LaMa haya limpiado solo parte del bloque OCR.
+            // Se cubre el interior completo de la selección antes de escribir. Así no quedan
+            // letras inglesas aunque la limpieza previa solo hubiese borrado una parte.
             drawingContext.DrawRectangle(
                 plan.Background,
                 null,
@@ -153,46 +152,51 @@ public sealed class InteractiveComicTextElement : FrameworkElement
             FixedComicFont,
             FontStyles.Normal,
             FontWeights.Black,
-            FontStretches.Expanded);
+            FontStretches.SemiExpanded);
+        Geometry container = CreatePolygonGeometry(polygon);
 
-        ShapeTextLayout? layout = null;
-        double adjustedScale = Math.Clamp(fontScale, 0.55, 2.0);
-        for (int attempt = 0; attempt < 5 && layout is null; attempt++)
+        ShapeTextLayout? acceptedLayout = null;
+        Geometry? acceptedGeometry = null;
+        double adjustedScale = Math.Clamp(fontScale, 0.70, 1.80);
+
+        // Si la primera composición roza el contorno, se vuelve a componer. No se escala a
+        // posteriori hasta el 64 %, que era el origen de las letras microscópicas de r35.
+        for (int attempt = 0; attempt < 4; attempt++)
         {
-            LayoutEngine.TryLayout(
-                text,
-                polygon,
-                typeface,
-                textBrush,
-                pixelsPerDip,
-                PageHeight,
-                adjustedScale,
-                1.08,
-                out layout);
-            adjustedScale *= 0.90;
+            if (LayoutEngine.TryLayout(
+                    text,
+                    polygon,
+                    typeface,
+                    textBrush,
+                    pixelsPerDip,
+                    PageHeight,
+                    adjustedScale,
+                    1.08,
+                    out ShapeTextLayout? layout))
+            {
+                Geometry geometry = CreateLayoutGeometry(
+                    layout!,
+                    typeface,
+                    textBrush,
+                    pixelsPerDip);
+                if (!geometry.Bounds.IsEmpty
+                    && container.FillContainsWithDetail(geometry)
+                       == IntersectionDetail.FullyContains)
+                {
+                    acceptedLayout = layout;
+                    acceptedGeometry = geometry;
+                    break;
+                }
+            }
+
+            adjustedScale *= 0.94;
         }
 
-        Geometry? textGeometry = layout is null
-            ? CreateEmergencyGeometry(
-                text,
-                polygon,
-                typeface,
-                textBrush,
-                pixelsPerDip)
-            : CreateLayoutGeometry(
-                layout,
-                typeface,
-                textBrush,
-                pixelsPerDip);
-        if (textGeometry is null || textGeometry.Bounds.IsEmpty)
+        if (acceptedLayout is null
+            || acceptedGeometry is null
+            || acceptedGeometry.Bounds.IsEmpty)
         {
-            return null;
-        }
-
-        Geometry clipGeometry = CreatePolygonGeometry(polygon);
-        textGeometry = FitGeometryStrictlyInside(textGeometry, clipGeometry);
-        if (textGeometry is null || textGeometry.Bounds.IsEmpty)
-        {
+            // El texto queda pendiente en vez de convertirse en una mancha ilegible.
             return null;
         }
 
@@ -212,11 +216,9 @@ public sealed class InteractiveComicTextElement : FrameworkElement
         var background = new SolidColorBrush(crop.InteriorColor);
         background.Freeze();
 
-        double fontSize = layout?.FontSize
-                          ?? Math.Max(8, textGeometry.Bounds.Height / Math.Max(1, CountEstimatedLines(text)));
         var stroke = new Pen(
             textBrush,
-            Math.Clamp(fontSize * 0.075, 1.15, 3.8))
+            Math.Clamp(acceptedLayout.FontSize * 0.060, 1.15, 3.5))
         {
             LineJoin = PenLineJoin.Round,
             StartLineCap = PenLineCap.Round,
@@ -224,9 +226,9 @@ public sealed class InteractiveComicTextElement : FrameworkElement
         };
         stroke.Freeze();
 
-        if (textGeometry.CanFreeze)
+        if (acceptedGeometry.CanFreeze)
         {
-            textGeometry.Freeze();
+            acceptedGeometry.Freeze();
         }
 
         return new CachedRenderPlan(
@@ -235,7 +237,7 @@ public sealed class InteractiveComicTextElement : FrameworkElement
             background,
             textBrush,
             stroke,
-            textGeometry);
+            acceptedGeometry);
     }
 
     private static Geometry CreateLayoutGeometry(
@@ -259,91 +261,6 @@ public sealed class InteractiveComicTextElement : FrameworkElement
         return group;
     }
 
-    private static Geometry? CreateEmergencyGeometry(
-        string text,
-        IReadOnlyList<Point> polygon,
-        Typeface typeface,
-        Brush fill,
-        double pixelsPerDip)
-    {
-        Rect bounds = PolygonBounds(polygon);
-        Rect inner = new(
-            bounds.Left + bounds.Width * 0.16,
-            bounds.Top + bounds.Height * 0.14,
-            bounds.Width * 0.68,
-            bounds.Height * 0.72);
-        if (inner.Width < 6 || inner.Height < 6)
-        {
-            return null;
-        }
-
-        const double emergencySize = 9;
-        var formatted = new FormattedText(
-            text,
-            System.Globalization.CultureInfo.GetCultureInfo("es-ES"),
-            FlowDirection.LeftToRight,
-            typeface,
-            emergencySize,
-            fill,
-            pixelsPerDip)
-        {
-            MaxTextWidth = inner.Width,
-            TextAlignment = TextAlignment.Center,
-            Trimming = TextTrimming.None,
-            LineHeight = emergencySize * 1.08
-        };
-        Geometry geometry = formatted.BuildGeometry(new Point(inner.Left, inner.Top));
-        Rect geometryBounds = geometry.Bounds;
-        if (geometryBounds.IsEmpty)
-        {
-            return null;
-        }
-
-        double scale = Math.Min(
-            1,
-            Math.Min(
-                inner.Width / Math.Max(1, geometryBounds.Width),
-                inner.Height / Math.Max(1, geometryBounds.Height)));
-        if (scale < 0.999)
-        {
-            Geometry clone = geometry.CloneCurrentValue();
-            clone.Transform = new ScaleTransform(
-                scale,
-                scale,
-                geometryBounds.Left + geometryBounds.Width / 2,
-                geometryBounds.Top + geometryBounds.Height / 2);
-            geometry = clone;
-        }
-        return geometry;
-    }
-
-    private static Geometry? FitGeometryStrictlyInside(
-        Geometry source,
-        Geometry container)
-    {
-        if (container.FillContainsWithDetail(source) == IntersectionDetail.FullyContains)
-        {
-            return source;
-        }
-
-        Rect bounds = source.Bounds;
-        double centerX = bounds.Left + bounds.Width / 2;
-        double centerY = bounds.Top + bounds.Height / 2;
-        for (double scale = 0.96; scale >= 0.64; scale -= 0.04)
-        {
-            Geometry candidate = source.CloneCurrentValue();
-            candidate.Transform = new ScaleTransform(scale, scale, centerX, centerY);
-            if (container.FillContainsWithDetail(candidate) == IntersectionDetail.FullyContains)
-            {
-                return candidate;
-            }
-        }
-
-        // La máscara de opacidad sigue siendo la barrera física final. No se devuelve una
-        // geometría que necesite un recorte grande porque parecería que faltan letras.
-        return null;
-    }
-
     private BalloonCrop? ResolveCrop()
     {
         if (Crop is not null)
@@ -360,6 +277,7 @@ public sealed class InteractiveComicTextElement : FrameworkElement
         {
             return null;
         }
+
         _resolvedCrop = CropService.Create(page, Region);
         return _resolvedCrop;
     }
@@ -388,6 +306,7 @@ public sealed class InteractiveComicTextElement : FrameworkElement
             }
             current = VisualTreeHelper.GetParent(current);
         }
+
         return null;
     }
 
@@ -430,18 +349,6 @@ public sealed class InteractiveComicTextElement : FrameworkElement
         return geometry;
     }
 
-    private static Rect PolygonBounds(IReadOnlyList<Point> polygon)
-    {
-        double left = polygon.Min(point => point.X);
-        double top = polygon.Min(point => point.Y);
-        double right = polygon.Max(point => point.X);
-        double bottom = polygon.Max(point => point.Y);
-        return new Rect(left, top, Math.Max(0, right - left), Math.Max(0, bottom - top));
-    }
-
-    private static int CountEstimatedLines(string text) =>
-        Math.Clamp((int)Math.Ceiling(text.Length / 22d), 1, 18);
-
     private static string Normalize(string text) =>
         string.Join(
             ' ',
@@ -455,6 +362,7 @@ public sealed class InteractiveComicTextElement : FrameworkElement
         {
             return;
         }
+
         _subscribed = true;
         Region.PropertyChanged += RegionChanged;
         Visibility = Region.IsEnabled ? Visibility.Visible : Visibility.Collapsed;
@@ -466,6 +374,7 @@ public sealed class InteractiveComicTextElement : FrameworkElement
         {
             return;
         }
+
         _subscribed = false;
         Region.PropertyChanged -= RegionChanged;
     }
@@ -527,6 +436,7 @@ public sealed class InteractiveComicTextElement : FrameworkElement
                 polygonHash.Add(Math.Round(point.X, 2));
                 polygonHash.Add(Math.Round(point.Y, 2));
             }
+
             return new RenderCacheKey(
                 region.Id,
                 text,
