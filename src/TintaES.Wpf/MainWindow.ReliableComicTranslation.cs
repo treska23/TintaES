@@ -119,8 +119,6 @@ public partial class MainWindow
                     page.Error = message;
                     failures.Add(new ComicPageFailure(humanPage, page.DisplayName, message));
 
-                    // Una página sin resultado válido no debe seguir seleccionada para exportar ni
-                    // aparentar que forma parte del lote traducido.
                     _selectedComicPageIndices.Remove(pageIndex);
                     _exportedComicPageIndices.Remove(pageIndex);
                 }
@@ -243,8 +241,6 @@ public partial class MainWindow
             progress,
             cancellationToken);
 
-        // En el procesamiento de cómics se estaba usando el filtro antiguo que conservaba solo
-        // candidatos de diálogo. Eso podía omitir cartuchos, letreros y otros textos detectados.
         DialogueOnlyResult filtered = await Task.Run(
             () => _dialogueOnlyResultService.Build(
                 original,
@@ -325,7 +321,9 @@ public partial class MainWindow
 
         foreach (ComicRegion region in analysis.Regions)
         {
-            region.FontScale = AutomaticFontCompensation;
+            // El renderizador canónico calcula el mayor tamaño que cabe partiendo de 100 %.
+            // No se aplican multiplicadores ni migraciones posteriores.
+            region.FontScale = 1;
             region.ManualFontScale = 1;
             region.IsManual = false;
             region.ManualBaseFontSize = 0;
