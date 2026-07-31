@@ -12,8 +12,8 @@ using TintaES.Wpf.Services;
 namespace TintaES.Wpf;
 
 /// <summary>
-/// Mantiene la edición interactiva ligera. Zoom, selección, escritura, escala y arrastre
-/// actualizan únicamente lo imprescindible y no reconstruyen todas las geometrías.
+/// Añade el análisis responsivo, las coordenadas y los microajustes. No sustituye los eventos
+/// normales del XAML ni instala una segunda ruta de renderizado.
 /// </summary>
 public partial class MainWindow
 {
@@ -42,28 +42,13 @@ public partial class MainWindow
 
         _fastEditingHandlersInstalled = true;
 
-        ZoomSlider.ValueChanged -= ZoomSlider_ValueChanged;
-        ZoomSlider.ValueChanged += ZoomSlider_ValueChanged_Fast;
-
-        RegionListBox.SelectionChanged -= RegionListBox_SelectionChanged;
-        RegionListBox.SelectionChanged += RegionListBox_SelectionChanged_Fast;
-
-        TranslationTextBox.TextChanged -= TranslationTextBox_TextChanged;
-        TranslationTextBox.TextChanged += TranslationTextBox_TextChanged_Fast;
-
-        FontScaleSlider.ValueChanged -= FontScaleSlider_ValueChanged;
-        FontScaleSlider.ValueChanged += FontScaleSlider_ValueChanged_Fast;
-        FontScaleSlider.Minimum = 25;
-        FontScaleSlider.Maximum = 250;
-
         AnalyzeButton.Click -= AnalyzeButton_Click;
         AnalyzeButton.Click += AnalyzeButton_Click_Responsive;
-
         PreviewKeyDown += MainWindow_PreviewKeyDown_Fast;
         InstallPositionEditors();
 
-        // La pantalla de carga siempre debe quedar por encima de la página y su título
-        // debe envolver en varias líneas en vez de quedar recortado por el ancho fijo.
+        FontScaleSlider.Minimum = 25;
+        FontScaleSlider.Maximum = 250;
         Panel.SetZIndex(BusyOverlay, 10_000);
         BusyTitleText.TextWrapping = TextWrapping.Wrap;
         BusyTitleText.TextAlignment = TextAlignment.Center;
@@ -160,9 +145,6 @@ public partial class MainWindow
         FooterProgressBar.IsIndeterminate = false;
         FooterProgressBar.Value = 2;
         FooterStatusText.Text = "Preparando CTD y LaMa…";
-
-        // Entregamos un ciclo de render a WPF antes de arrancar el trabajo pesado.
-        // Así el overlay y la barra de progreso aparecen al instante al pulsar el botón.
         await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Render);
 
         try
@@ -194,13 +176,12 @@ public partial class MainWindow
                 cancellationToken);
 
             var analysis = new ComicAnalysis(organic.Analysis.SourceLanguage, filtered.Regions);
-
             if (analysis.Regions.Count > 0)
             {
                 BusyTitleText.Text = $"Traduciendo {analysis.Regions.Count} textos con contexto…";
                 BusyProgressBar.Value = 96;
                 FooterProgressBar.Value = 96;
-                FooterStatusText.Text = $"Traduciendo {analysis.Regions.Count} bocadillos con {model}…";
+                FooterStatusText.Text = $"Traduciendo {analysis.Regions.Count} textos con {model}…";
                 await _ollama.TranslateRegionsAsync(
                     analysis.Regions,
                     model,
@@ -228,9 +209,8 @@ public partial class MainWindow
             _regions.Clear();
             foreach (ComicRegion region in analysis.Regions)
             {
-                // El autoajuste interno parte siempre de 100 %. La escala manual se aplica
-                // después como transformación visual y por eso responde inmediatamente.
                 region.FontScale = 1;
+                region.ManualFontScale = 1;
                 region.PropertyChanged += Region_PropertyChanged;
                 _regions.Add(region);
             }
@@ -275,74 +255,21 @@ public partial class MainWindow
         }
     }
 
-    private void ZoomSlider_ValueChanged_Fast(object sender, RoutedPropertyChangedEventArgs<double> e)
-    {
-        if (ImageStage is null || ZoomText is null)
-        {
-            return;
-        }
+    // Firmas conservadas para que los antiguos instaladores puedan desconectarse sin volver a
+    // introducir una segunda ruta. Ninguna se registra desde este archivo.
+    private void ZoomSlider_ValueChanged_Fast(object sender, RoutedPropertyChangedEventArgs<double> e) =>
+        ZoomSlider_ValueChanged(sender, e);
 
-        double scale = ZoomSlider.Value / 100;
-        ImageStage.LayoutTransform = new ScaleTransform(scale, scale);
-        ZoomText.Text = $"{Math.Round(ZoomSlider.Value)} %";
-    }
+    private void RegionListBox_SelectionChanged_Fast(object sender, SelectionChangedEventArgs e) =>
+        RegionListBox_SelectionChanged(sender, e);
 
-    private void RegionListBox_SelectionChanged_Fast(object sender, SelectionChangedEventArgs e)
-    {
-        _selectedRegion = RegionListBox.SelectedItem as ComicRegion;
-        ShowRegionEditor(_selectedRegion);
+    private void TranslationTextBox_TextChanged_Fast(object sender, TextChangedEventArgs e) =>
+        TranslationTextBox_TextChanged(sender, e);
 
-        if (_selectedRegion is null)
-        {
-            return;
-        }
-
-        _syncingEditor = true;
-        try
-        {
-            double percent = Math.Clamp(_selectedRegion.ManualFontScale * 100, FontScaleSlider.Minimum, FontScaleSlider.Maximum);
-            FontScaleSlider.Value = percent;
-            FontScaleText.Text = $"{Math.Round(percent)} %";
-            SyncPositionEditor(_selectedRegion);
-        }
-        finally
-        {
-            _syncingEditor = false;
-        }
-    }
-
-    private void TranslationTextBox_TextChanged_Fast(object sender, TextChangedEventArgs e)
-    {
-        if (_syncingEditor || _selectedRegion is null)
-        {
-            return;
-        }
-
-        // FormattedText conserva los saltos de línea escritos por el usuario. No usamos
-        // Vertical como bandera de edición porque eso cambiaba el algoritmo tipográfico.
-        _selectedRegion.Translation = TranslationTextBox.Text;
-        _selectedRegion.NotifyVisualChange();
-        InvalidateRegionVisual(_selectedRegion);
-    }
-
-    private void FontScaleSlider_ValueChanged_Fast(object sender, RoutedPropertyChangedEventArgs<double> e)
-    {
-        if (FontScaleText is null)
-        {
-            return;
-        }
-
-        FontScaleText.Text = $"{Math.Round(FontScaleSlider.Value)} %";
-        if (_syncingEditor || _selectedRegion is null)
-        {
-            return;
-        }
-
-        // Escala real: 50 % significa la mitad y 150 % significa una vez y media.
-        // No se vuelve a ejecutar el autoajuste ni se reconstruye el overlay.
-        _selectedRegion.ManualFontScale = FontScaleSlider.Value / 100;
-        ApplyRegionPlacementToRegion(_selectedRegion);
-    }
+    private void FontScaleSlider_ValueChanged_Fast(
+        object sender,
+        RoutedPropertyChangedEventArgs<double> e) =>
+        FontScaleSlider_ValueChanged(sender, e);
 
     private void RegionMoveThumb_DragStarted_Fast(object sender, DragStartedEventArgs e)
     {
@@ -356,9 +283,6 @@ public partial class MainWindow
         _dragStartPointer = Mouse.GetPosition(OverlayCanvas);
         _dragStartOffsetX = visual.Region.TextOffsetX;
         _dragStartOffsetY = visual.Region.TextOffsetY;
-
-        // Después de coger el texto, las flechas del teclado quedan disponibles para
-        // microajustes sin que el foco se quede atrapado en la lista lateral.
         Keyboard.Focus(this);
     }
 
@@ -372,16 +296,11 @@ public partial class MainWindow
             return;
         }
 
-        // DragDelta entrega valores afectados por las transformaciones de zoom. En lugar de
-        // acumularlos, medimos la posición absoluta del puntero dentro del canvas original.
-        // Así 20 px de ratón son 20 px sobre la página, independientemente del zoom.
         Point pointer = Mouse.GetPosition(OverlayCanvas);
         double deltaX = (pointer.X - _dragStartPointer.X) / _originalBitmap.PixelWidth * 1000;
         double deltaY = (pointer.Y - _dragStartPointer.Y) / _originalBitmap.PixelHeight * 1000;
-
         visual.Region.TextOffsetX = ClampOffsetX(visual.Region, _dragStartOffsetX + deltaX);
         visual.Region.TextOffsetY = ClampOffsetY(visual.Region, _dragStartOffsetY + deltaY);
-
         ApplyRegionPlacement(visual.Layer, visual.Text, visual.Region);
         SyncPositionEditor(visual.Region);
     }
@@ -402,7 +321,6 @@ public partial class MainWindow
             return;
         }
 
-        // Dentro de un campo de texto, combo o slider las flechas conservan su función normal.
         if (Keyboard.FocusedElement is TextBoxBase or ComboBox or Slider)
         {
             return;
@@ -448,10 +366,8 @@ public partial class MainWindow
         SyncPositionEditor(_selectedRegion);
     }
 
-    private void PositionTextBox_LostKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e)
-    {
+    private void PositionTextBox_LostKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e) =>
         ApplyPositionEditorValues();
-    }
 
     private void PositionTextBox_KeyDown(object sender, KeyEventArgs e)
     {
@@ -494,11 +410,9 @@ public partial class MainWindow
         SyncPositionEditor(_selectedRegion);
     }
 
-    private static bool TryParseCoordinate(string text, out double value)
-    {
-        return double.TryParse(text, NumberStyles.Float, CultureInfo.CurrentCulture, out value)
-            || double.TryParse(text.Replace(',', '.'), NumberStyles.Float, CultureInfo.InvariantCulture, out value);
-    }
+    private static bool TryParseCoordinate(string text, out double value) =>
+        double.TryParse(text, NumberStyles.Float, CultureInfo.CurrentCulture, out value)
+        || double.TryParse(text.Replace(',', '.'), NumberStyles.Float, CultureInfo.InvariantCulture, out value);
 
     private void SyncPositionEditor(ComicRegion region)
     {
@@ -507,8 +421,10 @@ public partial class MainWindow
             return;
         }
 
-        double centerX = (region.RenderBox.X + region.RenderBox.Width / 2 + region.TextOffsetX) / 1000 * _originalBitmap.PixelWidth;
-        double centerY = (region.RenderBox.Y + region.RenderBox.Height / 2 + region.TextOffsetY) / 1000 * _originalBitmap.PixelHeight;
+        double centerX = (region.RenderBox.X + region.RenderBox.Width / 2 + region.TextOffsetX)
+            / 1000 * _originalBitmap.PixelWidth;
+        double centerY = (region.RenderBox.Y + region.RenderBox.Height / 2 + region.TextOffsetY)
+            / 1000 * _originalBitmap.PixelHeight;
 
         _syncingPositionEditor = true;
         try
@@ -530,23 +446,19 @@ public partial class MainWindow
 
     private void ApplyRegionPlacementToRegion(ComicRegion region)
     {
-        foreach (Grid layer in OverlayCanvas.Children.OfType<Grid>())
+        Grid? layer = OverlayCanvas.Children
+            .OfType<Grid>()
+            .FirstOrDefault(candidate => ReferenceEquals(candidate.Tag, region));
+        InteractiveComicTextElement? text = layer?.Children
+            .OfType<InteractiveComicTextElement>()
+            .FirstOrDefault();
+        if (layer is not null && text is not null)
         {
-            if (!ReferenceEquals(layer.Tag, region))
-            {
-                continue;
-            }
-
-            ComicTextElement? text = layer.Children.OfType<ComicTextElement>().FirstOrDefault();
-            if (text is not null)
-            {
-                ApplyRegionPlacement(layer, text, region);
-            }
-            break;
+            ApplyRegionPlacement(layer, text, region);
         }
     }
 
-    private void ApplyRegionPlacement(Grid layer, ComicTextElement text, ComicRegion region)
+    private void ApplyRegionPlacement(Grid layer, FrameworkElement text, ComicRegion region)
     {
         if (_originalBitmap is null)
         {
@@ -556,33 +468,22 @@ public partial class MainWindow
         NormalizedRect box = region.RenderBox;
         Canvas.SetLeft(layer, (box.X + region.TextOffsetX) / 1000 * _originalBitmap.PixelWidth);
         Canvas.SetTop(layer, (box.Y + region.TextOffsetY) / 1000 * _originalBitmap.PixelHeight);
-        ApplyTextTransform(text, region);
-    }
-
-    private static void ApplyTextTransform(ComicTextElement text, ComicRegion region)
-    {
-        // El autoajuste calcula el tamaño dentro del polígono. Una escala externa podría
-        // sacar letras fuera del bocadillo aunque el cálculo interno fuese correcto.
         text.RenderTransformOrigin = new Point(0.5, 0.5);
         text.RenderTransform = Transform.Identity;
+        text.InvalidateVisual();
     }
 
     private void InvalidateRegionVisual(ComicRegion region)
     {
-        foreach (Grid layer in OverlayCanvas.Children.OfType<Grid>())
+        Grid? layer = OverlayCanvas.Children
+            .OfType<Grid>()
+            .FirstOrDefault(candidate => ReferenceEquals(candidate.Tag, region));
+        InteractiveComicTextElement? text = layer?.Children
+            .OfType<InteractiveComicTextElement>()
+            .FirstOrDefault();
+        if (layer is not null && text is not null)
         {
-            if (!ReferenceEquals(layer.Tag, region))
-            {
-                continue;
-            }
-
-            ComicTextElement? text = layer.Children.OfType<ComicTextElement>().FirstOrDefault();
-            if (text is not null)
-            {
-                text.InvalidateVisual();
-                ApplyRegionPlacement(layer, text, region);
-            }
-            break;
+            ApplyRegionPlacement(layer, text, region);
         }
     }
 }
