@@ -10,7 +10,7 @@ namespace TintaES.Wpf;
 /// </summary>
 public partial class MainWindow
 {
-    private const string CurrentUiBuildStamp = "UI 2026.07.31-r24";
+    private const string CurrentUiBuildStamp = "UI 2026.07.31-r25";
     private const int CurrentUiBootstrapMaxAttempts = 3;
 
     private static readonly bool CurrentUiBootstrapRegistered = RegisterCurrentUiBootstrap();
@@ -91,6 +91,7 @@ public partial class MainWindow
         RunCurrentUiInstaller(InstallOrRefreshResizableSidePanels, "paneles laterales ajustables", failures);
         RunCurrentUiInstaller(InstallTransparentTextOverlay, "capa de texto transparente", failures);
         RunCurrentUiInstaller(InstallAutomaticFontCompensation, "tamaño automático legible", failures);
+        RunCurrentUiInstaller(InstallFlatRegionBackgroundRepair, "fondos planos de cartuchos", failures);
         RunCurrentUiInstaller(UpdateClassicMenuAvailability, "estado del menú", failures);
 
         if (failures.Count == 0)
