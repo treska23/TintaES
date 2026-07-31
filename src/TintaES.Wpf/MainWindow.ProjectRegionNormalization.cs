@@ -10,6 +10,12 @@ public partial class MainWindow
     private static void NormalizeLoadedProjectRegion(ComicRegion region)
     {
         region.Style ??= new ComicTextStyle();
+        region.Style.FontCategory = "comic";
+        region.Style.FontFamily = null;
+        region.Style.FontWeight = 700;
+        region.Style.Italic = false;
+        region.Style.LineHeightRatio = 1.02;
+        region.Style.OriginalLineCount = 0;
         if (string.Equals(
                 region.Translation?.Trim(),
                 ComicRegion.PendingTranslationMarker,
