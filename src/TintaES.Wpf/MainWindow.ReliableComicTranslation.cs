@@ -9,8 +9,8 @@ using TintaES.Wpf.Services;
 namespace TintaES.Wpf;
 
 /// <summary>
-/// Procesa únicamente las páginas seleccionadas, conserva las traducciones válidas y prioriza
-/// bocadillos/cartuchos legibles sobre la reproducción estética de la rotulación original.
+/// Procesa únicamente las páginas seleccionadas, conserva las traducciones válidas y traduce
+/// solo texto asociado a un bocadillo, pensamiento o cartucho verificado.
 /// </summary>
 public partial class MainWindow
 {
@@ -383,12 +383,9 @@ public partial class MainWindow
 
         foreach (ComicRegion region in analysis.Regions)
         {
-            if (region.BubbleBox is { } bubble
-                && bubble.Area >= region.TextBox.Area * 1.08)
-            {
-                region.RenderBox = bubble.Clamp();
-            }
-
+            // El marco técnico parte de la silueta segura o del OCR, nunca de BubbleBox a
+            // ciegas. La capa irregular puede dibujar fuera del marco sin mutar el modelo.
+            region.RenderBox = ResolveConservativeTextFrame(region);
             region.FontScale = 1;
             region.ManualFontScale = 1;
             region.IsManual = false;
@@ -397,13 +394,11 @@ public partial class MainWindow
             region.Rotation = 0;
             region.Vertical = false;
 
-            // Una sola tipografía de cómic para toda la aplicación. La fuente no cambia por
-            // zona ni por metadatos heredados del OCR.
             region.Style.FontCategory = "comic";
             region.Style.FontFamily = null;
-            region.Style.FontWeight = 700;
-            region.Style.FontWidthRatio = 1;
-            region.Style.LineHeightRatio = 1.02;
+            region.Style.FontWeight = 900;
+            region.Style.FontWidthRatio = 1.12;
+            region.Style.LineHeightRatio = 1.08;
             region.Style.OriginalLineCount = 0;
             region.Style.Italic = false;
             region.Style.Uppercase = false;
@@ -437,20 +432,17 @@ public partial class MainWindow
             return false;
         }
 
-        // La clase semántica decide qué se traduce. No se vuelve a descartar un diálogo o
-        // cartucho porque falte BubbleBox/SafePolygon: esa ausencia es un problema de
-        // colocación, no una razón para perder el texto.
         if (region.Type is "dialogue" or "thought" or "narration" or "caption")
         {
-            return true;
+            return BalloonCropService.HasContainerEvidence(region);
         }
 
-        // Algunos diálogos cortos llegan etiquetados como SFX. Solo se rescatan cuando hay
-        // un globo claro y más de una palabra; una onomatopeya exterior de una sola pieza
-        // continúa excluida.
+        // Un SFX solo se rescata si el detector está muy seguro de que vive dentro de un
+        // contenedor amplio. Una palabra o rótulo exterior nunca se convierte por su cuenta.
         if (region.Type == "sfx"
-            && region.BubbleBox is not null
-            && region.BubbleConfidence >= 0.12
+            && region.BubbleBox is { } bubble
+            && region.BubbleConfidence >= 0.32
+            && IsStrongContainer(bubble, region.TextBox)
             && region.Original.Split(
                 [' ', '\t', '\r', '\n'],
                 StringSplitOptions.RemoveEmptyEntries).Length >= 2)
@@ -459,8 +451,22 @@ public partial class MainWindow
             return true;
         }
 
-        // Onomatopeyas, carteles, pintadas y texto del escenario no se traducen.
         return false;
+    }
+
+    private static bool IsStrongContainer(NormalizedRect outer, NormalizedRect text)
+    {
+        double centerX = text.X + text.Width / 2;
+        double centerY = text.Y + text.Height / 2;
+        double ratio = outer.Area / Math.Max(1, text.Area);
+        return centerX >= outer.X
+               && centerX <= outer.Right
+               && centerY >= outer.Y
+               && centerY <= outer.Bottom
+               && ratio >= 1.18
+               && ratio <= 18
+               && outer.Width <= text.Width * 5.5
+               && outer.Height <= text.Height * 5.5;
     }
 
     private static string CompactFailureMessage(string message)
