@@ -7,25 +7,89 @@ using TintaES.Core;
 namespace TintaES.Wpf.Services;
 
 /// <summary>
-/// Extrae el interior de cada bocadillo como una capa local enmascarada. BubbleBox solo delimita
-/// dónde buscar el borde; nunca se utiliza directamente como superficie de escritura.
+/// Extrae el interior de cada bocadillo como una capa local enmascarada. El recorte se calcula
+/// una vez por página y geometría: pintar, hacer scroll o seleccionar una zona no vuelve a
+/// recorrer los píxeles de la página.
 /// </summary>
 public sealed class BalloonCropService
 {
-    private readonly ConditionalWeakTable<BitmapSource, PagePixels> _cache = new();
+    private readonly ConditionalWeakTable<BitmapSource, PageCache> _cache = new();
 
     public BalloonCrop Create(BitmapSource cleanedPage, ComicRegion region)
     {
-        PagePixels page = _cache.GetValue(cleanedPage, ReadPage);
+        PageCache cache = _cache.GetValue(
+            cleanedPage,
+            source => new PageCache(ReadPage(source)));
+        CropKey key = CropKey.From(region);
+
+        lock (cache.Gate)
+        {
+            if (cache.Crops.TryGetValue(key, out BalloonCrop? cached))
+            {
+                return cached;
+            }
+        }
+
+        BalloonCrop created = CreateUncached(cache.Pixels, region);
+        lock (cache.Gate)
+        {
+            if (cache.Crops.Count > 256)
+            {
+                cache.Crops.Clear();
+            }
+            cache.Crops[key] = created;
+        }
+        return created;
+    }
+
+    /// <summary>
+    /// La etiqueta «dialogue» por sí sola no demuestra que exista un bocadillo. Se exige que
+    /// una caja o un polígono rodee realmente el bloque OCR y que el detector aporte alguna
+    /// confianza de contenedor. Así los rótulos del escenario no se convierten en diálogo.
+    /// </summary>
+    public static bool HasContainerEvidence(ComicRegion region)
+    {
+        if (region.IsManual)
+        {
+            return true;
+        }
+        if (region.Type is not ("dialogue" or "thought" or "narration" or "caption"))
+        {
+            return false;
+        }
+
+        double minimumConfidence = region.Type is "narration" or "caption" ? 0.05 : 0.10;
+        if (region.BubbleConfidence < minimumConfidence)
+        {
+            return false;
+        }
+
+        if (region.BubbleBox is { } bubble && IsContainerAroundText(bubble, region.TextBox))
+        {
+            return true;
+        }
+
+        if (region.SafePolygon.Count >= 3)
+        {
+            NormalizedRect bounds = PolygonBounds(region.SafePolygon);
+            return IsContainerAroundText(bounds, region.TextBox);
+        }
+
+        return false;
+    }
+
+    private static BalloonCrop CreateUncached(PagePixels page, ComicRegion region)
+    {
         if (!region.IsManual && TryFlood(page, region, out BalloonCrop? crop))
         {
             return crop!;
         }
-        if (region.SafePolygon.Count >= 3 && TryPolygon(page.Width, page.Height, region.SafePolygon, out crop))
+        if (region.SafePolygon.Count >= 3
+            && TryPolygon(page, region, out crop))
         {
             return crop!;
         }
-        return Fallback(page.Width, page.Height, region);
+        return Fallback(page, region);
     }
 
     private static PagePixels ReadPage(BitmapSource source)
@@ -55,13 +119,14 @@ public sealed class BalloonCropService
         Queue<int> queue = new();
         foreach ((int x, int y) in Seeds(text))
         {
-            int lx = x - search.X;
-            int ly = y - search.Y;
-            if (lx < 0 || ly < 0 || lx >= search.Width || ly >= search.Height)
+            int localX = x - search.X;
+            int localY = y - search.Y;
+            if (localX < 0 || localY < 0 || localX >= search.Width || localY >= search.Height)
             {
                 continue;
             }
-            int index = ly * search.Width + lx;
+
+            int index = localY * search.Width + localX;
             if (!mask[index] && Similar(page.At(x, y), reference, tolerance))
             {
                 mask[index] = true;
@@ -83,14 +148,16 @@ public sealed class BalloonCropService
             Visit(x, y - 1);
             Visit(x, y + 1);
 
-            void Visit(int nx, int ny)
+            void Visit(int nextX, int nextY)
             {
-                if (nx < 0 || ny < 0 || nx >= search.Width || ny >= search.Height)
+                if (nextX < 0 || nextY < 0 || nextX >= search.Width || nextY >= search.Height)
                 {
                     return;
                 }
-                int next = ny * search.Width + nx;
-                if (mask[next] || !Similar(page.At(search.X + nx, search.Y + ny), reference, tolerance))
+
+                int next = nextY * search.Width + nextX;
+                if (mask[next]
+                    || !Similar(page.At(search.X + nextX, search.Y + nextY), reference, tolerance))
                 {
                     return;
                 }
@@ -110,7 +177,11 @@ public sealed class BalloonCropService
         }
 
         FillHoles(mask, search.Width, search.Height);
-        Erode(mask, search.Width, search.Height, Math.Clamp(Math.Min(search.Width, search.Height) / 90, 2, 7));
+        Erode(
+            mask,
+            search.Width,
+            search.Height,
+            Math.Clamp(Math.Min(search.Width, search.Height) / 75, 3, 9));
         if (!MaskBounds(mask, search.Width, search.Height, out PixelRect local))
         {
             return false;
@@ -121,34 +192,47 @@ public sealed class BalloonCropService
             search.Y + local.Y,
             local.Width,
             local.Height).Expand(3, page.Width, page.Height);
-        crop = Build(mask, search, pageBounds, "lazo automático");
+        double variation = SurfaceVariation(page, mask, search, reference);
+        bool reliable = HasContainerEvidence(region)
+                        && variation <= (region.Type is "narration" or "caption" ? 64 : 48);
+        crop = Build(
+            mask,
+            search,
+            pageBounds,
+            reference,
+            reliable,
+            variation,
+            "lazo automático");
         return crop.LayoutPolygon.Count >= 3;
     }
 
-    private static PixelRect SearchRect(ComicRegion region, PixelRect text, int pageWidth, int pageHeight)
+    private static PixelRect SearchRect(
+        ComicRegion region,
+        PixelRect text,
+        int pageWidth,
+        int pageHeight)
     {
-        NormalizedRect hint = region.TextBox.Expand(2.0, 2.2);
-        if (region.BubbleBox is { } bubble
-            && ContainsCenter(bubble, region.TextBox)
-            && bubble.Area >= region.TextBox.Area * 1.05
-            && bubble.Area <= region.TextBox.Area * 36
-            && bubble.Width <= region.TextBox.Width * 7
-            && bubble.Height <= region.TextBox.Height * 7)
+        NormalizedRect hint = region.TextBox.Expand(1.7, 1.9);
+        if (region.BubbleBox is { } bubble && IsContainerAroundText(bubble, region.TextBox))
         {
-            hint = bubble.Expand(0.18, 0.20);
+            hint = bubble.Expand(0.14, 0.16);
         }
         else if (region.SafePolygon.Count >= 3)
         {
             NormalizedRect polygon = PolygonBounds(region.SafePolygon);
-            if (polygon.Area >= region.TextBox.Area * 0.8 && polygon.Area <= region.TextBox.Area * 32)
+            if (IsContainerAroundText(polygon, region.TextBox))
             {
-                hint = polygon.Expand(0.22, 0.24);
+                hint = polygon.Expand(0.16, 0.18);
             }
         }
 
         PixelRect result = Pixels(hint, pageWidth, pageHeight);
-        int maximumWidth = Math.Min(pageWidth, Math.Max(text.Width * 8, (int)(pageWidth * 0.48)));
-        int maximumHeight = Math.Min(pageHeight, Math.Max(text.Height * 8, (int)(pageHeight * 0.42)));
+        int maximumWidth = Math.Min(
+            pageWidth,
+            Math.Max(text.Width * 6, (int)(pageWidth * 0.36)));
+        int maximumHeight = Math.Min(
+            pageHeight,
+            Math.Max(text.Height * 6, (int)(pageHeight * 0.28)));
         if (result.Width > maximumWidth || result.Height > maximumHeight)
         {
             result = PixelRect.Centered(
@@ -159,21 +243,31 @@ public sealed class BalloonCropService
                 pageWidth,
                 pageHeight);
         }
-        return result.Expand(Math.Max(4, text.Width / 10), pageWidth, pageHeight);
+        return result.Expand(Math.Max(4, text.Width / 12), pageWidth, pageHeight);
     }
 
-    private static bool ContainsCenter(NormalizedRect outer, NormalizedRect inner)
+    private static bool IsContainerAroundText(NormalizedRect outer, NormalizedRect text)
     {
-        double x = inner.X + inner.Width / 2;
-        double y = inner.Y + inner.Height / 2;
-        return x >= outer.X && x <= outer.Right && y >= outer.Y && y <= outer.Bottom;
+        double centerX = text.X + text.Width / 2;
+        double centerY = text.Y + text.Height / 2;
+        double areaRatio = outer.Area / Math.Max(1, text.Area);
+        return centerX >= outer.X
+               && centerX <= outer.Right
+               && centerY >= outer.Y
+               && centerY <= outer.Bottom
+               && areaRatio >= 1.12
+               && areaRatio <= 24
+               && outer.Width <= text.Width * 6.5
+               && outer.Height <= text.Height * 6.5
+               && outer.Width >= text.Width * 0.92
+               && outer.Height >= text.Height * 0.92;
     }
 
     private static IEnumerable<(int X, int Y)> Seeds(PixelRect text)
     {
-        foreach (double y in new[] { 0.30, 0.50, 0.70 })
+        foreach (double y in new[] { 0.28, 0.50, 0.72 })
         {
-            foreach (double x in new[] { 0.25, 0.50, 0.75 })
+            foreach (double x in new[] { 0.22, 0.50, 0.78 })
             {
                 yield return (
                     text.X + (int)Math.Round(text.Width * x),
@@ -206,7 +300,10 @@ public sealed class BalloonCropService
         blue.Sort();
         green.Sort();
         red.Sort();
-        return new ColorSample(blue[blue.Count / 2], green[green.Count / 2], red[red.Count / 2]);
+        return new ColorSample(
+            blue[blue.Count / 2],
+            green[green.Count / 2],
+            red[red.Count / 2]);
     }
 
     private static int Tolerance(PagePixels page, PixelRect text, ColorSample reference)
@@ -221,21 +318,50 @@ public sealed class BalloonCropService
                 ColorSample sample = page.At(x, y);
                 deviations.Add(Math.Max(
                     Math.Abs(sample.Red - reference.Red),
-                    Math.Max(Math.Abs(sample.Green - reference.Green), Math.Abs(sample.Blue - reference.Blue))));
+                    Math.Max(
+                        Math.Abs(sample.Green - reference.Green),
+                        Math.Abs(sample.Blue - reference.Blue))));
             }
         }
         deviations.Sort();
         int median = deviations.Count == 0 ? 9 : deviations[deviations.Count / 2];
-        return Math.Clamp(median * 2 + 24, 34, 72);
+        return Math.Clamp(median * 2 + 22, 32, 68);
     }
 
     private static bool Similar(ColorSample sample, ColorSample reference, int tolerance)
     {
-        int r = sample.Red - reference.Red;
-        int g = sample.Green - reference.Green;
-        int b = sample.Blue - reference.Blue;
-        return r * r + g * g + b * b <= tolerance * tolerance * 3
-            && Math.Abs(sample.Luminance - reference.Luminance) <= tolerance;
+        int red = sample.Red - reference.Red;
+        int green = sample.Green - reference.Green;
+        int blue = sample.Blue - reference.Blue;
+        return red * red + green * green + blue * blue <= tolerance * tolerance * 3
+               && Math.Abs(sample.Luminance - reference.Luminance) <= tolerance;
+    }
+
+    private static double SurfaceVariation(
+        PagePixels page,
+        bool[] mask,
+        PixelRect bounds,
+        ColorSample reference)
+    {
+        long total = 0;
+        int count = 0;
+        int step = Math.Max(1, Math.Min(bounds.Width, bounds.Height) / 120);
+        for (int y = 0; y < bounds.Height; y += step)
+        {
+            for (int x = 0; x < bounds.Width; x += step)
+            {
+                if (!mask[y * bounds.Width + x])
+                {
+                    continue;
+                }
+                ColorSample sample = page.At(bounds.X + x, bounds.Y + y);
+                total += Math.Abs(sample.Red - reference.Red)
+                         + Math.Abs(sample.Green - reference.Green)
+                         + Math.Abs(sample.Blue - reference.Blue);
+                count += 3;
+            }
+        }
+        return count == 0 ? double.MaxValue : total / (double)count;
     }
 
     private static int BoundaryTouches(bool[] mask, int width, int height)
@@ -273,7 +399,10 @@ public sealed class BalloonCropService
             int index = queue.Dequeue();
             int x = index % width;
             int y = index / width;
-            Add(x - 1, y); Add(x + 1, y); Add(x, y - 1); Add(x, y + 1);
+            Add(x - 1, y);
+            Add(x + 1, y);
+            Add(x, y - 1);
+            Add(x, y + 1);
         }
         for (int index = 0; index < mask.Length; index++)
         {
@@ -306,8 +435,12 @@ public sealed class BalloonCropService
             {
                 for (int x = 1; x < width - 1; x++)
                 {
-                    int i = y * width + x;
-                    next[i] = mask[i] && mask[i - 1] && mask[i + 1] && mask[i - width] && mask[i + width];
+                    int index = y * width + x;
+                    next[index] = mask[index]
+                                  && mask[index - 1]
+                                  && mask[index + 1]
+                                  && mask[index - width]
+                                  && mask[index + width];
                 }
             }
             Array.Copy(next, mask, mask.Length);
@@ -316,14 +449,22 @@ public sealed class BalloonCropService
 
     private static bool MaskBounds(bool[] mask, int width, int height, out PixelRect bounds)
     {
-        int left = width, top = height, right = -1, bottom = -1;
+        int left = width;
+        int top = height;
+        int right = -1;
+        int bottom = -1;
         for (int y = 0; y < height; y++)
         {
             for (int x = 0; x < width; x++)
             {
-                if (!mask[y * width + x]) continue;
-                left = Math.Min(left, x); top = Math.Min(top, y);
-                right = Math.Max(right, x); bottom = Math.Max(bottom, y);
+                if (!mask[y * width + x])
+                {
+                    continue;
+                }
+                left = Math.Min(left, x);
+                top = Math.Min(top, y);
+                right = Math.Max(right, x);
+                bottom = Math.Max(bottom, y);
             }
         }
         if (right < left || bottom < top)
@@ -335,19 +476,31 @@ public sealed class BalloonCropService
         return true;
     }
 
-    private static BalloonCrop Build(bool[] source, PixelRect sourceBounds, PixelRect pageBounds, string method)
+    private static BalloonCrop Build(
+        bool[] source,
+        PixelRect sourceBounds,
+        PixelRect pageBounds,
+        ColorSample background,
+        bool reliable,
+        double variation,
+        string method)
     {
         int width = pageBounds.Width;
         int height = pageBounds.Height;
         byte[] alpha = new byte[width * height];
         for (int y = 0; y < height; y++)
         {
-            int sy = pageBounds.Y + y - sourceBounds.Y;
-            if (sy < 0 || sy >= sourceBounds.Height) continue;
+            int sourceY = pageBounds.Y + y - sourceBounds.Y;
+            if (sourceY < 0 || sourceY >= sourceBounds.Height)
+            {
+                continue;
+            }
             for (int x = 0; x < width; x++)
             {
-                int sx = pageBounds.X + x - sourceBounds.X;
-                if (sx >= 0 && sx < sourceBounds.Width && source[sy * sourceBounds.Width + sx])
+                int sourceX = pageBounds.X + x - sourceBounds.X;
+                if (sourceX >= 0
+                    && sourceX < sourceBounds.Width
+                    && source[sourceY * sourceBounds.Width + sourceX])
                 {
                     alpha[y * width + x] = 255;
                 }
@@ -355,20 +508,38 @@ public sealed class BalloonCropService
         }
 
         byte[] pixels = new byte[width * height * 4];
-        for (int i = 0; i < alpha.Length; i++)
+        for (int index = 0; index < alpha.Length; index++)
         {
-            int offset = i * 4;
+            int offset = index * 4;
             pixels[offset] = 255;
             pixels[offset + 1] = 255;
             pixels[offset + 2] = 255;
-            pixels[offset + 3] = alpha[i];
+            pixels[offset + 3] = alpha[index];
         }
-        BitmapSource bitmap = BitmapSource.Create(width, height, 96, 96, PixelFormats.Bgra32, null, pixels, width * 4);
+        BitmapSource bitmap = BitmapSource.Create(
+            width,
+            height,
+            96,
+            96,
+            PixelFormats.Bgra32,
+            null,
+            pixels,
+            width * 4);
         bitmap.Freeze();
+
+        IReadOnlyList<Point> polygon = LayoutPolygon(alpha, width, height);
+        if (polygon.Count < 3)
+        {
+            polygon = ConservativePolygon(alpha, width, height);
+        }
+
         return new BalloonCrop(
             new Rect(pageBounds.X, pageBounds.Y, width, height),
             bitmap,
-            LayoutPolygon(alpha, width, height),
+            polygon,
+            Color.FromRgb(background.Red, background.Green, background.Blue),
+            reliable,
+            variation,
             method);
     }
 
@@ -388,30 +559,77 @@ public sealed class BalloonCropService
         }
         foreach ((int y, int left, int right) in raw)
         {
-            if (right - left + 1 >= maximum * 0.28)
+            if (right - left + 1 >= maximum * 0.34)
             {
                 rows.Add((y + 0.5, left + 0.5, right + 0.5));
             }
         }
-        if (rows.Count < 3) return [];
+        if (rows.Count < 3)
+        {
+            return [];
+        }
         List<Point> points = rows.Select(row => new Point(row.Left, row.Y)).ToList();
         points.AddRange(rows.AsEnumerable().Reverse().Select(row => new Point(row.Right, row.Y)));
         return points;
     }
 
+    private static IReadOnlyList<Point> ConservativePolygon(byte[] mask, int width, int height)
+    {
+        int left = width;
+        int top = height;
+        int right = -1;
+        int bottom = -1;
+        for (int y = 0; y < height; y++)
+        {
+            for (int x = 0; x < width; x++)
+            {
+                if (mask[y * width + x] == 0)
+                {
+                    continue;
+                }
+                left = Math.Min(left, x);
+                top = Math.Min(top, y);
+                right = Math.Max(right, x);
+                bottom = Math.Max(bottom, y);
+            }
+        }
+        if (right <= left || bottom <= top)
+        {
+            return [];
+        }
+
+        double insetX = Math.Max(2, (right - left) * 0.12);
+        double insetY = Math.Max(2, (bottom - top) * 0.12);
+        return
+        [
+            new Point(left + insetX, top + insetY),
+            new Point(right - insetX, top + insetY),
+            new Point(right - insetX, bottom - insetY),
+            new Point(left + insetX, bottom - insetY)
+        ];
+    }
+
     private static bool WidestRun(byte[] mask, int width, int y, out int left, out int right)
     {
-        left = 0; right = -1;
-        int best = 0, start = -1, row = y * width;
+        left = 0;
+        right = -1;
+        int best = 0;
+        int start = -1;
+        int row = y * width;
         for (int x = 0; x <= width; x++)
         {
             bool inside = x < width && mask[row + x] != 0;
-            if (inside && start < 0) start = x;
+            if (inside && start < 0)
+            {
+                start = x;
+            }
             if (!inside && start >= 0)
             {
                 if (x - start > best)
                 {
-                    best = x - start; left = start; right = x - 1;
+                    best = x - start;
+                    left = start;
+                    right = x - 1;
                 }
                 start = -1;
             }
@@ -419,13 +637,20 @@ public sealed class BalloonCropService
         return best > 0;
     }
 
-    private static bool TryPolygon(int pageWidth, int pageHeight, IReadOnlyList<NormalizedPoint> polygon, out BalloonCrop? crop)
+    private static bool TryPolygon(
+        PagePixels page,
+        ComicRegion region,
+        out BalloonCrop? crop)
     {
-        PixelRect bounds = Pixels(PolygonBounds(polygon).Expand(0.03, 0.04), pageWidth, pageHeight);
+        IReadOnlyList<NormalizedPoint> polygon = region.SafePolygon;
+        PixelRect bounds = Pixels(
+            PolygonBounds(polygon).Expand(0.03, 0.04),
+            page.Width,
+            page.Height);
         bool[] mask = new bool[bounds.Width * bounds.Height];
         Point[] local = polygon.Select(point => new Point(
-            point.X / 1000 * pageWidth - bounds.X,
-            point.Y / 1000 * pageHeight - bounds.Y)).ToArray();
+            point.X / 1000 * page.Width - bounds.X,
+            point.Y / 1000 * page.Height - bounds.Y)).ToArray();
         for (int y = 0; y < bounds.Height; y++)
         {
             for (int x = 0; x < bounds.Width; x++)
@@ -433,31 +658,59 @@ public sealed class BalloonCropService
                 mask[y * bounds.Width + x] = Inside(local, x + 0.5, y + 0.5);
             }
         }
-        Erode(mask, bounds.Width, bounds.Height, 2);
-        crop = Build(mask, bounds, bounds, "polígono detectado");
+        Erode(mask, bounds.Width, bounds.Height, 3);
+        ColorSample background = MedianBackground(
+            page,
+            Pixels(region.TextBox, page.Width, page.Height));
+        double variation = SurfaceVariation(page, mask, bounds, background);
+        bool reliable = HasContainerEvidence(region)
+                        && variation <= (region.Type is "narration" or "caption" ? 68 : 52);
+        crop = Build(
+            mask,
+            bounds,
+            bounds,
+            background,
+            reliable,
+            variation,
+            "polígono detectado");
         return crop.LayoutPolygon.Count >= 3;
     }
 
-    private static BalloonCrop Fallback(int pageWidth, int pageHeight, ComicRegion region)
+    private static BalloonCrop Fallback(PagePixels page, ComicRegion region)
     {
         bool rectangular = region.Type is "narration" or "caption";
         NormalizedRect normalized = region.IsManual
             ? region.RenderBox
-            : region.TextBox.Expand(rectangular ? 0.20 : 0.28, rectangular ? 0.34 : 0.46);
-        PixelRect bounds = Pixels(normalized, pageWidth, pageHeight);
+            : region.TextBox.Expand(
+                rectangular ? 0.18 : 0.24,
+                rectangular ? 0.30 : 0.38);
+        PixelRect bounds = Pixels(normalized, page.Width, page.Height);
         bool[] mask = new bool[bounds.Width * bounds.Height];
-        double cx = (bounds.Width - 1) / 2d, cy = (bounds.Height - 1) / 2d;
-        double rx = Math.Max(1, bounds.Width * 0.46), ry = Math.Max(1, bounds.Height * 0.43);
+        double centerX = (bounds.Width - 1) / 2d;
+        double centerY = (bounds.Height - 1) / 2d;
+        double radiusX = Math.Max(1, bounds.Width * 0.44);
+        double radiusY = Math.Max(1, bounds.Height * 0.41);
         for (int y = 0; y < bounds.Height; y++)
         {
             for (int x = 0; x < bounds.Width; x++)
             {
                 mask[y * bounds.Width + x] = rectangular
-                    ? x >= 2 && y >= 2 && x < bounds.Width - 2 && y < bounds.Height - 2
-                    : Math.Pow((x - cx) / rx, 2) + Math.Pow((y - cy) / ry, 2) <= 1;
+                    ? x >= 3 && y >= 3 && x < bounds.Width - 3 && y < bounds.Height - 3
+                    : Math.Pow((x - centerX) / radiusX, 2)
+                      + Math.Pow((y - centerY) / radiusY, 2) <= 1;
             }
         }
-        return Build(mask, bounds, bounds, "respaldo conservador");
+        ColorSample background = MedianBackground(
+            page,
+            Pixels(region.TextBox, page.Width, page.Height));
+        return Build(
+            mask,
+            bounds,
+            bounds,
+            background,
+            region.IsManual,
+            0,
+            "respaldo manual");
     }
 
     private static bool Inside(IReadOnlyList<Point> polygon, double x, double y)
@@ -466,9 +719,11 @@ public sealed class BalloonCropService
         int previous = polygon.Count - 1;
         for (int current = 0; current < polygon.Count; current++)
         {
-            Point a = polygon[previous], b = polygon[current];
-            if ((b.Y > y) != (a.Y > y)
-                && x < (a.X - b.X) * (y - b.Y) / (a.Y - b.Y) + b.X)
+            Point first = polygon[previous];
+            Point second = polygon[current];
+            if ((second.Y > y) != (first.Y > y)
+                && x < (first.X - second.X) * (y - second.Y)
+                    / (first.Y - second.Y) + second.X)
             {
                 inside = !inside;
             }
@@ -479,25 +734,39 @@ public sealed class BalloonCropService
 
     private static NormalizedRect PolygonBounds(IReadOnlyList<NormalizedPoint> points)
     {
-        double left = points.Min(p => p.X), top = points.Min(p => p.Y);
-        double right = points.Max(p => p.X), bottom = points.Max(p => p.Y);
-        return new NormalizedRect(left, top, Math.Max(5, right - left), Math.Max(5, bottom - top)).Clamp();
+        double left = points.Min(point => point.X);
+        double top = points.Min(point => point.Y);
+        double right = points.Max(point => point.X);
+        double bottom = points.Max(point => point.Y);
+        return new NormalizedRect(
+            left,
+            top,
+            Math.Max(5, right - left),
+            Math.Max(5, bottom - top)).Clamp();
     }
 
-    private static PixelRect Pixels(NormalizedRect rect, int width, int height)
+    private static PixelRect Pixels(NormalizedRect rectangle, int width, int height)
     {
-        int left = Math.Clamp((int)Math.Floor(rect.X / 1000 * width), 0, width - 1);
-        int top = Math.Clamp((int)Math.Floor(rect.Y / 1000 * height), 0, height - 1);
-        int right = Math.Clamp((int)Math.Ceiling(rect.Right / 1000 * width), left + 1, width);
-        int bottom = Math.Clamp((int)Math.Ceiling(rect.Bottom / 1000 * height), top + 1, height);
+        int left = Math.Clamp((int)Math.Floor(rectangle.X / 1000 * width), 0, width - 1);
+        int top = Math.Clamp((int)Math.Floor(rectangle.Y / 1000 * height), 0, height - 1);
+        int right = Math.Clamp((int)Math.Ceiling(rectangle.Right / 1000 * width), left + 1, width);
+        int bottom = Math.Clamp((int)Math.Ceiling(rectangle.Bottom / 1000 * height), top + 1, height);
         return new PixelRect(left, top, right - left, bottom - top);
+    }
+
+    private sealed class PageCache(PagePixels pixels)
+    {
+        public PagePixels Pixels { get; } = pixels;
+        public object Gate { get; } = new();
+        public Dictionary<CropKey, BalloonCrop> Crops { get; } = [];
     }
 
     private sealed record PagePixels(int Width, int Height, int Stride, byte[] Pixels)
     {
         public ColorSample At(int x, int y)
         {
-            int offset = Math.Clamp(y, 0, Height - 1) * Stride + Math.Clamp(x, 0, Width - 1) * 4;
+            int offset = Math.Clamp(y, 0, Height - 1) * Stride
+                         + Math.Clamp(x, 0, Width - 1) * 4;
             return new ColorSample(Pixels[offset], Pixels[offset + 1], Pixels[offset + 2]);
         }
     }
@@ -514,18 +783,60 @@ public sealed class BalloonCropService
 
         public PixelRect Expand(int amount, int pageWidth, int pageHeight)
         {
-            int left = Math.Max(0, X - amount), top = Math.Max(0, Y - amount);
-            int right = Math.Min(pageWidth, Right + amount), bottom = Math.Min(pageHeight, Bottom + amount);
-            return new PixelRect(left, top, Math.Max(1, right - left), Math.Max(1, bottom - top));
+            int left = Math.Max(0, X - amount);
+            int top = Math.Max(0, Y - amount);
+            int right = Math.Min(pageWidth, Right + amount);
+            int bottom = Math.Min(pageHeight, Bottom + amount);
+            return new PixelRect(
+                left,
+                top,
+                Math.Max(1, right - left),
+                Math.Max(1, bottom - top));
         }
 
-        public static PixelRect Centered(int cx, int cy, int width, int height, int pageWidth, int pageHeight)
+        public static PixelRect Centered(
+            int centerX,
+            int centerY,
+            int width,
+            int height,
+            int pageWidth,
+            int pageHeight)
         {
             width = Math.Min(width, pageWidth);
             height = Math.Min(height, pageHeight);
-            int left = Math.Clamp(cx - width / 2, 0, pageWidth - width);
-            int top = Math.Clamp(cy - height / 2, 0, pageHeight - height);
+            int left = Math.Clamp(centerX - width / 2, 0, pageWidth - width);
+            int top = Math.Clamp(centerY - height / 2, 0, pageHeight - height);
             return new PixelRect(left, top, width, height);
+        }
+    }
+
+    private readonly record struct CropKey(
+        Guid RegionId,
+        string Type,
+        bool IsManual,
+        NormalizedRect TextBox,
+        NormalizedRect? BubbleBox,
+        NormalizedRect RenderBox,
+        int GeometryHash,
+        int BubbleConfidenceBucket)
+    {
+        public static CropKey From(ComicRegion region)
+        {
+            var hash = new HashCode();
+            foreach (NormalizedPoint point in region.SafePolygon.Take(160))
+            {
+                hash.Add(Math.Round(point.X, 2));
+                hash.Add(Math.Round(point.Y, 2));
+            }
+            return new CropKey(
+                region.Id,
+                region.Type,
+                region.IsManual,
+                region.TextBox,
+                region.BubbleBox,
+                region.RenderBox,
+                hash.ToHashCode(),
+                (int)Math.Round(region.BubbleConfidence * 100));
         }
     }
 }
@@ -534,6 +845,9 @@ public sealed record BalloonCrop(
     Rect PageBounds,
     BitmapSource InteriorMask,
     IReadOnlyList<Point> LayoutPolygon,
+    Color InteriorColor,
+    bool IsReliableContainer,
+    double SurfaceVariation,
     string DetectionMethod)
 {
     public NormalizedRect ToNormalized(int pageWidth, int pageHeight) =>
