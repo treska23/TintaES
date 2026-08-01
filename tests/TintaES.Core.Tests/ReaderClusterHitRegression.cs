@@ -15,8 +15,6 @@ internal static class ReaderClusterHitRegression
             Confidence = 0.95,
             BubbleConfidence = 0.88,
             TextBox = new NormalizedRect(610, 390, 145, 90),
-            // Reproduce el fallo real: el detector prolonga el primer globo por toda la
-            // agrupación de bocadillos de la derecha.
             BubbleBox = new NormalizedRect(565, 330, 415, 445)
         };
         var middle = new ComicRegion
@@ -44,16 +42,30 @@ internal static class ReaderClusterHitRegression
 
         ComicRegion[] regions = [left, middle, lower];
 
-        ComicRegion? firstHit = ComicRegionHitResolver.Resolve(regions, 590, 405);
-        ComicRegion? middleHit = ComicRegionHitResolver.Resolve(regions, 890, 505);
-        ComicRegion? lowerHit = ComicRegionHitResolver.Resolve(regions, 945, 660);
+        ComicRegion? firstHit = ComicRegionHitResolver.Resolve(regions, 600, 405);
+        ComicRegion? middleHit = ComicRegionHitResolver.Resolve(regions, 865, 505);
+        ComicRegion? lowerHit = ComicRegionHitResolver.Resolve(regions, 922, 660);
+        ComicRegion? emptyHit = ComicRegionHitResolver.Resolve(regions, 970, 360);
 
         AssertReference(firstHit, left,
-            "El blanco del primer bocadillo debe mostrar su propia traducción.");
+            "La zona próxima al primer texto debe mostrar su propia traducción.");
         AssertReference(middleHit, middle,
-            "La caja gigante del primer bocadillo no puede secuestrar el clic del segundo.");
+            "La zona próxima al segundo texto debe mostrar su propia traducción.");
         AssertReference(lowerHit, lower,
-            "La caja gigante del primer bocadillo no puede secuestrar el clic del tercero.");
+            "La zona próxima al tercer texto debe mostrar su propia traducción.");
+        if (emptyHit is not null)
+        {
+            throw new InvalidOperationException(
+                "Pulsar fuera de la zona cercana al texto no debe mostrar ninguna traducción.");
+        }
+
+        NormalizedRect leftHitBox = ComicRegionHitResolver.ResolveHitBox(left);
+        if (leftHitBox.Width >= left.BubbleBox!.Width * 0.75
+            || leftHitBox.Height >= left.BubbleBox.Height * 0.75)
+        {
+            throw new InvalidOperationException(
+                "La zona pulsable no puede crecer hasta ocupar el bocadillo completo.");
+        }
     }
 
     private static void AssertReference(ComicRegion? actual, ComicRegion expected, string message)
