@@ -9,7 +9,7 @@ namespace TintaES.Wpf;
 /// </summary>
 public partial class MainWindow
 {
-    internal const string CurrentUiBuildStamp = "UI 2026.08.01-r50-page-tabs-and-text-hit-area";
+    internal const string CurrentUiBuildStamp = "UI 2026.08.01-r51-es-es-and-project-thumbnails";
     private const int CurrentUiBootstrapMaxAttempts = 3;
 
     private static readonly bool CurrentUiBootstrapRegistered = RegisterCurrentUiBootstrap();
