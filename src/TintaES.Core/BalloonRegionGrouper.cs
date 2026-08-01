@@ -1,9 +1,9 @@
 namespace TintaES.Core;
 
 /// <summary>
-/// Convierte fragmentos OCR en unidades de lectura. Dos bloques solo se reúnen cuando
-/// comparten un contenedor geométrico plausible y además son líneas próximas. De este modo
-/// el traductor y el lector trabajan con un bocadillo completo, no con cada línea aislada.
+/// Convierte fragmentos OCR en unidades de lectura. La unidad real es el bocadillo:
+/// color, peso o clasificación visual de una palabra no pueden dividir una frase que
+/// comparte el mismo contenedor.
 /// </summary>
 public static class BalloonRegionGrouper
 {
@@ -53,20 +53,55 @@ public static class BalloonRegionGrouper
 
         foreach (ComicRegion member in group)
         {
-            bool crossTypeHeader = IsShortSfxHeader(member) != IsShortSfxHeader(candidate);
             if (!IsMergeableBalloonPart(member)
-                || (!IsBalloonText(member) && !IsBalloonText(candidate))
-                || (crossTypeHeader && !HasSharedOcrEvidence(member, candidate))
-                || !TryGetContainer(member, out NormalizedRect firstContainer)
-                || !TryGetContainer(candidate, out NormalizedRect secondContainer))
+                || (!IsBalloonText(member) && !IsBalloonText(candidate)))
             {
                 continue;
             }
 
-            double shared = OverlapOverSmaller(firstContainer, secondContainer);
-            bool mutuallyContained = Contains(firstContainer, Centre(candidate.TextBox))
-                && Contains(secondContainer, Centre(member.TextBox));
-            if (shared < 0.62 && !mutuallyContained)
+            bool memberIsBalloon = IsBalloonText(member);
+            bool candidateIsBalloon = IsBalloonText(candidate);
+            bool mixedClassifierPair = memberIsBalloon != candidateIsBalloon;
+
+            bool memberHasContainer = TryGetContainer(member, out NormalizedRect memberContainer);
+            bool candidateHasContainer = TryGetContainer(candidate, out NormalizedRect candidateContainer);
+            if (!memberHasContainer && !candidateHasContainer)
+            {
+                continue;
+            }
+
+            NormalizedRect referenceContainer;
+            if (memberIsBalloon && memberHasContainer)
+            {
+                referenceContainer = memberContainer;
+            }
+            else if (candidateIsBalloon && candidateHasContainer)
+            {
+                referenceContainer = candidateContainer;
+            }
+            else if (memberHasContainer)
+            {
+                referenceContainer = memberContainer;
+            }
+            else
+            {
+                referenceContainer = candidateContainer;
+            }
+
+            NormalizedPoint memberCentre = Centre(member.TextBox);
+            NormalizedPoint candidateCentre = Centre(candidate.TextBox);
+            bool referenceContainsBoth = Contains(referenceContainer, memberCentre)
+                && Contains(referenceContainer, candidateCentre);
+
+            double sharedContainer = memberHasContainer && candidateHasContainer
+                ? OverlapOverSmaller(memberContainer, candidateContainer)
+                : 0;
+            bool mutuallyContained = memberHasContainer
+                && candidateHasContainer
+                && Contains(memberContainer, candidateCentre)
+                && Contains(candidateContainer, memberCentre);
+
+            if (!referenceContainsBoth && sharedContainer < 0.62 && !mutuallyContained)
             {
                 continue;
             }
@@ -81,12 +116,15 @@ public static class BalloonRegionGrouper
                 member.TextBox.Right,
                 candidate.TextBox.X,
                 candidate.TextBox.Right);
+            double minimumHeight = Math.Max(
+                1,
+                Math.Min(member.TextBox.Height, candidate.TextBox.Height));
             double maximumVerticalGap = Math.Max(
                 28,
-                Math.Min(member.TextBox.Height, candidate.TextBox.Height) * 1.8);
+                referenceContainer.Height * 0.30);
             double maximumHorizontalGap = Math.Max(
                 34,
-                Math.Min(firstContainer.Width, secondContainer.Width) * 0.24);
+                referenceContainer.Width * 0.28);
             double horizontalOverlap = AxisOverlap(
                 member.TextBox.X,
                 member.TextBox.Right,
@@ -98,23 +136,61 @@ public static class BalloonRegionGrouper
                 member.TextBox.Bottom,
                 candidate.TextBox.Y,
                 candidate.TextBox.Bottom)
-                / Math.Max(1, Math.Min(member.TextBox.Height, candidate.TextBox.Height));
+                / minimumHeight;
+            double horizontalCentreDistance = Math.Abs(
+                memberCentre.X - candidateCentre.X);
+            double verticalCentreDistance = Math.Abs(
+                memberCentre.Y - candidateCentre.Y);
 
-            // Las líneas de un mismo bocadillo se apilan y conservan solape horizontal.
-            // Dos globos contiguos suelen quedar a la misma altura: aunque el detector les
-            // asigne contenedores solapados, el hueco lateral y su borde deben separarlos.
-            bool verticallyStacked = horizontalOverlap >= 0.18
-                && verticalGap <= maximumVerticalGap;
-            bool sameLineFragment = verticalOverlap >= 0.55
-                && horizontalGap <= Math.Max(
-                    10,
-                    Math.Min(member.TextBox.Height, candidate.TextBox.Height) * 0.35);
-            if ((verticallyStacked || sameLineFragment)
-                && horizontalGap <= maximumHorizontalGap)
+            // Líneas apiladas del mismo bocadillo: pueden tener anchuras muy distintas,
+            // pero deben ocupar alturas diferentes dentro de un único contenedor.
+            bool verticallyStacked = verticalCentreDistance >= minimumHeight * 0.45
+                && verticalGap <= maximumVerticalGap
+                && (horizontalOverlap >= 0.12
+                    || horizontalCentreDistance <= referenceContainer.Width * 0.34);
+
+            // Fragmentos normales de una misma línea. El límite estrecho evita fusionar
+            // dos bocadillos paralelos cuyas cajas de detección se solapan.
+            bool sameLineBalloonFragments = memberIsBalloon
+                && candidateIsBalloon
+                && verticalOverlap >= 0.55
+                && horizontalGap <= Math.Max(10, minimumHeight * 0.35);
+
+            // Una palabra enfatizada por color —por ejemplo TAKES!— puede ser clasificada
+            // como SFX. Dentro del bocadillo se admite un hueco lateral mayor, pero solo
+            // cuando el fragmento sigue siendo pequeño respecto al contenedor.
+            bool sameLineEmphasis = mixedClassifierPair
+                && verticalOverlap >= 0.30
+                && horizontalGap <= Math.Max(24, minimumHeight * 1.20);
+
+            if ((!verticallyStacked && !sameLineBalloonFragments && !sameLineEmphasis)
+                || horizontalGap > maximumHorizontalGap)
             {
-                return true;
+                continue;
             }
+
+            if (mixedClassifierPair)
+            {
+                ComicRegion emphasis = memberIsBalloon ? candidate : member;
+                ComicRegion balloon = memberIsBalloon ? member : candidate;
+                if (!TryGetContainer(balloon, out NormalizedRect balloonContainer))
+                {
+                    continue;
+                }
+
+                bool embeddedInBalloon = Contains(balloonContainer, Centre(emphasis.TextBox))
+                    && emphasis.TextBox.Area <= balloonContainer.Area * 0.24
+                    && emphasis.TextBox.Width <= balloonContainer.Width * 0.62
+                    && emphasis.TextBox.Height <= balloonContainer.Height * 0.52;
+                if (!embeddedInBalloon && !HasSharedOcrEvidence(member, candidate))
+                {
+                    continue;
+                }
+            }
+
+            return true;
         }
+
         return false;
     }
 
@@ -123,10 +199,26 @@ public static class BalloonRegionGrouper
         ComicRegion candidate) =>
         group
             .Select(member =>
-                TryGetContainer(member, out NormalizedRect first)
-                && TryGetContainer(candidate, out NormalizedRect second)
-                    ? OverlapOverSmaller(first, second)
-                    : 0)
+            {
+                bool memberHas = TryGetContainer(member, out NormalizedRect first);
+                bool candidateHas = TryGetContainer(candidate, out NormalizedRect second);
+                if (memberHas && candidateHas)
+                {
+                    return OverlapOverSmaller(first, second);
+                }
+
+                if (memberHas && Contains(first, Centre(candidate.TextBox)))
+                {
+                    return 0.61;
+                }
+
+                if (candidateHas && Contains(second, Centre(member.TextBox)))
+                {
+                    return 0.61;
+                }
+
+                return 0;
+            })
             .DefaultIfEmpty(0)
             .Max();
 
@@ -134,20 +226,22 @@ public static class BalloonRegionGrouper
         region.Type is "dialogue" or "thought" or "caption";
 
     private static bool IsMergeableBalloonPart(ComicRegion region) =>
-        IsBalloonText(region) || IsShortSfxHeader(region);
+        IsBalloonText(region) || IsInlineEmphasisFragment(region);
 
-    private static bool IsShortSfxHeader(ComicRegion region)
+    private static bool IsInlineEmphasisFragment(ComicRegion region)
     {
-        if (!string.Equals(region.Type, "sfx", StringComparison.OrdinalIgnoreCase))
+        if (IsBalloonText(region)
+            || region.Type is not ("sfx" or "text" or "sign"))
         {
             return false;
         }
 
         string compact = string.Concat(region.Original.Where(char.IsLetterOrDigit));
-        return compact.Length is >= 2 and <= 14
-            && region.Original.Split(
-                [' ', '\t', '\r', '\n'],
-                StringSplitOptions.RemoveEmptyEntries).Length <= 2;
+        int wordCount = region.Original.Split(
+            [' ', '\t', '\r', '\n'],
+            StringSplitOptions.RemoveEmptyEntries).Length;
+        return compact.Length is >= 2 and <= 28
+            && wordCount <= 3;
     }
 
     private static bool HasSharedOcrEvidence(ComicRegion first, ComicRegion second)
@@ -214,7 +308,7 @@ public static class BalloonRegionGrouper
             .ThenBy(region => region.TextBox.X)
             .ToArray();
         ComicRegion target = ordered[0];
-        bool mergedClassifierFragment = ordered.Any(IsShortSfxHeader)
+        bool mergedClassifierFragment = ordered.Any(IsInlineEmphasisFragment)
             && ordered.Any(IsBalloonText);
         target.Type = ordered.FirstOrDefault(IsBalloonText)?.Type ?? target.Type;
         target.Original = JoinText(ordered.Select(region => region.Original));
@@ -236,7 +330,7 @@ public static class BalloonRegionGrouper
             .ToArray();
         if (containers.Length > 0)
         {
-            target.BubbleBox = Union(containers);
+            target.BubbleBox = SelectBestContainer(containers, target.TextBox);
         }
         target.RenderBox = target.BubbleBox ?? target.TextBox.Expand(0.3, 0.45);
         target.SafePolygon = [];
@@ -249,6 +343,25 @@ public static class BalloonRegionGrouper
             ordered.Length,
             ordered.Sum(region => Math.Max(0, region.Style.OriginalLineCount)));
         return target;
+    }
+
+    private static NormalizedRect SelectBestContainer(
+        IReadOnlyList<NormalizedRect> containers,
+        NormalizedRect mergedText)
+    {
+        NormalizedPoint centre = Centre(mergedText);
+        NormalizedRect? best = containers
+            .Select(container => container.Clamp())
+            .Where(container => Contains(container, centre))
+            .Where(container =>
+                mergedText.X >= container.X - 4
+                && mergedText.Y >= container.Y - 4
+                && mergedText.Right <= container.Right + 4
+                && mergedText.Bottom <= container.Bottom + 4)
+            .OrderBy(container => container.Area)
+            .FirstOrDefault();
+
+        return best ?? Union(containers);
     }
 
     private static string JoinText(IEnumerable<string> values) =>
