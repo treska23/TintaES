@@ -2,31 +2,46 @@ namespace TintaES.Core;
 
 /// <summary>
 /// Resuelve una pulsación sobre la página sin depender del orden visual de los
-/// rectángulos WPF. Los contenedores de dos bocadillos pueden solaparse; en ese
-/// caso se elige el texto realmente más próximo al punto pulsado.
+/// rectángulos WPF. Cuando varios contenedores se pisan, el espacio se reparte por
+/// proximidad al bloque de texto real para que un globo grande no secuestre a sus vecinos.
 /// </summary>
 public static class ComicRegionHitResolver
 {
     public static ComicRegion? Resolve(
         IEnumerable<ComicRegion> regions,
         double x,
-        double y) =>
-        regions
+        double y)
+    {
+        HitCandidate[] candidates = regions
             .Where(region => region.IsEnabled && !string.IsNullOrWhiteSpace(region.Original))
-            .Select(region => new HitCandidate(
-                region,
-                ResolveHitBox(region),
-                Contains(region.TextBox.Clamp(), x, y),
-                DistanceSquaredToRectangle(region.TextBox.Clamp(), x, y),
-                DistanceSquaredToCenter(region.TextBox.Clamp(), x, y)))
-            .Where(candidate => Contains(candidate.HitBox, x, y))
-            .OrderByDescending(candidate => candidate.DirectTextHit)
-            .ThenBy(candidate => candidate.DistanceToText)
-            .ThenBy(candidate => candidate.DistanceToTextCentre)
+            .Select(region => CreateCandidate(region, x, y))
+            .ToArray();
+
+        // Pulsar directamente sobre las letras es una señal inequívoca.
+        HitCandidate[] direct = candidates
+            .Where(candidate => candidate.DirectTextHit)
+            .OrderBy(candidate => candidate.DistanceToTextCentre)
+            .ThenBy(candidate => candidate.Region.Order)
+            .ToArray();
+        if (direct.Length > 0)
+        {
+            return direct[0].Region;
+        }
+
+        // Un BubbleBox defectuoso puede abarcar varios globos conectados. No damos prioridad
+        // automática a quien contenga el punto: gana el texto realmente más próximo. También
+        // admitimos una franja prudente alrededor del OCR para poder pulsar el blanco del globo
+        // cuando su contenedor particular no fue detectado correctamente.
+        return candidates
+            .Where(candidate => candidate.ContainerHit || candidate.NearText)
+            .OrderBy(candidate => candidate.NormalizedDistanceToText)
+            .ThenBy(candidate => candidate.NormalizedDistanceToTextCentre)
+            .ThenByDescending(candidate => candidate.ContainerHit)
             .ThenBy(candidate => candidate.HitBox.Area)
             .ThenBy(candidate => candidate.Region.Order)
             .Select(candidate => candidate.Region)
             .FirstOrDefault();
+    }
 
     public static NormalizedRect ResolveHitBox(ComicRegion region)
     {
@@ -66,6 +81,36 @@ public static class ComicRegionHitResolver
         // Permite pulsar el blanco inmediato alrededor de las letras, pero no
         // convierte el resto de la viñeta en una zona activa.
         return text.Expand(0.46, 0.68).Clamp();
+    }
+
+    private static HitCandidate CreateCandidate(ComicRegion region, double x, double y)
+    {
+        NormalizedRect text = region.TextBox.Clamp();
+        NormalizedRect hitBox = ResolveHitBox(region);
+        double distanceToText = DistanceSquaredToRectangle(text, x, y);
+        double distanceToTextCentre = DistanceSquaredToCenter(text, x, y);
+        double proximityRadius = ResolveProximityRadius(text);
+        double centreRadius = Math.Max(
+            proximityRadius,
+            Math.Sqrt(text.Width * text.Width + text.Height * text.Height) / 2 + proximityRadius);
+
+        return new HitCandidate(
+            region,
+            hitBox,
+            Contains(text, x, y),
+            Contains(hitBox, x, y),
+            distanceToText <= proximityRadius * proximityRadius,
+            distanceToText,
+            distanceToText / Math.Max(1, proximityRadius * proximityRadius),
+            distanceToTextCentre,
+            distanceToTextCentre / Math.Max(1, centreRadius * centreRadius));
+    }
+
+    private static double ResolveProximityRadius(NormalizedRect text)
+    {
+        // El usuario suele pulsar en el blanco cercano, no encima de una letra concreta.
+        // El máximo impide que una frase muy larga convierta media viñeta en zona activa.
+        return Math.Clamp(Math.Max(text.Width, text.Height) * 0.72 + 16, 28, 96);
     }
 
     private static bool IsPlausibleContainer(
@@ -137,6 +182,10 @@ public static class ComicRegionHitResolver
         ComicRegion Region,
         NormalizedRect HitBox,
         bool DirectTextHit,
+        bool ContainerHit,
+        bool NearText,
         double DistanceToText,
-        double DistanceToTextCentre);
+        double NormalizedDistanceToText,
+        double DistanceToTextCentre,
+        double NormalizedDistanceToTextCentre);
 }
