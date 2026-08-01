@@ -4,7 +4,7 @@
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         mc:Ignorable="d"
-        Title="Tinta ES · Traductor local de cómics"
+        Title="Tinta ES · Lector y traductor local de cómics"
         Width="1440" Height="900" MinWidth="1120" MinHeight="700"
         WindowStartupLocation="CenterScreen"
         Background="{StaticResource WindowBrush}"
@@ -43,7 +43,7 @@
                         <TextBlock FontSize="21" FontWeight="Black">
                             <Run Text="TINTA" /><Run Text="/ES" Foreground="{StaticResource AccentBrush}" />
                         </TextBlock>
-                        <TextBlock Text="ROTULACIÓN LOCAL · WPF" Foreground="{StaticResource MutedBrush}"
+                        <TextBlock Text="LECTOR Y TRADUCTOR LOCAL · WPF" Foreground="{StaticResource MutedBrush}"
                                    FontSize="9" FontWeight="Bold" />
                     </StackPanel>
                 </StackPanel>
@@ -206,7 +206,7 @@
                     <Border BorderBrush="{StaticResource LineBrush}" BorderThickness="0,0,0,1" Padding="20,13">
                         <Grid>
                             <StackPanel VerticalAlignment="Center">
-                                <TextBlock Text="MESA DE ROTULACIÓN" Foreground="{StaticResource AccentBrush}"
+                                <TextBlock Text="TRADUCCIONES DEL CÓMIC" Foreground="{StaticResource AccentBrush}"
                                            FontSize="9" FontWeight="Bold" />
                                 <TextBlock Text="Textos" FontFamily="Georgia" FontSize="25" FontWeight="Bold" Margin="0,4,0,0" />
                             </StackPanel>
@@ -267,7 +267,7 @@
                         <StackPanel x:Name="NoSelectionPanel" HorizontalAlignment="Center" VerticalAlignment="Center">
                             <TextBlock Text="Selecciona un texto" FontFamily="Georgia" FontSize="17" FontWeight="Bold"
                                        HorizontalAlignment="Center" />
-                            <TextBlock Text="Aquí podrás corregir la traducción y el estilo."
+                            <TextBlock Text="Aquí podrás revisar y corregir la traducción."
                                        Foreground="{StaticResource MutedBrush}" Margin="0,6,0,0" />
                         </StackPanel>
 
@@ -287,7 +287,7 @@
                                 <TextBox x:Name="TranslationTextBox" Height="72" AcceptsReturn="True" TextWrapping="Wrap"
                                          TextChanged="TranslationTextBox_TextChanged" VerticalScrollBarVisibility="Auto" />
 
-                                <Grid Margin="0,12,0,0">
+                                <Grid Margin="0,12,0,0" Visibility="Collapsed">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="*" />
                                         <ColumnDefinition Width="12" />
@@ -303,19 +303,19 @@
                                     </StackPanel>
                                 </Grid>
 
-                                <Border Height="1" Background="{StaticResource LineBrush}" Margin="0,18,0,15" />
-                                <TextBlock Text="TIPOGRAFÍA" Style="{StaticResource LabelText}" Margin="0,0,0,7" />
-                                <ComboBox x:Name="FontCategoryComboBox" SelectionChanged="RegionVisualControl_Changed" />
+                                <Border Height="1" Background="{StaticResource LineBrush}" Margin="0,18,0,15" Visibility="Collapsed" />
+                                <TextBlock Text="TIPOGRAFÍA" Style="{StaticResource LabelText}" Margin="0,0,0,7" Visibility="Collapsed" />
+                                <ComboBox x:Name="FontCategoryComboBox" SelectionChanged="RegionVisualControl_Changed" Visibility="Collapsed" />
 
-                                <Grid Margin="0,13,0,0">
+                                <Grid Margin="0,13,0,0" Visibility="Collapsed">
                                     <TextBlock Text="ESCALA" Style="{StaticResource LabelText}" />
                                     <TextBlock x:Name="FontScaleText" Text="100 %" HorizontalAlignment="Right"
                                                Foreground="{StaticResource MutedBrush}" FontSize="10" />
                                 </Grid>
-                                <Slider x:Name="FontScaleSlider" Minimum="50" Maximum="160" Value="100"
+                                <Slider x:Name="FontScaleSlider" Minimum="50" Maximum="160" Value="100" Visibility="Collapsed"
                                         ValueChanged="FontScaleSlider_ValueChanged" />
 
-                                <WrapPanel Margin="0,12,0,0">
+                                <WrapPanel Margin="0,12,0,0" Visibility="Collapsed">
                                     <CheckBox x:Name="BoldCheckBox" Content="Negrita" Margin="0,0,14,8"
                                               Checked="RegionVisualControl_Changed" Unchecked="RegionVisualControl_Changed" />
                                     <CheckBox x:Name="ItalicCheckBox" Content="Cursiva" Margin="0,0,14,8"
@@ -324,7 +324,7 @@
                                               Checked="RegionVisualControl_Changed" Unchecked="RegionVisualControl_Changed" />
                                 </WrapPanel>
 
-                                <Grid Margin="0,8,0,0">
+                                <Grid Margin="0,8,0,0" Visibility="Collapsed">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="*" />
                                         <ColumnDefinition Width="12" />
@@ -340,7 +340,7 @@
                                     </StackPanel>
                                 </Grid>
 
-                                <Button x:Name="DeleteRegionButton" Content="Eliminar esta zona" Margin="0,20,0,0"
+                                <Button x:Name="DeleteRegionButton" Content="Eliminar esta zona" Margin="0,20,0,0" Visibility="Collapsed"
                                         Foreground="#FF7468" Background="Transparent" BorderThickness="0" Cursor="Hand"
                                         Click="DeleteRegionButton_Click" />
                             </StackPanel>

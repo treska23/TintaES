@@ -1,6 +1,7 @@
 using System.Windows;
 using System.Windows.Controls;
 using Microsoft.Win32;
+using TintaES.Core;
 
 namespace TintaES.Wpf;
 
@@ -17,10 +18,10 @@ public partial class MainWindow
 
         _comicReaderButton = new Button
         {
-            Content = "Visualizar cómic",
+            Content = "Leer cómic",
             Style = FindResource("ToolbarButton") as Style,
             Margin = new Thickness(7, 0, 0, 0),
-            ToolTip = "Abrir un CBZ en el lector independiente de TintaES"
+            ToolTip = "Abrir el documento actual en el lector traducido de TintaES"
         };
         _comicReaderButton.Click += OpenComicReaderButton_Click;
 
@@ -32,9 +33,31 @@ public partial class MainWindow
 
     private void OpenComicReaderButton_Click(object sender, RoutedEventArgs e)
     {
+        if (_comicPages.Count > 0)
+        {
+            PersistVisibleComicPageRegions();
+            var document = new ReaderComicDocument(
+                _comicTitle ?? "Cómic",
+                _comicPages
+                    .Select(page => new ReaderComicPage(
+                        page.SourcePath,
+                        page.DisplayName,
+                        page.Regions))
+                    .ToArray(),
+                Math.Clamp(_comicPageIndex, 0, _comicPages.Count - 1),
+                ReaderTranslationEdited);
+
+            var currentReader = new ComicReaderWindow(document)
+            {
+                Owner = this
+            };
+            currentReader.Show();
+            return;
+        }
+
         var dialog = new OpenFileDialog
         {
-            Title = "Visualizar cómic CBZ",
+            Title = "Leer cómic CBZ",
             Filter = "Comic Book ZIP|*.cbz|Todos los archivos|*.*",
             Multiselect = false,
             CheckFileExists = true
@@ -49,5 +72,21 @@ public partial class MainWindow
             Owner = this
         };
         reader.Show();
+    }
+
+    private void ReaderTranslationEdited(int pageIndex, ComicRegion region)
+    {
+        MarkActiveDocumentDirty(pageIndex);
+        if (pageIndex != _visibleComicPageIndex)
+        {
+            return;
+        }
+
+        RegionListBox.Items.Refresh();
+        if (ReferenceEquals(_selectedRegion, region))
+        {
+            ShowRegionEditor(region);
+        }
+        SetFooterStatus($"Traducción corregida en la página {pageIndex + 1}.", "#58A77D");
     }
 }

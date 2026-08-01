@@ -5,60 +5,41 @@ using System.Windows.Input;
 namespace TintaES.Wpf;
 
 /// <summary>
-/// Desplazamiento del lienzo al estilo de un editor gráfico: mantener Espacio y arrastrar.
-/// No participa en la composición ni en el renderizado del texto.
+/// Desplazamiento directo del lector: el botón izquierdo arrastra la página sin teclas
+/// modificadoras. Los campos de texto quedan fuera del visor y no compiten con el gesto.
 /// </summary>
 public partial class MainWindow
 {
-    private bool _spacePanHeld;
     private bool _isSpacePanning;
+    private bool _mainTranslationMouseHeld;
     private Point _panStartPointer;
     private double _panStartHorizontalOffset;
     private double _panStartVerticalOffset;
-
-    protected override void OnPreviewKeyDown(KeyEventArgs e)
-    {
-        base.OnPreviewKeyDown(e);
-
-        if (e.Key != Key.Space || IsTextEntryFocused())
-        {
-            return;
-        }
-
-        _spacePanHeld = true;
-        ImageScrollViewer.Cursor = Cursors.Hand;
-        e.Handled = true;
-    }
-
-    protected override void OnPreviewKeyUp(KeyEventArgs e)
-    {
-        base.OnPreviewKeyUp(e);
-
-        if (e.Key != Key.Space)
-        {
-            return;
-        }
-
-        _spacePanHeld = false;
-        EndSpacePan();
-        ImageScrollViewer.Cursor = Cursors.Arrow;
-        e.Handled = true;
-    }
 
     protected override void OnPreviewMouseLeftButtonDown(MouseButtonEventArgs e)
     {
         base.OnPreviewMouseLeftButtonDown(e);
 
-        if (!_spacePanHeld || !ImageScrollViewer.IsMouseOver)
+        if (!ImageScrollViewer.IsMouseOver || BusyOverlay.Visibility == Visibility.Visible)
         {
             return;
         }
+
+        if (TryShowMainTranslationAt(e.GetPosition(ImageStage)))
+        {
+            _mainTranslationMouseHeld = true;
+            Mouse.Capture(ImageScrollViewer, CaptureMode.Element);
+            e.Handled = true;
+            return;
+        }
+
+        HideMainTranslation();
 
         _isSpacePanning = true;
         _panStartPointer = e.GetPosition(ImageScrollViewer);
         _panStartHorizontalOffset = ImageScrollViewer.HorizontalOffset;
         _panStartVerticalOffset = ImageScrollViewer.VerticalOffset;
-        ImageScrollViewer.Cursor = Cursors.SizeAll;
+        ImageScrollViewer.Cursor = Cursors.Hand;
         Mouse.Capture(ImageScrollViewer, CaptureMode.Element);
         e.Handled = true;
     }
@@ -84,13 +65,20 @@ public partial class MainWindow
     {
         base.OnPreviewMouseLeftButtonUp(e);
 
+        if (_mainTranslationMouseHeld)
+        {
+            EndMainTranslationMouseHold();
+            e.Handled = true;
+            return;
+        }
+
         if (!_isSpacePanning)
         {
             return;
         }
 
         EndSpacePan();
-        ImageScrollViewer.Cursor = _spacePanHeld ? Cursors.Hand : Cursors.Arrow;
+        ImageScrollViewer.Cursor = Cursors.Hand;
         e.Handled = true;
     }
 
@@ -108,6 +96,18 @@ public partial class MainWindow
         }
     }
 
-    private static bool IsTextEntryFocused() =>
-        Keyboard.FocusedElement is TextBoxBase or ComboBox;
+    private void EndMainTranslationMouseHold()
+    {
+        if (!_mainTranslationMouseHeld)
+        {
+            return;
+        }
+
+        _mainTranslationMouseHeld = false;
+        HideMainTranslation();
+        if (Mouse.Captured == ImageScrollViewer)
+        {
+            Mouse.Capture(null);
+        }
+    }
 }

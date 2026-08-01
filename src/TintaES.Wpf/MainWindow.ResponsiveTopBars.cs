@@ -249,7 +249,7 @@ public partial class MainWindow
     {
         SetButtonLabel(OpenImageButton, "Abrir", "Abrir cómic o páginas");
         SetButtonLabel(_openFolderButton, "Carpeta", "Abrir una carpeta de páginas");
-        SetButtonLabel(AnalyzeButton, "✦ Analizar", "Analizar y traducir las páginas seleccionadas");
+        SetButtonLabel(AnalyzeButton, "✦ Traducir", "Detectar los bocadillos y traducir las páginas seleccionadas");
         SetButtonLabel(_saveProjectButton, "Guardar", "Guardar proyecto editable");
         SetButtonLabel(_exportComicButton, "CBZ", "Exportar páginas seleccionadas a CBZ");
         SetButtonLabel(_exportPsdButton, "PSD", "Exportar la página actual a PSD");
@@ -258,9 +258,10 @@ public partial class MainWindow
         foreach (Button button in _responsiveOpenActionsPanel!.Children.OfType<Button>())
         {
             string current = button.Content?.ToString() ?? string.Empty;
-            if (current.Contains("Visualizar", StringComparison.OrdinalIgnoreCase))
+            if (current.Contains("Visualizar", StringComparison.OrdinalIgnoreCase)
+                || current.Contains("Leer", StringComparison.OrdinalIgnoreCase))
             {
-                SetButtonLabel(button, "Lector", "Visualizar el cómic");
+                SetButtonLabel(button, "Leer", "Leer el cómic y pulsar los bocadillos para traducirlos");
             }
             else if (current.Contains("Páginas", StringComparison.OrdinalIgnoreCase))
             {

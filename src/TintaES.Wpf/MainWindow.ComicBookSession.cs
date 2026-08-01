@@ -318,9 +318,9 @@ public partial class MainWindow
             MaskPreviewButton.IsEnabled = _maskBitmap is not null;
             CleanPreviewButton.IsEnabled = true;
             ResultPreviewButton.IsEnabled = true;
-            PageImage.Source = _cleanedBitmap;
-            ShowPreviewMode("result");
-            RebuildOverlay();
+            PageImage.Source = _originalBitmap;
+            ShowPreviewMode("original");
+            OverlayCanvas.Children.Clear();
             UpdateRegionCount();
             if (_regions.Count > 0)
             {
@@ -385,7 +385,9 @@ public partial class MainWindow
         }
 
         OpenImageButton.IsEnabled = true;
-        AnalyzeButton.Content = hasComic && _comicPages.Count > 1 ? "✦  Traducir cómic" : "✦  Analizar y traducir";
+        AnalyzeButton.Content = hasComic && _comicPages.Count > 1
+            ? "✦  Detectar y traducir cómic"
+            : "✦  Detectar y traducir";
         AnalyzeButton.IsEnabled = hasComic && !busy && ModelComboBox.SelectedItem is not null;
     }
 

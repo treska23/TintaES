@@ -215,7 +215,15 @@ public partial class MainWindow
                 {
                     NormalizeLoadedProjectRegion(region);
                 }
-                if (page.Regions.Any(region => region.IsEnabled && !region.HasRenderableTranslation))
+                IReadOnlyList<ComicRegion> groupedRegions = BalloonRegionGrouper.Group(page.Regions);
+                page.Regions.Clear();
+                page.Regions.AddRange(groupedRegions);
+                if (page.Regions.Count == 0)
+                {
+                    page.Processed = false;
+                    page.Error = "El proyecto no contiene zonas de texto para esta página; vuelve a detectarla.";
+                }
+                else if (page.Regions.Any(region => region.IsEnabled && !region.HasRenderableTranslation))
                 {
                     page.Processed = false;
                     page.Error = "La traducción está incompleta y debe reintentarse.";

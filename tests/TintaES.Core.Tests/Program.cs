@@ -10,6 +10,8 @@ var tests = new (string Name, Func<Task> Run)[]
     ("Rechaza polígonos de bocadillo desmesurados", TestOversizedBubblePolygonAsync),
     ("Aprovecha el interior orgánico del bocadillo", TestDetectedBubbleInteriorAsync),
     ("Combina lecturas solapadas", TestMergeAsync),
+    ("Agrupa todas las líneas de un bocadillo", TestWholeBalloonGroupingAsync),
+    ("Une un encabezado OCR con su propio bocadillo", TestWholeBalloonHeaderTranslationAsync),
     ("Separa áreas de rotulación que compiten", TestCompetingRenderAreasAsync),
     ("Nunca vuelve a dibujar el OCR inglés como texto de resultado", TestDisplayTextNeverUsesOriginalAsync),
     ("Separa detección y traducción", TestOllamaPipelineAsync),
@@ -238,6 +240,159 @@ static Task TestDisplayTextNeverUsesOriginalAsync()
     return Task.CompletedTask;
 }
 
+static Task TestWholeBalloonGroupingAsync()
+{
+    var firstLine = new ComicRegion
+    {
+        Original = "THIS BALLOON HAS",
+        Translation = "ESTE BOCADILLO TIENE",
+        Type = "dialogue",
+        Confidence = 0.91,
+        TextBox = new NormalizedRect(420, 300, 150, 34),
+        BubbleBox = new NormalizedRect(370, 250, 260, 230),
+        Style = new ComicTextStyle { OriginalLineCount = 1 }
+    };
+    var secondLine = new ComicRegion
+    {
+        Original = "SEVERAL OCR LINES",
+        Translation = "VARIAS LÍNEAS DE OCR",
+        Type = "dialogue",
+        Confidence = 0.88,
+        TextBox = new NormalizedRect(405, 350, 180, 36),
+        BubbleBox = new NormalizedRect(375, 252, 255, 226),
+        Style = new ComicTextStyle { OriginalLineCount = 1 }
+    };
+    var thirdLine = new ComicRegion
+    {
+        Original = "AND MUST OPEN ONCE",
+        Translation = "Y DEBE ABRIRSE DE UNA VEZ",
+        Type = "dialogue",
+        Confidence = 0.89,
+        TextBox = new NormalizedRect(400, 402, 190, 35),
+        BubbleBox = new NormalizedRect(372, 249, 258, 231),
+        Style = new ComicTextStyle { OriginalLineCount = 1 }
+    };
+    var nearbyBalloon = new ComicRegion
+    {
+        Original = "DO NOT MIX ME",
+        Translation = "NO ME MEZCLES",
+        Type = "dialogue",
+        Confidence = 0.95,
+        TextBox = new NormalizedRect(690, 345, 150, 44),
+        BubbleBox = new NormalizedRect(650, 285, 240, 190)
+    };
+
+    IReadOnlyList<ComicRegion> grouped = BalloonRegionGrouper.Group(
+        [firstLine, secondLine, thirdLine, nearbyBalloon]);
+
+    Assert(grouped.Count == 2, "Tres líneas de un globo deben producir una única zona.");
+    ComicRegion balloon = grouped.Single(region => region.Original.StartsWith("THIS BALLOON"));
+    Assert(
+        balloon.Original == "THIS BALLOON HAS SEVERAL OCR LINES AND MUST OPEN ONCE",
+        "El texto original debe conservar todas las líneas en orden de lectura.");
+    Assert(
+        balloon.Translation == "ESTE BOCADILLO TIENE VARIAS LÍNEAS DE OCR Y DEBE ABRIRSE DE UNA VEZ",
+        "La tarjeta debe mostrar la traducción completa del bocadillo.");
+    Assert(balloon.Style.OriginalLineCount >= 3, "Debe conservar el número total de líneas.");
+    Assert(
+        grouped.Single(region => region.Original == "DO NOT MIX ME").Translation == "NO ME MEZCLES",
+        "Un bocadillo cercano no puede mezclarse con el anterior.");
+
+    var leftParallelBalloon = new ComicRegion
+    {
+        Original = "SERIOUS PIECE OF HARDWARE",
+        Translation = "QUÉ PIEZA DE EQUIPO",
+        Type = "dialogue",
+        TextBox = new NormalizedRect(450, 43, 134, 55),
+        BubbleBox = new NormalizedRect(270, 0, 495, 160)
+    };
+    var rightParallelBalloon = new ComicRegion
+    {
+        Original = "NO IDEA ABOUT THAT",
+        Translation = "NI IDEA DE ESO",
+        Type = "dialogue",
+        TextBox = new NormalizedRect(613, 43, 87, 72),
+        BubbleBox = new NormalizedRect(495, 0, 322, 198)
+    };
+    IReadOnlyList<ComicRegion> parallel = BalloonRegionGrouper.Group(
+        [leftParallelBalloon, rightParallelBalloon]);
+    Assert(
+        parallel.Count == 2,
+        "Dos bocadillos paralelos deben respetar el borde que los separa aunque sus cajas se solapen.");
+
+    const string sharedReading = "WULK'S NOT COMING OUT ANY TIME SOON. MAYBE NEXT TIME, SPIDER-PUNK.";
+    var hulkHeader = new ComicRegion
+    {
+        Original = "4ULKS",
+        Translation = "NO, NO ESTOY SEGURO DE ESO",
+        Type = "sfx",
+        OcrAlternatives = [sharedReading],
+        TextBox = new NormalizedRect(513, 370, 40, 7),
+        BubbleBox = new NormalizedRect(461, 361, 147, 25)
+    };
+    var hulkBody = new ComicRegion
+    {
+        Original = "NOT COMING OUT ANY TIME SOON MAYBE NEXT TIME SPIDER-PUNK.",
+        Translation = "HULK NO VA A SALIR PRONTO",
+        Type = "dialogue",
+        OcrAlternatives = [sharedReading],
+        TextBox = new NormalizedRect(474, 377, 116, 37),
+        BubbleBox = new NormalizedRect(460, 335, 156, 89)
+    };
+    IReadOnlyList<ComicRegion> hulkBalloon = BalloonRegionGrouper.Group([hulkBody, hulkHeader]);
+    Assert(hulkBalloon.Count == 1,
+        "HULK'S y el resto de su texto deben ser una sola zona pulsable.");
+    Assert(hulkBalloon[0].Type == "dialogue",
+        "Un encabezado mal clasificado como SFX debe heredar el tipo del bocadillo.");
+    Assert(hulkBalloon[0].Original.StartsWith("4ULKS NOT COMING", StringComparison.Ordinal),
+        "El encabezado debe quedar delante del resto del bocadillo.");
+    Assert(!hulkBalloon[0].HasRenderableTranslation,
+        "Una traducción antigua de la microzona debe descartarse y recalcularse como bocadillo completo.");
+
+    secondLine.Translation = string.Empty;
+    IReadOnlyList<ComicRegion> incomplete = BalloonRegionGrouper.Group([firstLine, secondLine]);
+    Assert(
+        !incomplete[0].HasRenderableTranslation,
+        "Si falta una línea, el bocadillo entero debe quedar pendiente para retraducirse.");
+    return Task.CompletedTask;
+}
+
+static async Task TestWholeBalloonHeaderTranslationAsync()
+{
+    const string sharedReading = "WULK'S NOT COMING OUT ANY TIME SOON. MAYBE NEXT TIME, SPIDER-PUNK.";
+    IReadOnlyList<ComicRegion> grouped = BalloonRegionGrouper.Group(
+    [
+        new ComicRegion
+        {
+            Original = "4ULKS",
+            Type = "sfx",
+            OcrAlternatives = [sharedReading],
+            TextBox = new NormalizedRect(513, 370, 40, 7),
+            BubbleBox = new NormalizedRect(461, 361, 147, 25)
+        },
+        new ComicRegion
+        {
+            Original = "NOT COMING OUT ANY TIME SOON MAYBE NEXT TIME SPIDER-PUNK.",
+            Type = "dialogue",
+            OcrAlternatives = [sharedReading],
+            TextBox = new NormalizedRect(474, 377, 116, 37),
+            BubbleBox = new NormalizedRect(460, 335, 156, 89)
+        }
+    ]);
+
+    var handler = new FakeTranslateGemmaHandler();
+    using var http = new HttpClient(handler) { BaseAddress = new Uri("http://127.0.0.1:11434/") };
+    using var client = new OllamaClient(httpClient: http);
+    await client.TranslateRegionsAsync(grouped, "translategemma:4b", CancellationToken.None);
+
+    Assert(handler.Prompts.Any(prompt => prompt.Contains(
+            "HULK'S NOT COMING OUT ANY TIME SOON",
+            StringComparison.Ordinal)),
+        "El traductor debe recibir HULK'S reparado y el bocadillo completo, no la microzona 4ULKS.");
+    Assert(grouped[0].HasRenderableTranslation,
+        "El bocadillo completo debe recibir una única traducción.");
+}
+
 static async Task TestOllamaPipelineAsync()
 {
     var handler = new FakeOllamaHandler();
@@ -334,7 +489,12 @@ static async Task TestComicSceneSemanticGuardsAsync()
     [
         new() { Original = "FIRE- BALLS, GIRLS", Type = "dialogue" },
         new() { Original = "LET ME TELL YOU WHAT IT'S ALL ABOUT", Type = "dialogue" },
-        new() { Original = "TAKE THESE SUCKERS OUT", Type = "dialogue" }
+        new() { Original = "TAKE THESE SUCKERS OUT", Type = "dialogue" },
+        new()
+        {
+            Original = "4ULKS NOT COMING OUT ANY TIME SOON MAYBE NEXT TIME SPIDER-PUNK.",
+            Type = "dialogue"
+        }
     ];
 
     await client.TranslateRegionsAsync(regions, "translategemma:4b", CancellationToken.None);
@@ -345,6 +505,8 @@ static async Task TestComicSceneSemanticGuardsAsync()
         "El diálogo debe usar un registro natural de España.");
     Assert(regions[2].Translation == "¡Acabad con esos capullos!",
         "La orden de combate no puede convertirse en una palabra inventada.");
+    Assert(regions[3].Translation == "Hulk no va a salir pronto. Quizá la próxima vez, «Spider-Punk».",
+        "HULK'S debe pertenecer al bocadillo completo y conservar su sentido en español.");
 }
 
 static void Assert(bool condition, string message)
@@ -435,6 +597,7 @@ sealed class FakeOllamaHandler : HttpMessageHandler
 sealed class FakeTranslateGemmaHandler : HttpMessageHandler
 {
     public int Calls { get; private set; }
+    public List<string> Prompts { get; } = [];
 
     protected override async Task<HttpResponseMessage> SendAsync(
         HttpRequestMessage request,
@@ -447,6 +610,7 @@ sealed class FakeTranslateGemmaHandler : HttpMessageHandler
             .GetProperty("messages")[0]
             .GetProperty("content")
             .GetString()!;
+        Prompts.Add(prompt);
         Match[] targets = Regex.Matches(
                 prompt,
                 @"\[\[(R[A-F0-9]+)\]\]\s*(.*?)\s*\[\[/\1\]\]",

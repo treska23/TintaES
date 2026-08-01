@@ -39,6 +39,11 @@ public partial class MainWindow
 
     private static bool PageNeedsTranslation(ComicBookPageState page) =>
         !page.Processed
+        || page.Regions.Count == 0
+        || page.Regions.Any(region =>
+            !region.IsEnabled
+            && region.Confidence >= 0.05
+            && !string.IsNullOrWhiteSpace(region.Original))
         || page.Regions.Any(region => region.IsEnabled && !region.HasRenderableTranslation);
 
     /// <summary>

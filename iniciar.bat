@@ -1,5 +1,5 @@
 @echo off
-title Tinta ES - Traductor local de comics
+title Tinta ES - Lector y traductor local de comics
 cd /d "%~dp0"
 dotnet run --project src\TintaES.Wpf\TintaES.Wpf.csproj --configuration Release
 if errorlevel 1 (

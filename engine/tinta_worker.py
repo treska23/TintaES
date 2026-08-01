@@ -30,8 +30,8 @@ PROGRESS = {
     "translating": (58, "Preparando el texto para traducir"),
     "after-translating": (61, "Comprobando las zonas detectadas"),
     "mask-generation": (67, "Ajustando la máscara a las letras"),
-    "inpainting": (76, "Reconstruyendo el fondo con LaMa"),
-    "rendering": (94, "Preparando el resultado editable"),
+    "inpainting": (76, "Conservando la página original"),
+    "rendering": (94, "Preparando las zonas del lector"),
     "downscaling": (97, "Restaurando el tamaño original"),
 }
 
@@ -1128,7 +1128,7 @@ async def analyze(args: argparse.Namespace) -> int:
         "elapsedSeconds": round(time.perf_counter() - started, 3),
     }
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-    emit({"type": "complete", "percent": 100, "message": "Fondo reconstruido", "manifest": str(manifest_path)})
+    emit({"type": "complete", "percent": 100, "message": "Bocadillos preparados", "manifest": str(manifest_path)})
     return 0
 
 

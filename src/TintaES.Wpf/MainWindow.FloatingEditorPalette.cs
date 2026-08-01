@@ -51,6 +51,10 @@ public partial class MainWindow
             MoveHistoryAndSaveOutsideCanvas();
             ApplyCompactCanvasToolIcons();
             ClampFloatingEditorPalette();
+            if (ReaderFirstModeEnabled && _floatingEditorPalette is not null)
+            {
+                _floatingEditorPalette.Visibility = Visibility.Collapsed;
+            }
             return;
         }
 
@@ -156,6 +160,10 @@ public partial class MainWindow
         ImageScrollViewer.SizeChanged += (_, _) => ClampFloatingEditorPalette();
         ApplyCompactCanvasToolIcons();
         ClampFloatingEditorPalette();
+        if (ReaderFirstModeEnabled)
+        {
+            _floatingEditorPalette.Visibility = Visibility.Collapsed;
+        }
     }
 
     private void MoveHistoryAndSaveOutsideCanvas()

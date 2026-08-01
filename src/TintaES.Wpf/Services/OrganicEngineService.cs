@@ -19,7 +19,7 @@ public sealed record OrganicAnalysisResult(
 public sealed class OrganicEngineService
 {
     // Cambiar esta versión invalida únicamente la caché del análisis orgánico.
-    private const string CacheVersion = "organic-layout-v15-dark-sfx";
+    private const string CacheVersion = "organic-reader-v16-no-inpaint";
 
     private static readonly TimeSpan WorkerHeartbeatInterval = TimeSpan.FromSeconds(15);
 
@@ -146,7 +146,7 @@ public sealed class OrganicEngineService
             manifestPath,
             progress,
             cancellationToken);
-        progress?.Report(new AnalysisProgress(100, 100, "Fondo reconstruido. Preparando la traducción…"));
+        progress?.Report(new AnalysisProgress(100, 100, "Bocadillos localizados. Preparando la traducción…"));
         return LoadResult(resultManifest, false);
     }
 
@@ -429,10 +429,11 @@ public sealed class OrganicEngineService
             throw new InvalidOperationException("El análisis está incompleto: faltan la máscara o el fondo limpio.");
         }
 
-        IReadOnlyList<ComicRegion> regions = RegionMerger.Merge(
-            manifest.Regions
-                .Where(region => !string.IsNullOrWhiteSpace(region.Original))
-                .Select((region, index) => CreateRegion(region, index, manifest.Width, manifest.Height)));
+        IReadOnlyList<ComicRegion> regions = BalloonRegionGrouper.Group(
+            RegionMerger.Merge(
+                manifest.Regions
+                    .Where(region => !string.IsNullOrWhiteSpace(region.Original))
+                    .Select((region, index) => CreateRegion(region, index, manifest.Width, manifest.Height))));
         return new OrganicAnalysisResult(
             new ComicAnalysis(manifest.SourceLanguage, regions),
             LoadBitmap(manifest.CleanImage),
@@ -467,7 +468,9 @@ public sealed class OrganicEngineService
             Rotation = source.Rotation,
             Vertical = false,
             CleanupMode = "none",
-            IsEnabled = source.Confidence >= 0.30,
+            // La rotulación de color o muy estilizada suele tener menor confianza que
+            // el texto negro, pero el lector debe conservarla como zona pulsable.
+            IsEnabled = source.Confidence >= 0.05,
             Style = new ComicTextStyle
             {
                 FontCategory = type == "sfx" ? "display" : "comic",

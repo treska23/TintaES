@@ -22,6 +22,7 @@ public partial class MainWindow
         }
 
         PersistVisibleComicPageRegions();
+        HideMainTranslation();
         _pageNavigationBusy = true;
         ComicBookPageState page = _comicPages[index];
 
@@ -268,7 +269,15 @@ public partial class MainWindow
         _maskBitmap = page.Processed ? cache.Mask : null;
         _selectedRegion = null;
 
-        PageImage.Source = page.Processed ? _cleanedBitmap : _originalBitmap;
+        IReadOnlyList<ComicRegion> groupedRegions = BalloonRegionGrouper.Group(page.Regions);
+        if (groupedRegions.Count != page.Regions.Count
+            || !groupedRegions.SequenceEqual(page.Regions))
+        {
+            page.Regions.Clear();
+            page.Regions.AddRange(groupedRegions);
+        }
+
+        PageImage.Source = _originalBitmap;
         ImageStage.Width = _originalBitmap.PixelWidth;
         ImageStage.Height = _originalBitmap.PixelHeight;
         PageImage.Width = _originalBitmap.PixelWidth;
@@ -296,14 +305,14 @@ public partial class MainWindow
 
         RegionListBox.SelectedItem = null;
         ShowRegionEditor(null);
-        _previewMode = "result";
+        _previewMode = "original";
         OriginalPreviewButton.IsEnabled = true;
         MaskPreviewButton.IsEnabled = _maskBitmap is not null;
         CleanPreviewButton.IsEnabled = page.Processed;
         ResultPreviewButton.IsEnabled = page.Processed;
         LanguageText.Text = page.Processed ? $"{page.SourceLanguage.ToUpperInvariant()} → ES" : "— → ES";
 
-        ShowPreviewMode("result");
+        ShowPreviewMode("original");
         OverlayCanvas.Children.Clear();
         UpdateRegionCount();
 
@@ -322,7 +331,9 @@ public partial class MainWindow
             : $"Mostrando página {index + 1}…";
         await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Render);
 
-        ComicRegion[] enabledRegions = _regions.Where(region => region.IsEnabled).ToArray();
+        ComicRegion[] enabledRegions = ReaderFirstModeEnabled
+            ? []
+            : _regions.Where(region => region.IsEnabled).ToArray();
         for (int regionIndex = 0; regionIndex < enabledRegions.Length; regionIndex++)
         {
             AddRegionVisual(enabledRegions[regionIndex]);

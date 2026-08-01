@@ -174,6 +174,7 @@ public partial class MainWindow : Window
     {
         try
         {
+            HideMainTranslation();
             var bitmap = new BitmapImage();
             bitmap.BeginInit();
             bitmap.CacheOption = BitmapCacheOption.OnLoad;
@@ -280,7 +281,7 @@ public partial class MainWindow : Window
             MaskPreviewButton.IsEnabled = true;
             CleanPreviewButton.IsEnabled = true;
             ResultPreviewButton.IsEnabled = true;
-            ShowPreviewMode("result");
+            ShowPreviewMode("original");
 
             _regions.Clear();
             foreach (ComicRegion region in analysis.Regions)
@@ -305,7 +306,8 @@ public partial class MainWindow : Window
                     progress);
             }
 
-            UpdateCleanedPreview();
+            PageImage.Source = _originalBitmap;
+            OverlayCanvas.Children.Clear();
             UpdateRegionCount();
             if (_regions.Count > 0)
             {

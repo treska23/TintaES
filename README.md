@@ -1,30 +1,32 @@
 # Tinta ES
 
-Tinta ES es una aplicación de escritorio WPF para traducir y rotular cómics completamente en local. Detecta el texto de una página, lo elimina reconstruyendo el dibujo que había detrás, traduce el diálogo al español y compone el nuevo texto dentro de la silueta real de cada bocadillo.
+Tinta ES es un lector y traductor de cómics WPF completamente local. Detecta diálogos, pensamientos, cartuchos, letreros y onomatopeyas, comprende el contexto de la página y lo traduce al español, pero conserva intacta la imagen original. Al pulsar cualquier texto, su traducción aparece en una tarjeta centrada y desaparece al pulsar fuera o, en una pantalla táctil, al levantar el dedo.
 
 No usa servicios de pago, suscripciones ni claves de API. Las imágenes permanecen en el ordenador.
 
 ## Cómo funciona
 
 - **Detección y OCR:** Comic Text Detector y OCR 48 px de Manga Image Translator.
-- **Borrado orgánico:** LaMa elimina las letras mediante una máscara ajustada a los glifos; no coloca rectángulos blancos sobre la página.
-- **Traducción:** `translategemma:4b` se ejecuta en Ollama y traduce todos los bocadillos de la página con contexto compartido.
-- **Rotulación:** WPF guarda un polígono seguro por bocadillo y calcula una anchura diferente para cada línea, adaptándose a formas ovaladas, irregulares o con aristas.
-- **Revisión:** las zonas siguen siendo editables y se puede comparar original, máscara, fondo limpio y resultado.
+- **Traducción:** `translategemma:4b` se ejecuta en Ollama y traduce todos los textos detectados de la página con contexto compartido.
+- **Lectura intacta:** las zonas de pulsación son invisibles y nunca borran, tapan ni sustituyen píxeles del cómic.
+- **Interacción directa:** rueda para ampliar, clic y arrastre para moverse, pellizco táctil para zoom y barrido horizontal seguro para cambiar de página.
+- **Revisión:** cada traducción se puede corregir desde el lector o desde el panel de textos y queda guardada en el proyecto `.tinta`.
+- **Modo lector:** pantalla completa con `F11`, ajuste a página o ancho, dirección occidental/manga, precarga y caché de páginas.
 
 ## Inicio rápido en el equipo configurado
 
 1. Abre Ollama si no se inició con Windows.
 2. Haz doble clic en `iniciar.bat` o abre `TintaES.sln` en Visual Studio.
 3. Carga una página PNG, JPEG, WEBP, TIFF o BMP, una carpeta o un CBZ.
-4. Pulsa **Analizar y traducir**.
-5. Revisa las zonas y pulsa **Exportar imagen**, **Exportar PSD** o **Exportar CBZ**.
-   La página puede guardarse como PNG, JPEG, WebP, TIFF, BMP o PDF.
+4. Pulsa **Detectar y traducir**.
+5. Pulsa **Leer** —o usa directamente la vista principal— y toca o haz clic sobre cualquier texto traducido.
+6. Guarda el proyecto `.tinta` si has corregido alguna traducción.
 
-La edición del lienzo conserva el autoajuste al corregir una traducción. Arrastrar o
-redimensionar una caja activa el modo manual, que mantiene el texto dentro de sus límites.
-La paleta flotante reúne las herramientas de selección y máscara; `Ctrl+Z` y `Ctrl+Y`
-deshacen y rehacen los cambios.
+En PC, la rueda controla el zoom y el botón izquierdo arrastra la página sin necesidad de
+mantener Espacio ni Control. En una pantalla táctil, un dedo desplaza y dos dedos amplían o
+reducen. Un barrido solo cambia de página cuando es horizontal, largo, no comenzó en un
+bocadillo y la vista ya se encuentra en el borde; así un toque de traducción no puede pasar
+de página accidentalmente.
 
 También se puede ejecutar desde una terminal:
 
@@ -39,7 +41,7 @@ dotnet run --project src\TintaES.Wpf\TintaES.Wpf.csproj --configuration Release
 - Python 3.11 en `engine/manga-image-translator/.venv`.
 - Una GPU NVIDIA compatible con CUDA es muy recomendable.
 - Ollama con `translategemma:4b` instalado.
-- El submódulo `engine/manga-image-translator` y sus modelos CTD, OCR y LaMa.
+- El submódulo `engine/manga-image-translator` y sus modelos CTD y OCR.
 
 Los modelos, el entorno virtual, las cachés y las páginas procesadas no se guardan en GitHub por su tamaño y privacidad.
 
@@ -56,14 +58,18 @@ dotnet build TintaES.sln --configuration Debug
 dotnet run --project tests\TintaES.Core.Tests\TintaES.Core.Tests.csproj --configuration Debug
 ```
 
-La prueba de integración acepta la ruta de una imagen y genera una vista previa local en `artifacts/`:
+La prueba de integración acepta la ruta de una imagen y comprueba OCR y traducción local:
 
 ```powershell
 dotnet run --project tests\TintaES.IntegrationTests\TintaES.IntegrationTests.csproj --configuration Debug -- "C:\ruta\pagina.jpg"
 ```
 
-Esta prueba valida la traducción, las referencias tipográficas, el ajuste seguro de una
-caja manual y las exportaciones PNG, JPEG, WebP, TIFF, BMP y PDF.
+Las regresiones específicas del lector comprueban las zonas pulsables y que los barridos
+cortos, los pellizcos o los arrastres sin llegar al borde nunca cambien de página:
+
+```powershell
+dotnet run --project tests\TintaES.IntegrationTests\TintaES.IntegrationTests.csproj --configuration Debug -- --reader-hit-test-self-test
+```
 
 ## Privacidad
 

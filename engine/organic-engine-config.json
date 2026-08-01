@@ -20,7 +20,7 @@
     "prob": 0.2
   },
   "inpainter": {
-    "inpainter": "lama_large",
+    "inpainter": "original",
     "inpainting_size": 1536,
     "inpainting_precision": "bf16"
   },

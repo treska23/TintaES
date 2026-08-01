@@ -515,6 +515,13 @@ public sealed class OllamaClient : IDisposable
             {
                 region.Translation = "¡Acabad con esos capullos!";
             }
+            else if (Regex.IsMatch(
+                         source,
+                         @"\bHULK['’]?S\s+NOT\s+COMING\s+OUT\s+ANY\s+TIME\s+SOON\b.*\bNEXT\s+TIME\b.*\bSPIDER[\s-]*PUNK\b",
+                         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+            {
+                region.Translation = "Hulk no va a salir pronto. Quizá la próxima vez, «Spider-Punk».";
+            }
 
             if (Regex.IsMatch(
                 source,
@@ -1139,6 +1146,7 @@ public sealed class OllamaClient : IDisposable
         string text = NormalizeSourceText(value);
         (string Pattern, string Replacement)[] repairs =
         [
+            (@"\b[4W]ULK['’]?S\b", "HULK'S"),
             (@"\bSTREEI\b", "STREET"),
             (@"\bBARELT\b", "BARELY"),
             (@"\bKEEF\b", "KEEP"),

@@ -251,12 +251,11 @@ public partial class MainWindow
         int attempt)
     {
         BusyTitleText.Text = attempt == 1
-            ? $"Página {humanPage}/{_comicPages.Count} · localizando y limpiando texto…"
+            ? $"Página {humanPage}/{_comicPages.Count} · localizando bocadillos…"
             : $"Página {humanPage}/{_comicPages.Count} · reintento {attempt}/{ComicPageAutomaticAttempts}…";
         FooterStatusText.Text = $"Procesando página {humanPage} de {_comicPages.Count}…";
         await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Render);
 
-        BitmapSource original = LoadBitmapSource(page.SourcePath);
         var progress = new Progress<AnalysisProgress>(value =>
         {
             double withinPage = Math.Clamp(value.Percentage / 100d, 0, 1);
@@ -276,16 +275,14 @@ public partial class MainWindow
             .Where(IsReadableLetteringCandidate)
             .ToArray();
 
-        DialogueOnlyResult filtered = await Task.Run(
-            () => _dialogueOnlyResultService.Build(
-                original,
-                organic.CleanedBitmap,
-                organic.MaskBitmap,
-                readableCandidates,
-                includeAllDetectedText: true),
-            cancellationToken);
+        if (readableCandidates.Length == 0)
+        {
+            page.Processed = false;
+            page.Error = "No se ha detectado ningún texto pulsable. La página queda pendiente para poder reintentarla.";
+            throw new InvalidOperationException(page.Error);
+        }
 
-        var analysis = new ComicAnalysis(organic.Analysis.SourceLanguage, filtered.Regions);
+        var analysis = new ComicAnalysis(organic.Analysis.SourceLanguage, readableCandidates);
         int totalEnabled = analysis.Regions.Count(region => region.IsEnabled);
         Exception? lastTranslationError = null;
 
@@ -342,6 +339,10 @@ public partial class MainWindow
             }
         }
 
+        // Corrige lecturas locales conocidas después del pase contextual: así no se pierde
+        // una palabra enfatizada por color ni una onomatopeya que el OCR haya separado mal.
+        TranslationRecoveryService.ApplyKnownLocalTranslations(analysis.Regions);
+
         List<ComicRegion> finalRecovery = analysis.Regions
             .Where(region => region.IsEnabled && !region.HasRenderableTranslation)
             .ToList();
@@ -372,48 +373,18 @@ public partial class MainWindow
                 lastTranslationError);
         }
 
-        string processedDirectory = Path.Combine(_comicWorkspace!, "processed");
-        Directory.CreateDirectory(processedDirectory);
-        string cleanedPath = Path.Combine(processedDirectory, $"{pageIndex + 1:D4}-clean.png");
-        string maskPath = Path.Combine(processedDirectory, $"{pageIndex + 1:D4}-mask.png");
-
-        await Task.WhenAll(
-            Task.Run(() => SaveBitmap(filtered.CleanedBitmap, cleanedPath), cancellationToken),
-            Task.Run(() => SaveBitmap(filtered.MaskBitmap, maskPath), cancellationToken));
-
         foreach (ComicRegion region in analysis.Regions)
         {
-            // El marco técnico parte de la silueta segura o del OCR, nunca de BubbleBox a
-            // ciegas. La capa irregular puede dibujar fuera del marco sin mutar el modelo.
-            region.RenderBox = ResolveConservativeTextFrame(region);
-            region.FontScale = 1;
-            region.ManualFontScale = 1;
-            region.IsManual = false;
-            region.ManualBaseFontSize = 0;
-            region.ManualLayoutSeedText = string.Empty;
-            region.Rotation = 0;
-            region.Vertical = false;
-
-            region.Style.FontCategory = "comic";
-            region.Style.FontFamily = null;
-            region.Style.FontWeight = 900;
-            region.Style.FontWidthRatio = 1.12;
-            region.Style.LineHeightRatio = 1.08;
-            region.Style.OriginalLineCount = 0;
-            region.Style.Italic = false;
-            region.Style.Uppercase = false;
-            region.Style.OutlineColor = null;
-            region.Style.OutlineWidth = 0;
-            region.Style.Alignment = "center";
-            region.Style.BackgroundColor = null;
-            region.Style.Shadow = false;
+            // En el lector solo se conserva la geometría necesaria para pulsar el bocadillo.
+            // No se modifica RenderBox ni el estilo porque nada se rotula sobre la página.
+            region.CleanupMode = "none";
         }
 
         page.Regions.Clear();
         page.Regions.AddRange(analysis.Regions);
         page.SourceLanguage = analysis.SourceLanguage;
-        page.CleanedPath = cleanedPath;
-        page.MaskPath = maskPath;
+        page.CleanedPath = null;
+        page.MaskPath = null;
         page.Processed = true;
         page.Error = incompleteCount > 0
             ? $"Traducción parcial: {translatedCount} de {totalEnabled} zonas traducidas. " +
@@ -422,52 +393,33 @@ public partial class MainWindow
         MarkActiveDocumentDirty(pageIndex);
     }
 
-    private static bool IsReadableLetteringCandidate(ComicRegion region)
+    internal static bool IsReadableLetteringCandidate(ComicRegion region)
     {
         if (!region.IsEnabled
-            || region.Confidence < 0.25
+            || region.Confidence < 0.05
             || string.IsNullOrWhiteSpace(region.Original)
             || !region.Original.Any(char.IsLetter))
         {
             return false;
         }
 
-        if (region.Type is "dialogue" or "thought" or "narration" or "caption")
-        {
-            return BalloonCropService.HasContainerEvidence(region);
-        }
+        region.Type = NormalizeReaderTextType(region.Type);
+        return true;
 
         // Un SFX solo se rescata si el detector está muy seguro de que vive dentro de un
         // contenedor amplio. Una palabra o rótulo exterior nunca se convierte por su cuenta.
-        if (region.Type == "sfx"
-            && region.BubbleBox is { } bubble
-            && region.BubbleConfidence >= 0.32
-            && IsStrongContainer(bubble, region.TextBox)
-            && region.Original.Split(
-                [' ', '\t', '\r', '\n'],
-                StringSplitOptions.RemoveEmptyEntries).Length >= 2)
+    }
+
+    private static string NormalizeReaderTextType(string? type) =>
+        type?.Trim().ToLowerInvariant() switch
         {
-            region.Type = "dialogue";
-            return true;
-        }
-
-        return false;
-    }
-
-    private static bool IsStrongContainer(NormalizedRect outer, NormalizedRect text)
-    {
-        double centerX = text.X + text.Width / 2;
-        double centerY = text.Y + text.Height / 2;
-        double ratio = outer.Area / Math.Max(1, text.Area);
-        return centerX >= outer.X
-               && centerX <= outer.Right
-               && centerY >= outer.Y
-               && centerY <= outer.Bottom
-               && ratio >= 1.18
-               && ratio <= 18
-               && outer.Width <= text.Width * 5.5
-               && outer.Height <= text.Height * 5.5;
-    }
+            "dialogue" or "speech" or "balloon" => "dialogue",
+            "thought" => "thought",
+            "narration" or "caption" => "caption",
+            "sfx" or "sound_effect" or "sound-effect" or "onomatopoeia" => "sfx",
+            "sign" or "label" or "title" => "sign",
+            _ => "text"
+        };
 
     private static string CompactFailureMessage(string message)
     {

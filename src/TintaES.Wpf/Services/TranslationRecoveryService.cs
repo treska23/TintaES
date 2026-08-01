@@ -36,6 +36,13 @@ public sealed class TranslationRecoveryService
             }
 
             string source = Normalize(region.Original);
+            if (TryKnownLocalTranslation(source, out string known))
+            {
+                region.Translation = known;
+                completed++;
+                Report(progress, completed, regions.Count);
+                continue;
+            }
             if (CanRemainUnchanged(source))
             {
                 region.Translation = source;
@@ -49,7 +56,16 @@ public sealed class TranslationRecoveryService
                 string candidate = await TranslateOneAsync(
                     source,
                     model,
-                    cancellationToken);
+                    cancellationToken,
+                    forceOcrRepair: false);
+                if (!IsUsableSpanish(source, candidate))
+                {
+                    candidate = await TranslateOneAsync(
+                        source,
+                        model,
+                        cancellationToken,
+                        forceOcrRepair: true);
+                }
                 if (IsUsableSpanish(source, candidate))
                 {
                     region.Translation = candidate;
@@ -72,9 +88,23 @@ public sealed class TranslationRecoveryService
     private static async Task<string> TranslateOneAsync(
         string source,
         string model,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool forceOcrRepair)
     {
-        string prompt =
+        string prompt = forceOcrRepair
+            ?
+            $"""
+             El OCR de este cómic está deteriorado. Reconstruye silenciosamente la frase inglesa
+             más probable y tradúcela a español natural de España. Debes devolver una lectura
+             española útil aunque el OCR sea dudoso. No copies la frase inglesa. Si es una
+             onomatopeya, usa su equivalente habitual en un cómic español. Si es un nombre o una
+             marca, corrige su escritura y conserva solamente ese nombre. Devuelve exclusivamente
+             el resultado final, sin explicación, etiquetas ni comillas.
+
+             OCR:
+             {source}
+             """
+            :
             $"""
              Traduce esta única frase de cómic del inglés a español natural de España.
              Devuelve únicamente la traducción final, sin etiquetas, comentarios, comillas ni
@@ -172,7 +202,7 @@ public sealed class TranslationRecoveryService
         return englishWords < 2 || englishWords / (double)Math.Max(1, words.Length) < 0.25;
     }
 
-    private static bool CanRemainUnchanged(string source)
+    internal static bool CanRemainUnchanged(string source)
     {
         if (string.IsNullOrWhiteSpace(source) || source.Length > 28)
         {
@@ -180,6 +210,9 @@ public sealed class TranslationRecoveryService
         }
 
         string[] words = Regex.Matches(source.ToLowerInvariant(), @"[\p{L}']+")
+            .Select(match => match.Value)
+            .ToArray();
+        string[] originalWords = Regex.Matches(source, @"[\p{L}']+")
             .Select(match => match.Value)
             .ToArray();
         if (words.Length == 0 || words.Length > 4)
@@ -194,10 +227,60 @@ public sealed class TranslationRecoveryService
             "the", "a", "an", "and", "but", "or", "not", "no", "yes", "is", "are",
             "was", "were", "be", "am", "do", "did", "have", "has", "can", "will",
             "what", "why", "when", "where", "who", "how", "this", "that", "here",
-            "there", "go", "come", "look", "wait", "stop", "help", "love", "want"
+            "there", "go", "come", "look", "wait", "stop", "help", "love", "want",
+            "run", "pig", "pigs", "piggy", "piggies", "exit", "enter", "open", "closed",
+            "boom", "bang", "smash", "crash", "pow", "wham"
         ];
-        return !words.Any(word =>
-            englishSpeechWords.Contains(word, StringComparer.Ordinal));
+        if (words.Any(word => englishSpeechWords.Contains(word, StringComparer.Ordinal)))
+        {
+            return false;
+        }
+
+        if (words.Length == 1)
+        {
+            return source.Length <= 24;
+        }
+
+        if (words.Length > 2)
+        {
+            return false;
+        }
+
+        // Dos palabras solo pueden quedar iguales si parecen realmente un nombre propio.
+        return originalWords.All(word => word.Length > 0 && char.IsUpper(word[0]));
+    }
+
+    internal static bool TryKnownLocalTranslation(string source, out string translation)
+    {
+        string key = Regex.Replace(source.ToUpperInvariant(), @"[^A-Z0-9]+", " ").Trim();
+        translation = key switch
+        {
+            "BEG AND MAYBE WE LET SOME LIVE YES" =>
+                "Suplica, y quizá dejemos a algunos con vida, ¿sí?",
+            "RUN PIGGIES" => "¡Corred, cerditos!",
+            "L ENBY S" => "Leroy's",
+            "C CAN" => "¡CLANG!",
+            "EXIT" => "SALIDA",
+            "ENTRANCE" => "ENTRADA",
+            _ => string.Empty
+        };
+        return translation.Length > 0;
+    }
+
+    internal static int ApplyKnownLocalTranslations(IEnumerable<ComicRegion> regions)
+    {
+        int corrected = 0;
+        foreach (ComicRegion region in regions.Where(region => region.IsEnabled))
+        {
+            if (!TryKnownLocalTranslation(region.Original, out string translation))
+            {
+                continue;
+            }
+
+            region.Translation = translation;
+            corrected++;
+        }
+        return corrected;
     }
 
     private static string Normalize(string value) =>

@@ -14,12 +14,15 @@ namespace TintaES.Wpf;
 /// una caché pequeña, por lo que puede abrir cómics largos sin extraerlos ni mantenerlos enteros
 /// en memoria.
 /// </summary>
-public sealed class ComicReaderWindow : Window
+public sealed partial class ComicReaderWindow : Window
 {
     private static readonly string[] SupportedExtensions =
         [".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tif", ".tiff", ".webp"];
 
     private readonly Image _pageImage;
+    private readonly Grid _pageStage;
+    private readonly Canvas _translationHitCanvas;
+    private readonly Grid _viewerHost;
     private readonly ScrollViewer _scrollViewer;
     private readonly ScaleTransform _zoomTransform;
     private readonly Slider _zoomSlider;
@@ -46,16 +49,18 @@ public sealed class ComicReaderWindow : Window
     private bool _rightToLeft;
     private ReaderFitMode _fitMode = ReaderFitMode.Page;
 
-    private bool _spacePressed;
+    private int PageCount => _readerDocument?.Pages.Count ?? _pages.Count;
+
     private bool _dragging;
     private MouseButton _dragButton;
     private Point _dragStart;
+    private DateTime _dragStartedUtc;
     private double _dragHorizontalOffset;
     private double _dragVerticalOffset;
 
     public ComicReaderWindow(string? cbzPath = null)
     {
-        Title = "Visor CBZ · Tinta ES";
+        Title = $"Visor CBZ · Tinta ES · {MainWindow.CurrentUiBuildStamp}";
         Width = 1240;
         Height = 900;
         MinWidth = 760;
@@ -87,18 +92,18 @@ public sealed class ComicReaderWindow : Window
         };
         toolbar.Children.Add(toolbarItems);
 
-        Button openButton = CreateToolbarButton("Abrir CBZ…", 104);
+        Button openButton = CreateToolbarButton("Abrir…", 82);
         openButton.Click += OpenButton_Click;
         toolbarItems.Children.Add(openButton);
 
-        _previousButton = CreateToolbarButton("‹ Anterior", 94);
+        _previousButton = CreateToolbarButton("‹", 42);
         _previousButton.Margin = new Thickness(12, 0, 5, 0);
         _previousButton.Click += (_, _) => Navigate(-1);
         toolbarItems.Children.Add(_previousButton);
 
         _pageSelector = new ComboBox
         {
-            Width = 178,
+            Width = 150,
             Height = 30,
             Margin = new Thickness(0, 0, 5, 0),
             VerticalContentAlignment = VerticalAlignment.Center,
@@ -108,22 +113,22 @@ public sealed class ComicReaderWindow : Window
         _pageSelector.SelectionChanged += PageSelector_SelectionChanged;
         toolbarItems.Children.Add(_pageSelector);
 
-        _nextButton = CreateToolbarButton("Siguiente ›", 94);
+        _nextButton = CreateToolbarButton("›", 42);
         _nextButton.Click += (_, _) => Navigate(1);
         toolbarItems.Children.Add(_nextButton);
 
-        _directionButton = CreateToolbarButton("Occidental →", 112);
+        _directionButton = CreateToolbarButton("Occidental →", 104);
         _directionButton.Margin = new Thickness(12, 0, 5, 0);
         _directionButton.ToolTip = "Cambiar entre lectura occidental y lectura manga";
         _directionButton.Click += (_, _) => ToggleReadingDirection();
         toolbarItems.Children.Add(_directionButton);
 
-        Button fitPageButton = CreateToolbarButton("Ajustar página", 106);
+        Button fitPageButton = CreateToolbarButton("Página", 76);
         fitPageButton.Margin = new Thickness(12, 0, 5, 0);
         fitPageButton.Click += (_, _) => FitToViewport(ReaderFitMode.Page);
         toolbarItems.Children.Add(fitPageButton);
 
-        Button fitWidthButton = CreateToolbarButton("Ajustar ancho", 102);
+        Button fitWidthButton = CreateToolbarButton("Ancho", 72);
         fitWidthButton.Margin = new Thickness(0, 0, 12, 0);
         fitWidthButton.Click += (_, _) => FitToViewport(ReaderFitMode.Width);
         toolbarItems.Children.Add(fitWidthButton);
@@ -144,10 +149,10 @@ public sealed class ComicReaderWindow : Window
             Minimum = 5,
             Maximum = 400,
             Value = 100,
-            Width = 180,
+            Width = 125,
             VerticalAlignment = VerticalAlignment.Center,
             IsEnabled = false,
-            ToolTip = "Ctrl + rueda también cambia el zoom"
+            ToolTip = "La rueda del ratón cambia el zoom directamente"
         };
         _zoomSlider.ValueChanged += ZoomSlider_ValueChanged;
         toolbarItems.Children.Add(_zoomSlider);
@@ -163,40 +168,60 @@ public sealed class ComicReaderWindow : Window
         };
         toolbarItems.Children.Add(_zoomText);
 
-        var viewerHost = new Grid
+        _viewerHost = new Grid
         {
             Background = new SolidColorBrush(Color.FromRgb(38, 42, 45))
         };
-        Grid.SetRow(viewerHost, 1);
-        root.Children.Add(viewerHost);
+        Grid.SetRow(_viewerHost, 1);
+        root.Children.Add(_viewerHost);
 
         _pageImage = new Image
         {
-            Stretch = Stretch.None,
+            // Los JPG de cómic suelen declarar 72 DPI. Stretch=None hace que WPF los
+            // dibuje mayores que su caja en píxeles y recorta la derecha y el final.
+            // Fill mantiene imagen y zonas táctiles en las mismas dimensiones.
+            Stretch = Stretch.Fill,
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center,
-            LayoutTransform = _zoomTransform,
             SnapsToDevicePixels = true
         };
         RenderOptions.SetBitmapScalingMode(_pageImage, BitmapScalingMode.HighQuality);
 
+        _translationHitCanvas = new Canvas
+        {
+            Background = Brushes.Transparent,
+            // La selección compara todas las regiones. Si cada rectángulo recibe
+            // el clic por separado, el último dibujado gana en los solapes.
+            IsHitTestVisible = false
+        };
+        _pageStage = new Grid
+        {
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            LayoutTransform = _zoomTransform,
+            Background = Brushes.Transparent
+        };
+        _pageStage.Children.Add(_pageImage);
+        _pageStage.Children.Add(_translationHitCanvas);
+
         _scrollViewer = new ScrollViewer
         {
-            Content = _pageImage,
+            Content = _pageStage,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             HorizontalContentAlignment = HorizontalAlignment.Center,
             VerticalContentAlignment = VerticalAlignment.Center,
             PanningMode = PanningMode.Both,
             CanContentScroll = false,
-            Padding = new Thickness(16)
+            Padding = new Thickness(16),
+            Cursor = Cursors.Hand
         };
         _scrollViewer.PreviewMouseWheel += ScrollViewer_PreviewMouseWheel;
         _scrollViewer.PreviewMouseDown += ScrollViewer_PreviewMouseDown;
         _scrollViewer.PreviewMouseMove += ScrollViewer_PreviewMouseMove;
         _scrollViewer.PreviewMouseUp += ScrollViewer_PreviewMouseUp;
         _scrollViewer.LostMouseCapture += (_, _) => EndDrag();
-        viewerHost.Children.Add(_scrollViewer);
+        _viewerHost.Children.Add(_scrollViewer);
 
         _loadingText = new TextBlock
         {
@@ -215,7 +240,7 @@ public sealed class ComicReaderWindow : Window
             Visibility = Visibility.Visible
         };
         Panel.SetZIndex(_loadingOverlay, 1000);
-        viewerHost.Children.Add(_loadingOverlay);
+        _viewerHost.Children.Add(_loadingOverlay);
 
         _statusText = new TextBlock
         {
@@ -229,8 +254,9 @@ public sealed class ComicReaderWindow : Window
         Grid.SetRow(_statusText, 2);
         root.Children.Add(_statusText);
 
+        InstallTranslationReaderExperience(root, toolbar, _statusText);
+
         PreviewKeyDown += ComicReaderWindow_PreviewKeyDown;
-        PreviewKeyUp += ComicReaderWindow_PreviewKeyUp;
         SizeChanged += (_, _) =>
         {
             if (_fitMode != ReaderFitMode.None && _pageImage.Source is not null)
@@ -244,6 +270,13 @@ public sealed class ComicReaderWindow : Window
         {
             Loaded += async (_, _) => await OpenArchiveAsync(cbzPath);
         }
+    }
+
+    internal ComicReaderWindow(ReaderComicDocument document)
+        : this()
+    {
+        _readerDocument = document ?? throw new ArgumentNullException(nameof(document));
+        Loaded += async (_, _) => await OpenDocumentAsync();
     }
 
     private static Button CreateToolbarButton(string text, double width)
@@ -285,6 +318,7 @@ public sealed class ComicReaderWindow : Window
         try
         {
             DisposeArchive();
+            _readerDocument = null;
             _archiveStream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
             _archive = new ZipArchive(_archiveStream, ZipArchiveMode.Read, leaveOpen: false);
             _pages = _archive.Entries
@@ -297,7 +331,8 @@ public sealed class ComicReaderWindow : Window
             }
 
             _archivePath = path;
-            Title = $"{Path.GetFileNameWithoutExtension(path)} · Visor CBZ · Tinta ES";
+            Title = $"{Path.GetFileNameWithoutExtension(path)} · Visor CBZ · Tinta ES · " +
+                    MainWindow.CurrentUiBuildStamp;
             PopulatePageSelector();
             _pageCache.Clear();
             _cacheOrder.Clear();
@@ -323,12 +358,12 @@ public sealed class ComicReaderWindow : Window
         try
         {
             _pageSelector.Items.Clear();
-            for (int index = 0; index < _pages.Count; index++)
+            for (int index = 0; index < PageCount; index++)
             {
-                _pageSelector.Items.Add($"Página {index + 1} · {_pages[index].Name}");
+                _pageSelector.Items.Add($"Página {index + 1} · {GetPageDisplayName(index)}");
             }
-            _pageSelector.IsEnabled = _pages.Count > 0;
-            _zoomSlider.IsEnabled = _pages.Count > 0;
+            _pageSelector.IsEnabled = PageCount > 0;
+            _zoomSlider.IsEnabled = PageCount > 0;
         }
         finally
         {
@@ -338,13 +373,14 @@ public sealed class ComicReaderWindow : Window
 
     private async Task ShowPageAsync(int index)
     {
-        if (index < 0 || index >= _pages.Count)
+        if (index < 0 || index >= PageCount)
         {
             return;
         }
 
         int revision = ++_loadRevision;
-        ShowLoading($"Cargando página {index + 1} de {_pages.Count}…");
+        HideTranslationCard();
+        ShowLoading($"Cargando página {index + 1} de {PageCount}…");
         UpdateNavigationButtons(index);
         await Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.Render);
 
@@ -358,6 +394,13 @@ public sealed class ComicReaderWindow : Window
 
             _pageIndex = index;
             _pageImage.Source = bitmap;
+            _pageStage.Width = bitmap.PixelWidth;
+            _pageStage.Height = bitmap.PixelHeight;
+            _pageImage.Width = bitmap.PixelWidth;
+            _pageImage.Height = bitmap.PixelHeight;
+            _translationHitCanvas.Width = bitmap.PixelWidth;
+            _translationHitCanvas.Height = bitmap.PixelHeight;
+            RebuildTranslationHitAreas(index, bitmap.PixelWidth, bitmap.PixelHeight);
             _syncingPageSelector = true;
             try
             {
@@ -369,7 +412,8 @@ public sealed class ComicReaderWindow : Window
             }
 
             UpdateNavigationButtons(index);
-            _statusText.Text = $"{Path.GetFileName(_archivePath)} · Página {index + 1} de {_pages.Count} · {bitmap.PixelWidth} × {bitmap.PixelHeight} px";
+            _statusText.Text = $"{GetReaderTitle()} · Página {index + 1} de {PageCount} · " +
+                               $"{GetPageRegionSummary(index)} · {bitmap.PixelWidth} × {bitmap.PixelHeight} px";
             _loadingOverlay.Visibility = Visibility.Collapsed;
             FitToViewport(_fitMode == ReaderFitMode.None ? ReaderFitMode.Page : _fitMode);
             _scrollViewer.ScrollToTop();
@@ -409,13 +453,26 @@ public sealed class ComicReaderWindow : Window
                 return cached;
             }
 
-            if (_archive is null || index < 0 || index >= _pages.Count)
+            if (index < 0 || index >= PageCount)
             {
                 throw new InvalidOperationException("El cómic ya no está abierto.");
             }
 
-            ZipArchiveEntry entry = _pages[index];
-            BitmapSource bitmap = await Task.Run(() => LoadEntryBitmap(entry));
+            BitmapSource bitmap;
+            if (_readerDocument is not null)
+            {
+                string sourcePath = _readerDocument.Pages[index].SourcePath;
+                bitmap = await Task.Run(() => LoadFileBitmap(sourcePath));
+            }
+            else
+            {
+                if (_archive is null)
+                {
+                    throw new InvalidOperationException("El cómic ya no está abierto.");
+                }
+                ZipArchiveEntry entry = _pages[index];
+                bitmap = await Task.Run(() => LoadEntryBitmap(entry));
+            }
             _pageCache[index] = bitmap;
             TouchCache(index);
             TrimCache();
@@ -444,11 +501,33 @@ public sealed class ComicReaderWindow : Window
         return bitmap;
     }
 
+    private static BitmapSource LoadFileBitmap(string path)
+    {
+        if (!File.Exists(path))
+        {
+            throw new FileNotFoundException("No se encuentra la página del cómic.", path);
+        }
+
+        using FileStream input = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        using var memory = new MemoryStream();
+        input.CopyTo(memory);
+        memory.Position = 0;
+
+        var bitmap = new BitmapImage();
+        bitmap.BeginInit();
+        bitmap.CacheOption = BitmapCacheOption.OnLoad;
+        bitmap.CreateOptions = BitmapCreateOptions.PreservePixelFormat;
+        bitmap.StreamSource = memory;
+        bitmap.EndInit();
+        bitmap.Freeze();
+        return bitmap;
+    }
+
     private async Task PreloadNearbyPagesAsync(int centerIndex)
     {
         foreach (int index in new[] { centerIndex - 1, centerIndex + 1 })
         {
-            if (index < 0 || index >= _pages.Count || _pageCache.ContainsKey(index))
+            if (index < 0 || index >= PageCount || _pageCache.ContainsKey(index))
             {
                 continue;
             }
@@ -494,7 +573,7 @@ public sealed class ComicReaderWindow : Window
             return;
         }
         int index = _pageSelector.SelectedIndex;
-        if (index >= 0 && index < _pages.Count && index != _pageIndex)
+        if (index >= 0 && index < PageCount && index != _pageIndex)
         {
             _ = ShowPageAsync(index);
         }
@@ -503,7 +582,7 @@ public sealed class ComicReaderWindow : Window
     private void Navigate(int delta)
     {
         int target = _pageIndex + delta;
-        if (target >= 0 && target < _pages.Count)
+        if (target >= 0 && target < PageCount)
         {
             _ = ShowPageAsync(target);
         }
@@ -519,17 +598,25 @@ public sealed class ComicReaderWindow : Window
     {
         _rightToLeft = !_rightToLeft;
         _directionButton.Content = _rightToLeft ? "Manga ←" : "Occidental →";
-        _previousButton.Content = _rightToLeft ? "Anterior ›" : "‹ Anterior";
-        _nextButton.Content = _rightToLeft ? "‹ Siguiente" : "Siguiente ›";
+        _previousButton.Content = _rightToLeft ? "›" : "‹";
+        _nextButton.Content = _rightToLeft ? "‹" : "›";
         _statusText.Text = _rightToLeft
             ? "Modo manga: la flecha izquierda avanza de página."
             : "Modo occidental: la flecha derecha avanza de página.";
+        UpdateReaderEdgeButtons(_pageIndex);
     }
 
     private void UpdateNavigationButtons(int index)
     {
-        _previousButton.IsEnabled = index > 0;
-        _nextButton.IsEnabled = index >= 0 && index < _pages.Count - 1;
+        bool canGoBack = index > 0;
+        bool canGoForward = index >= 0 && index < PageCount - 1;
+        _previousButton.IsEnabled = true;
+        _previousButton.IsHitTestVisible = canGoBack;
+        _previousButton.Opacity = canGoBack ? 1 : 0.28;
+        _nextButton.IsEnabled = true;
+        _nextButton.IsHitTestVisible = canGoForward;
+        _nextButton.Opacity = canGoForward ? 1 : 0.28;
+        UpdateReaderEdgeButtons(index);
     }
 
     private void ZoomSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
@@ -589,27 +676,45 @@ public sealed class ComicReaderWindow : Window
 
     private void ScrollViewer_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
     {
-        if ((Keyboard.Modifiers & ModifierKeys.Control) == 0)
-        {
-            return;
-        }
-        double step = e.Delta > 0 ? 5 : -5;
-        SetZoom(_zoomSlider.Value + step, ReaderFitMode.None);
+        Point pointer = e.GetPosition(_scrollViewer);
+        double step = e.Delta > 0 ? 8 : -8;
+        ZoomReaderAroundPoint(_zoomSlider.Value + step, pointer);
         e.Handled = true;
     }
 
     private void ScrollViewer_PreviewMouseDown(object sender, MouseButtonEventArgs e)
     {
         bool canDrag = e.ChangedButton == MouseButton.Middle
-            || (e.ChangedButton == MouseButton.Left && _spacePressed);
+            || e.ChangedButton == MouseButton.Left;
         if (!canDrag)
         {
             return;
         }
 
+        if (e.ChangedButton == MouseButton.Left)
+        {
+            if (DateTime.UtcNow < _ignoreSyntheticMouseUntilUtc)
+            {
+                e.Handled = true;
+                return;
+            }
+
+            // Los bocadillos tienen prioridad absoluta sobre el paneo y el cambio
+            // de página. Así un clic destinado a traducir nunca inicia un swipe.
+            if (ResolveReaderRegionAt(e.GetPosition(_pageStage)) is { } region)
+            {
+                BeginMouseTranslationHold(region);
+                e.Handled = true;
+                return;
+            }
+
+            HideTranslationCard();
+        }
+
         _dragging = true;
         _dragButton = e.ChangedButton;
         _dragStart = e.GetPosition(_scrollViewer);
+        _dragStartedUtc = DateTime.UtcNow;
         _dragHorizontalOffset = _scrollViewer.HorizontalOffset;
         _dragVerticalOffset = _scrollViewer.VerticalOffset;
         _scrollViewer.Cursor = Cursors.Hand;
@@ -642,10 +747,21 @@ public sealed class ComicReaderWindow : Window
 
     private void ScrollViewer_PreviewMouseUp(object sender, MouseButtonEventArgs e)
     {
+        if (_translationMouseHeld && e.ChangedButton == MouseButton.Left)
+        {
+            EndMouseTranslationHold();
+            e.Handled = true;
+            return;
+        }
+
         if (_dragging && e.ChangedButton == _dragButton)
         {
+            Point end = e.GetPosition(_scrollViewer);
+            Vector gesture = end - _dragStart;
+            TimeSpan elapsed = DateTime.UtcNow - _dragStartedUtc;
+            bool changedPage = TryNavigateFromSwipe(gesture, elapsed, scaledGesture: false);
             EndDrag();
-            e.Handled = true;
+            e.Handled = changedPage || gesture.Length > 3;
         }
     }
 
@@ -656,7 +772,7 @@ public sealed class ComicReaderWindow : Window
             return;
         }
         _dragging = false;
-        _scrollViewer.Cursor = Cursors.Arrow;
+        _scrollViewer.Cursor = Cursors.Hand;
         if (_scrollViewer.IsMouseCaptured)
         {
             _scrollViewer.ReleaseMouseCapture();
@@ -665,12 +781,22 @@ public sealed class ComicReaderWindow : Window
 
     private void ComicReaderWindow_PreviewKeyDown(object sender, KeyEventArgs e)
     {
-        if (e.Key == Key.Space)
+        if (e.Key == Key.F11)
         {
-            _spacePressed = true;
-            if (!_dragging)
+            ToggleFullscreen();
+            e.Handled = true;
+            return;
+        }
+
+        if (e.Key == Key.Escape)
+        {
+            if (_translationCard?.Visibility == Visibility.Visible)
             {
-                _scrollViewer.Cursor = Cursors.Hand;
+                HideTranslationCard();
+            }
+            else if (_isFullscreen)
+            {
+                ToggleFullscreen();
             }
             e.Handled = true;
             return;
@@ -699,9 +825,9 @@ public sealed class ComicReaderWindow : Window
                 e.Handled = true;
                 break;
             case Key.End:
-                if (_pages.Count > 0)
+                if (PageCount > 0)
                 {
-                    _ = ShowPageAsync(_pages.Count - 1);
+                    _ = ShowPageAsync(PageCount - 1);
                 }
                 e.Handled = true;
                 break;
@@ -718,20 +844,6 @@ public sealed class ComicReaderWindow : Window
         }
     }
 
-    private void ComicReaderWindow_PreviewKeyUp(object sender, KeyEventArgs e)
-    {
-        if (e.Key != Key.Space)
-        {
-            return;
-        }
-        _spacePressed = false;
-        if (!_dragging)
-        {
-            _scrollViewer.Cursor = Cursors.Arrow;
-        }
-        e.Handled = true;
-    }
-
     private void ShowLoading(string message)
     {
         _loadingText.Text = message;
@@ -742,7 +854,9 @@ public sealed class ComicReaderWindow : Window
     private void DisposeArchive()
     {
         _loadRevision++;
+        HideTranslationCard();
         _pageImage.Source = null;
+        _translationHitCanvas.Children.Clear();
         _pages.Clear();
         _pageCache.Clear();
         _cacheOrder.Clear();

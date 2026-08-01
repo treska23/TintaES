@@ -9,7 +9,7 @@ namespace TintaES.Wpf;
 /// </summary>
 public partial class MainWindow
 {
-    private const string CurrentUiBuildStamp = "UI 2026.07.31-r36";
+    internal const string CurrentUiBuildStamp = "UI 2026.08.01-r45-whole-balloon-headers";
     private const int CurrentUiBootstrapMaxAttempts = 3;
 
     private static readonly bool CurrentUiBootstrapRegistered = RegisterCurrentUiBootstrap();
@@ -88,6 +88,7 @@ public partial class MainWindow
         RunCurrentUiInstaller(InstallIconOnlyFloatingPalette, "iconos de la paleta", failures);
         RunCurrentUiInstaller(InstallResponsiveTopBars, "barra superior única", failures);
         RunCurrentUiInstaller(InstallOrRefreshResizableSidePanels, "paneles laterales ajustables", failures);
+        RunCurrentUiInstaller(InstallReaderFirstMode, "modo lector y traductor", failures);
         RunCurrentUiInstaller(UpdateClassicMenuAvailability, "estado del menú", failures);
 
         if (failures.Count == 0)
