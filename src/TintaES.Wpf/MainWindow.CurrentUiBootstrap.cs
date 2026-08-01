@@ -9,7 +9,7 @@ namespace TintaES.Wpf;
 /// </summary>
 public partial class MainWindow
 {
-    internal const string CurrentUiBuildStamp = "UI 2026.08.01-r49-text-near-hit-area";
+    internal const string CurrentUiBuildStamp = "UI 2026.08.01-r50-page-tabs-and-text-hit-area";
     private const int CurrentUiBootstrapMaxAttempts = 3;
 
     private static readonly bool CurrentUiBootstrapRegistered = RegisterCurrentUiBootstrap();
@@ -73,6 +73,7 @@ public partial class MainWindow
         RunCurrentUiInstaller(InstallPsdExportCommand, "exportación PSD", failures);
         RunCurrentUiInstaller(InstallComicReaderCommand, "lector de cómic", failures);
         RunCurrentUiInstaller(InstallPageSelectionPanel, "selector de páginas", failures);
+        RunCurrentUiInstaller(InstallStandaloneImageTabs, "pestañas de páginas sueltas", failures);
         RunCurrentUiInstaller(InstallSelectedPageProcessing, "procesamiento fiable de páginas", failures);
         RunCurrentUiInstaller(InstallEditorTools, "herramientas de edición", failures);
         RunCurrentUiInstaller(InstallManualMaskEditing, "edición de máscara", failures);
