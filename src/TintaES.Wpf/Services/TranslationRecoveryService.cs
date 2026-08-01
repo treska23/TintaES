@@ -95,18 +95,18 @@ public sealed class TranslationRecoveryService
             ?
             $"""
              El OCR de este cómic está deteriorado. Reconstruye silenciosamente la frase inglesa
-             más probable y tradúcela a español natural de España. Debes devolver una lectura
-             española útil aunque el OCR sea dudoso. No copies la frase inglesa. Si es una
-             onomatopeya, usa su equivalente habitual en un cómic español. Si es un nombre o una
-             marca, corrige su escritura y conserva solamente ese nombre. Devuelve exclusivamente
-             el resultado final, sin explicación, etiquetas ni comillas.
+             más probable y tradúcela. {EuropeanSpanishDialect.ModelInstruction}
+             Debes devolver una lectura española útil aunque el OCR sea dudoso. No copies la frase
+             inglesa. Si es una onomatopeya, usa su equivalente habitual en un cómic publicado en
+             España. Si es un nombre o una marca, corrige su escritura y conserva solamente ese
+             nombre. Devuelve exclusivamente el resultado final, sin explicación, etiquetas ni comillas.
 
              OCR:
              {source}
              """
             :
             $"""
-             Traduce esta única frase de cómic del inglés a español natural de España.
+             Traduce esta única frase de cómic del inglés. {EuropeanSpanishDialect.ModelInstruction}
              Devuelve únicamente la traducción final, sin etiquetas, comentarios, comillas ni
              repetir el texto inglés. Corrige errores evidentes del OCR por gramática. Conserva
              nombres propios, siglas y palabras que legítimamente no cambian en español. Sé
@@ -171,7 +171,8 @@ public sealed class TranslationRecoveryService
             || candidate.Contains("SOURCE:", StringComparison.OrdinalIgnoreCase)
             || candidate.Contains("TRANSLATION:", StringComparison.OrdinalIgnoreCase)
             || !candidate.Any(char.IsLetter)
-            || candidate.Length > Math.Max(180, source.Length * 4.2))
+            || candidate.Length > Math.Max(180, source.Length * 4.2)
+            || EuropeanSpanishDialect.RequiresRetry(source, candidate))
         {
             return false;
         }
@@ -272,13 +273,22 @@ public sealed class TranslationRecoveryService
         int corrected = 0;
         foreach (ComicRegion region in regions.Where(region => region.IsEnabled))
         {
-            if (!TryKnownLocalTranslation(region.Original, out string translation))
+            if (TryKnownLocalTranslation(region.Original, out string translation))
             {
+                region.Translation = translation;
+                corrected++;
                 continue;
             }
 
-            region.Translation = translation;
-            corrected++;
+            // Una traducción marcada como panhispánica, latinoamericana o formal sin motivo
+            // se vacía deliberadamente. El pase individual posterior la rehace completa con
+            // concordancia peninsular; no intentamos sustituir pronombres a ciegas.
+            if (region.HasRenderableTranslation
+                && EuropeanSpanishDialect.RequiresRetry(region.Original, region.Translation))
+            {
+                region.Translation = string.Empty;
+                corrected++;
+            }
         }
         return corrected;
     }
