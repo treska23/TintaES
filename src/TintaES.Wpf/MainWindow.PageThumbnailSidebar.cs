@@ -8,9 +8,9 @@ using System.Windows.Threading;
 namespace TintaES.Wpf;
 
 /// <summary>
-/// Mantiene visible el selector de páginas también con una sola página y añade miniaturas reales
-/// sin bloquear el hilo de interfaz. El usuario puede ocultarlo manualmente; solo se abre de nuevo
-/// al comenzar una sesión distinta.
+/// Añade miniaturas reales al selector de páginas sin bloquear la interfaz. El panel se
+/// muestra para cómics y proyectos multipágina; las imágenes sueltas de una sola página
+/// utilizan su propia pestaña y no duplican la navegación a la izquierda.
 /// </summary>
 public partial class MainWindow
 {
@@ -21,6 +21,7 @@ public partial class MainWindow
     private bool _pageThumbnailSidebarInstalled;
     private bool _pageThumbnailRefreshQueued;
     private string? _pageThumbnailSessionKey;
+    private string? _pageThumbnailPageSignature;
 
     private static bool RegisterPageThumbnailSidebar()
     {
@@ -88,26 +89,53 @@ public partial class MainWindow
         if (_comicPages.Count == 0)
         {
             _pageThumbnailSessionKey = null;
+            _pageThumbnailPageSignature = null;
             _pageThumbnailImages.Clear();
             _pageThumbnailLoads.Clear();
             return;
         }
 
         string sessionKey = BuildActiveDocumentSessionKey();
-        bool newSession = !string.Equals(
+        string pageSignature = BuildPageThumbnailPageSignature();
+        bool sessionChanged = !string.Equals(
             sessionKey,
             _pageThumbnailSessionKey,
             StringComparison.OrdinalIgnoreCase);
-        if (newSession)
+        bool pageSetChanged = !string.Equals(
+            pageSignature,
+            _pageThumbnailPageSignature,
+            StringComparison.OrdinalIgnoreCase);
+
+        if (sessionChanged || pageSetChanged)
         {
             _pageThumbnailSessionKey = sessionKey;
+            _pageThumbnailPageSignature = pageSignature;
             _pageThumbnailImages.Clear();
             _pageThumbnailLoads.Clear();
 
-            // SyncPageSelectionPanel ocultaba expresamente el panel cuando Count == 1.
-            // Lo abrimos una vez por sesión; si el usuario pulsa cerrar, respetamos su decisión.
-            SetPageSelectionPanelVisible(true);
+            // Al abrir un .tinta la pestaña ya existe con el título «Cargando…». El Id de la
+            // sesión no cambia cuando después se incorporan las páginas, por lo que el selector
+            // antiguo no reconstruía sus filas. La firma de páginas detecta ese cambio real.
+            _pageSelectionSessionKey = null;
+            SyncPageSelectionPanel();
+
+            bool shouldShow = _comicPages.Count > 1
+                || !string.IsNullOrWhiteSpace(_currentProjectPath);
+            SetPageSelectionPanelVisible(shouldShow);
             RenamePageSelectionHeader();
+        }
+
+        // Si otro componente reconstruyó las filas después del cambio de sesión, repetimos el
+        // sincronizado una sola vez. No se crean miniaturas sobre filas pertenecientes al documento
+        // anterior ni se deja vacío el lateral de un proyecto recién cargado.
+        if (_pageSelectionRows.Count != _comicPages.Count)
+        {
+            _pageSelectionSessionKey = null;
+            SyncPageSelectionPanel();
+            if (_pageSelectionRows.Count != _comicPages.Count)
+            {
+                return;
+            }
         }
 
         for (int index = 0; index < _comicPages.Count; index++)
@@ -118,8 +146,15 @@ public partial class MainWindow
                 continue;
             }
 
-            EnsurePageThumbnailRow(index, row, rowGrid, sessionKey);
+            EnsurePageThumbnailRow(index, row, rowGrid, pageSignature);
         }
+    }
+
+    private string BuildPageThumbnailPageSignature()
+    {
+        string first = _comicPages.Count > 0 ? _comicPages[0].SourcePath : string.Empty;
+        string last = _comicPages.Count > 0 ? _comicPages[^1].SourcePath : string.Empty;
+        return $"{_currentProjectPath}|{_comicWorkspace}|{_comicPages.Count}|{first}|{last}";
     }
 
     private void RenamePageSelectionHeader()
@@ -143,7 +178,7 @@ public partial class MainWindow
         int index,
         Border row,
         Grid rowGrid,
-        string sessionKey)
+        string pageSignature)
     {
         row.MinHeight = 94;
 
@@ -201,7 +236,7 @@ public partial class MainWindow
 
         if (image.Source is null && _pageThumbnailLoads.Add(index))
         {
-            LoadPageThumbnailAsync(index, image, _comicPages[index].SourcePath, sessionKey);
+            LoadPageThumbnailAsync(index, image, _comicPages[index].SourcePath, pageSignature);
         }
     }
 
@@ -209,14 +244,14 @@ public partial class MainWindow
         int index,
         Image target,
         string path,
-        string sessionKey)
+        string pageSignature)
     {
         try
         {
             BitmapSource thumbnail = await Task.Run(() => LoadPageThumbnail(path));
             if (!string.Equals(
-                    sessionKey,
-                    _pageThumbnailSessionKey,
+                    pageSignature,
+                    _pageThumbnailPageSignature,
                     StringComparison.OrdinalIgnoreCase)
                 || !_pageThumbnailImages.TryGetValue(index, out Image? current)
                 || !ReferenceEquals(current, target))
