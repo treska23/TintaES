@@ -20,8 +20,12 @@ public partial class MainWindow
         if (string.Equals(
                 region.Translation?.Trim(),
                 ComicRegion.PendingTranslationMarker,
-                StringComparison.OrdinalIgnoreCase))
+                StringComparison.OrdinalIgnoreCase)
+            || EuropeanSpanishDialect.RequiresRetry(region.Original, region.Translation))
         {
+            // No reemplazamos mecánicamente usted por tú ni ustedes por vosotros: también
+            // cambiarían verbos, posesivos y pronombres. La página queda pendiente para que
+            // el traductor rehaga la frase completa con concordancia española correcta.
             region.Translation = string.Empty;
         }
 
