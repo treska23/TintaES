@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
+using System.Text.Json.Serialization;
 
 namespace TintaES.Core;
 
@@ -66,6 +67,7 @@ public sealed class ComicRegion : INotifyPropertyChanged
     private double _manualFontScale = 1;
     private double _textOffsetX;
     private double _textOffsetY;
+    private IReadOnlyList<string> _ocrAlternatives = [];
 
     public Guid Id { get; set; } = Guid.NewGuid();
     public int Order { get; set; }
@@ -83,9 +85,37 @@ public sealed class ComicRegion : INotifyPropertyChanged
         }
     }
 
-    // Lecturas del mismo bloque obtenidas por otros OCR. No se muestran ni se exportan:
-    // sirven para que el traductor pueda reconstruir letras dudosas sin mezclar bocadillos.
-    public IReadOnlyList<string> OcrAlternatives { get; set; } = [];
+    // Durante la traducción, la primera zona de la página expone además una ficha documental
+    // compacta. Ollama ya incluye OcrAlternatives en el contexto completo, por lo que se puede
+    // aportar investigación sin contaminar el texto TARGET que debe traducir. La propiedad
+    // persistida de abajo guarda exclusivamente lecturas OCR reales.
+    [JsonIgnore]
+    public IReadOnlyList<string> OcrAlternatives
+    {
+        get
+        {
+            string? research = ComicResearchAmbient.CurrentPrompt;
+            if (Order != 1 || string.IsNullOrWhiteSpace(research))
+            {
+                return _ocrAlternatives;
+            }
+
+            return new[] { research }
+                .Concat(_ocrAlternatives)
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(3)
+                .ToArray();
+        }
+        set => _ocrAlternatives = value ?? [];
+    }
+
+    [JsonPropertyName("ocrAlternatives")]
+    public IReadOnlyList<string> StoredOcrAlternatives
+    {
+        get => _ocrAlternatives;
+        set => _ocrAlternatives = value ?? [];
+    }
 
     public string Translation
     {
@@ -101,8 +131,6 @@ public sealed class ComicRegion : INotifyPropertyChanged
         }
     }
 
-    // El lienzo de resultado nunca debe volver a colocar el OCR inglés ni un aviso técnico
-    // sobre un fondo ya reconstruido. El original continúa disponible en el inspector.
     public bool HasRenderableTranslation =>
         !string.IsNullOrWhiteSpace(Translation)
         && !string.Equals(
@@ -112,23 +140,13 @@ public sealed class ComicRegion : INotifyPropertyChanged
 
     public string DisplayText => HasRenderableTranslation ? Translation : string.Empty;
 
-    // El color no decide por sí solo que un bloque sea una onomatopeya. Algunos cómics usan
-    // palabras rojas dentro de diálogos normales. Cuando la geometría demuestra que el bloque
-    // vive dentro de un bocadillo, el tipo efectivo pasa a diálogo aunque CTD dijera «sfx».
     public string Type { get => ResolveEffectiveType(); set => Set(ref _type, value); }
     public double Confidence { get; set; } = 0.75;
-
-    // Confianza independiente de que el bloque de texto esté realmente dentro de un
-    // bocadillo. El motor orgánico ya calcula este dato y nos permite conservar una
-    // exclamación corta dentro de un globo sin empezar a traducir onomatopeyas exteriores.
     public double BubbleConfidence { get; set; }
 
     public NormalizedRect TextBox { get; set; } = new(100, 100, 200, 80);
     public NormalizedRect? BubbleBox { get; set; }
     public NormalizedRect RenderBox { get; set; } = new(90, 85, 220, 110);
-    // Contorno orgánico original que el motor calculó para borrar las letras.
-    // Es independiente de SafePolygon: el usuario puede mover o redimensionar
-    // la rotulación sin ampliar accidentalmente el área reconstruida del fondo.
     public IReadOnlyList<NormalizedPoint> CleanupPolygon { get; set; } = [];
     public IReadOnlyList<NormalizedPoint> SafePolygon { get; set; } = [];
     public double Rotation { get; set; }
@@ -137,21 +155,11 @@ public sealed class ComicRegion : INotifyPropertyChanged
     public bool IsEnabled { get => _isEnabled; set => Set(ref _isEnabled, value); }
     public string CleanupMode { get => _cleanupMode; set => Set(ref _cleanupMode, value); }
 
-    // FontScale se conserva por compatibilidad con análisis/cachés anteriores. El control
-    // interactivo usa ManualFontScale para no volver a ejecutar el algoritmo de autoajuste
-    // cada vez que el usuario mueve el slider.
     public double FontScale { get => _fontScale; set => Set(ref _fontScale, value); }
     public double ManualFontScale { get => _manualFontScale; set => Set(ref _manualFontScale, value); }
-
-    // Desplazamiento manual del texto en coordenadas normalizadas de página. No mueve ni
-    // redimensiona RenderBox/SafePolygon, por lo que arrastrar deja de recalcular la fuente.
     public double TextOffsetX { get => _textOffsetX; set => Set(ref _textOffsetX, value); }
     public double TextOffsetY { get => _textOffsetY; set => Set(ref _textOffsetY, value); }
 
-    // Una región analizada empieza siempre en modo automático. Solo pasa a manual cuando el
-    // usuario edita su composición. ManualLayoutSeedText conserva las líneas automáticas que
-    // había justo antes de editar y ManualBaseFontSize congela el tamaño de partida para que
-    // cambiar un Enter no reduzca ni amplíe la fuente por sorpresa.
     public bool IsManual { get; set; }
     public string? ManualLayoutSeedText { get; set; }
     public double ManualBaseFontSize { get; set; }
@@ -195,8 +203,6 @@ public sealed class ComicRegion : INotifyPropertyChanged
             insideContainer = IsStrongContainer(bounds, TextBox);
         }
 
-        // Una palabra sola también puede ser diálogo («¡CORRE!»), pero solo se rescata con
-        // una confianza de bocadillo alta para no empezar a traducir SFX exteriores.
         if (insideContainer && (sentenceLike || BubbleConfidence >= 0.28))
         {
             return "dialogue";
