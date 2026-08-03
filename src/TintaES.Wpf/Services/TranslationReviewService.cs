@@ -1,5 +1,6 @@
 using System.Net.Http;
 using System.Net.Http.Json;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using TintaES.Core;
@@ -37,8 +38,15 @@ public sealed class TranslationReviewService
             return new TranslationReviewResult(0, 0, 0);
         }
 
+        // Una frase española puede ser formalmente válida y, sin embargo, pertenecer a otro
+        // bocadillo. Es preferible dejarla pendiente que enseñar un texto claramente cruzado.
+        foreach (ComicRegion region in targets.Where(region =>
+                     IsCrossAssignedTranslation(region, region.Translation, targets)))
+        {
+            region.Translation = string.Empty;
+        }
+
         int changed = 0;
-        int resolved = 0;
         for (int start = 0; start < targets.Length; start += ReviewChunkSize)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -49,7 +57,6 @@ public sealed class TranslationReviewService
                 model,
                 cancellationToken);
             changed += chunkResult.Changed;
-            resolved += chunkResult.Resolved;
 
             int completed = Math.Min(targets.Length, start + chunk.Length);
             progress?.Report(new AnalysisProgress(
@@ -58,10 +65,27 @@ public sealed class TranslationReviewService
                 $"Revisando traducciones · {completed}/{targets.Length}"));
         }
 
+        // Si el modelo omitió una etiqueta o intentó volver a copiar el texto de otra zona,
+        // se reintenta solo ese bocadillo. En una respuesta individual ya no puede desplazar
+        // las traducciones de sus vecinos.
+        ComicRegion[] unresolved = targets
+            .Where(region => !region.HasRenderableTranslation)
+            .ToArray();
+        foreach (ComicRegion region in unresolved)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            TranslationReviewChunkResult recovery = await ReviewChunkAsync(
+                [region],
+                targets,
+                model,
+                cancellationToken);
+            changed += recovery.Changed;
+        }
+
         return new TranslationReviewResult(
             targets.Length,
             changed,
-            Math.Max(0, targets.Length - resolved));
+            targets.Count(region => !region.HasRenderableTranslation));
     }
 
     private static async Task<TranslationReviewChunkResult> ReviewChunkAsync(
@@ -169,7 +193,7 @@ public sealed class TranslationReviewService
             }
 
             string candidate = Clean(match.Groups[1].Value);
-            if (!IsUsableReview(region, candidate))
+            if (!IsUsableReview(region, candidate, fullPage))
             {
                 if (region.HasRenderableTranslation)
                 {
@@ -196,7 +220,10 @@ public sealed class TranslationReviewService
         return new TranslationReviewChunkResult(changed, resolved);
     }
 
-    private static bool IsUsableReview(ComicRegion region, string candidate)
+    private static bool IsUsableReview(
+        ComicRegion region,
+        string candidate,
+        IReadOnlyList<ComicRegion> fullPage)
     {
         if (string.IsNullOrWhiteSpace(candidate)
             || candidate.Contains("[[", StringComparison.Ordinal)
@@ -204,7 +231,8 @@ public sealed class TranslationReviewService
             || candidate.Contains("BORRADOR:", StringComparison.OrdinalIgnoreCase)
             || !candidate.Any(char.IsLetter)
             || candidate.Length > Math.Max(180, region.Original.Length * 4.2)
-            || EuropeanSpanishDialect.RequiresRetry(region.Original, candidate))
+            || EuropeanSpanishDialect.RequiresRetry(region.Original, candidate)
+            || IsCrossAssignedTranslation(region, candidate, fullPage))
         {
             return false;
         }
@@ -235,6 +263,45 @@ public sealed class TranslationReviewService
             commonEnglish.Contains(word, StringComparer.Ordinal));
         return englishWords < 2
                || englishWords / (double)Math.Max(1, words.Length) < 0.25;
+    }
+
+    private static bool IsCrossAssignedTranslation(
+        ComicRegion region,
+        string? candidate,
+        IReadOnlyList<ComicRegion> fullPage)
+    {
+        string candidateKey = SemanticKey(candidate);
+        if (candidateKey.Length < 4)
+        {
+            return false;
+        }
+
+        string ownSourceKey = SemanticKey(region.Original);
+        if (string.Equals(candidateKey, ownSourceKey, StringComparison.Ordinal)
+            || ownSourceKey.Contains(candidateKey, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        return fullPage.Any(other =>
+            !ReferenceEquals(other, region)
+            && string.Equals(
+                SemanticKey(other.Original),
+                candidateKey,
+                StringComparison.Ordinal));
+    }
+
+    private static string SemanticKey(string? value)
+    {
+        string decomposed = (value ?? string.Empty)
+            .Normalize(NormalizationForm.FormD);
+        return new string(decomposed
+            .Where(character =>
+                CharUnicodeInfo.GetUnicodeCategory(character)
+                    != UnicodeCategory.NonSpacingMark)
+            .Where(char.IsLetterOrDigit)
+            .Select(char.ToUpperInvariant)
+            .ToArray());
     }
 
     private static string FormatDraft(string? value) =>
