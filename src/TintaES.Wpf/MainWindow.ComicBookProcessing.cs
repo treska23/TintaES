@@ -5,8 +5,9 @@ namespace TintaES.Wpf;
 public partial class MainWindow
 {
     /// <summary>
-    /// Punto de entrada heredado del botón principal. La lógica real del lote vive únicamente
-    /// en AnalyzeSelectedComicPagesReliablyAsync.
+    /// El botón principal obedece siempre a los checkbox del selector izquierdo. Cuando todas
+    /// las páginas marcadas ya conservan texto detectado, ejecuta solo la revisión lingüística;
+    /// si alguna todavía no tiene zonas, procesa únicamente esas páginas seleccionadas.
     /// </summary>
     private void AnalyzeComicButton_Click(object sender, RoutedEventArgs e)
     {
@@ -22,19 +23,38 @@ public partial class MainWindow
             return;
         }
 
-        int[] pending = _comicPages
-            .Select((page, index) => (page, index))
-            .Where(item => !item.page.SuppressBatchProcessing && PageNeedsTranslation(item.page))
-            .Select(item => item.index)
+        int[] selected = GetSelectedComicPageIndices()
+            .Where(index => index >= 0 && index < _comicPages.Count)
+            .Distinct()
+            .OrderBy(index => index)
             .ToArray();
-
-        if (pending.Length == 0)
+        if (selected.Length == 0)
         {
-            SetFooterStatus("Todas las páginas del cómic ya están procesadas.", "#58A77D");
+            SetFooterStatus("Marca al menos una página en la columna izquierda.", "#C99A35");
             return;
         }
 
-        _ = AnalyzeSelectedComicPagesReliablyAsync(pending, model);
+        if (SelectedPagesCanBeReviewed(selected))
+        {
+            _ = ReviewSelectedTranslationsAsync(selected, model);
+            return;
+        }
+
+        int[] pendingDetection = selected
+            .Where(index => !_comicPages[index].SuppressBatchProcessing)
+            .Where(index => !PageHasReviewableText(_comicPages[index]))
+            .Where(index => PageNeedsTranslation(_comicPages[index]))
+            .ToArray();
+
+        if (pendingDetection.Length == 0)
+        {
+            SetFooterStatus(
+                "Las páginas marcadas no necesitan detección. Selecciona solo páginas con texto para revisarlas.",
+                "#C99A35");
+            return;
+        }
+
+        _ = AnalyzeSelectedComicPagesReliablyAsync(pendingDetection, model);
     }
 
     private static bool PageNeedsTranslation(ComicBookPageState page) =>
