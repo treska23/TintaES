@@ -34,10 +34,11 @@ public partial class MainWindow
             return;
         }
 
+        // Se conserva deliberadamente el orden entregado por el llamador. El botón principal
+        // lo rota desde la página visible; el menú contextual entrega una sola página.
         int[] selected = selectedIndices
             .Where(index => index >= 0 && index < _comicPages.Count)
             .Distinct()
-            .OrderBy(index => index)
             .Where(index => PageHasReviewableText(_comicPages[index]))
             .ToArray();
         if (selected.Length == 0)
