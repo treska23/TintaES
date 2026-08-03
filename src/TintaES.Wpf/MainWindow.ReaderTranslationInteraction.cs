@@ -9,6 +9,7 @@ namespace TintaES.Wpf;
 /// <summary>
 /// Permite consultar una traducción directamente sobre la página principal. El texto
 /// detectado es una zona invisible: la página original nunca se modifica ni se tapa.
+/// Con ratón se muestra al pasar por encima; en pantalla táctil, mientras el dedo está apoyado.
 /// </summary>
 public partial class MainWindow
 {
@@ -83,9 +84,10 @@ public partial class MainWindow
             imagePoint.Y,
             ImageStage.ActualWidth,
             ImageStage.ActualHeight);
-        double x = normalized.X;
-        double y = normalized.Y;
-        ComicRegion? region = ResolveMainTranslationRegion(_regions, x, y);
+        ComicRegion? region = ResolveMainTranslationRegion(
+            _regions,
+            normalized.X,
+            normalized.Y);
 
         if (region is null)
         {
@@ -134,6 +136,37 @@ public partial class MainWindow
         }
     }
 
+    private void MainImage_MouseMoveForTranslation(object? sender, MouseEventArgs e)
+    {
+        // Los eventos táctiles pueden promocionarse a eventos de ratón. El toque tiene su ruta
+        // propia y no debe quedar inmediatamente oculto por un MouseMove sintetizado.
+        if (e.StylusDevice is not null)
+        {
+            return;
+        }
+
+        // Pulsar el botón izquierdo cambia al gesto de arrastre. Durante el arrastre no se
+        // enseña ninguna tarjeta aunque el puntero atraviese una zona de texto.
+        if (e.LeftButton == MouseButtonState.Pressed || _isSpacePanning)
+        {
+            HideMainTranslation();
+            return;
+        }
+
+        if (!TryShowMainTranslationAt(e.GetPosition(ImageStage)))
+        {
+            HideMainTranslation();
+        }
+    }
+
+    private void MainImage_MouseLeaveForTranslation(object? sender, MouseEventArgs e)
+    {
+        if (!ImageStage.AreAnyTouchesCapturedWithin)
+        {
+            HideMainTranslation();
+        }
+    }
+
     private void MainImage_PreviewTouchDown(object? sender, TouchEventArgs e)
     {
         if (!TryShowMainTranslationAt(e.GetTouchPoint(ImageStage).Position)
@@ -157,5 +190,4 @@ public partial class MainWindow
         HideMainTranslation();
         e.Handled = true;
     }
-
 }
