@@ -23,11 +23,9 @@ public partial class MainWindow
             return;
         }
 
-        int[] selected = GetSelectedComicPageIndices()
-            .Where(index => index >= 0 && index < _comicPages.Count)
-            .Distinct()
-            .OrderBy(index => index)
-            .ToArray();
+        int[] selected = OrderSelectedPagesFromCurrent(
+            GetSelectedComicPageIndices()
+                .Where(index => index >= 0 && index < _comicPages.Count));
         if (selected.Length == 0)
         {
             SetFooterStatus("Marca al menos una página en la columna izquierda.", "#C99A35");
@@ -58,6 +56,31 @@ public partial class MainWindow
         }
 
         _ = AnalyzeSelectedComicPagesReliablyAsync(pendingDetection, model);
+    }
+
+    /// <summary>
+    /// Mantiene el conjunto decidido por los checkbox, pero hace que el trabajo empiece en la
+    /// página que el usuario está viendo y continúe hacia delante. Al llegar al final, envuelve
+    /// al principio del cómic. Si la página visible no está marcada, comienza en la siguiente
+    /// página marcada posterior.
+    /// </summary>
+    private int[] OrderSelectedPagesFromCurrent(IEnumerable<int> indices)
+    {
+        int[] selected = indices
+            .Where(index => index >= 0 && index < _comicPages.Count)
+            .Distinct()
+            .ToArray();
+        if (selected.Length <= 1 || _comicPages.Count == 0)
+        {
+            return selected;
+        }
+
+        int startIndex = _comicPageIndex >= 0 && _comicPageIndex < _comicPages.Count
+            ? _comicPageIndex
+            : 0;
+        return selected
+            .OrderBy(index => (index - startIndex + _comicPages.Count) % _comicPages.Count)
+            .ToArray();
     }
 
     private static bool PageNeedsTranslation(ComicBookPageState page) =>
