@@ -5,7 +5,8 @@ namespace TintaES.Wpf;
 
 /// <summary>
 /// Hace que los checkboxes del panel izquierdo controlen también qué páginas se analizan y
-/// traducen. El procesamiento fiable se encarga de reintentar, marcar y desmarcar los fallos.
+/// traducen. Antes de iniciar el OCR prepara una única ficha documental de la obra, que se
+/// reutiliza para todas las páginas seleccionadas.
 /// </summary>
 public partial class MainWindow
 {
@@ -46,12 +47,18 @@ public partial class MainWindow
         }
 
         AnalyzeButton.Click -= AnalyzeComicButton_Click;
+        AnalyzeButton.Click -= AnalyzeSelectedComicPagesButton_Click;
         AnalyzeButton.Click += AnalyzeSelectedComicPagesButton_Click;
         _selectedPageProcessingInstalled = true;
     }
 
-    private void AnalyzeSelectedComicPagesButton_Click(object sender, RoutedEventArgs e)
+    private async void AnalyzeSelectedComicPagesButton_Click(object sender, RoutedEventArgs e)
     {
+        if (!await EnsureComicResearchContextAsync())
+        {
+            return;
+        }
+
         if (_comicPages.Count == 0)
         {
             AnalyzeComicButton_Click(sender, e);
@@ -71,6 +78,6 @@ public partial class MainWindow
             return;
         }
 
-        _ = AnalyzeSelectedComicPagesReliablyAsync(selected, model);
+        await AnalyzeSelectedComicPagesReliablyAsync(selected, model);
     }
 }
