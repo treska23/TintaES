@@ -76,8 +76,9 @@ public static class BalloonRegionGrouper
             if (!mixedClassifierPair)
             {
                 // Dos textos normales solo pertenecen al mismo bocadillo cuando sus
-                // contenedores representan esencialmente la misma forma. Un contenedor
-                // grande que abarque otros globos no puede provocar una unión en cadena.
+                // contenedores representan esencialmente la misma forma. El margen se ha
+                // abierto ligeramente para tolerar dos estimaciones OCR del mismo globo,
+                // pero un contenedor grande que abarque otros globos sigue sin poder unirlos.
                 if (!memberHasContainer || !candidateHasContainer
                     || !AreSameBalloonContainer(memberContainer, candidateContainer))
                 {
@@ -104,8 +105,8 @@ public static class BalloonRegionGrouper
                 candidate.TextBox.X,
                 candidate.TextBox.Right);
             double minimumHeight = Math.Max(1, Math.Min(member.TextBox.Height, candidate.TextBox.Height));
-            double maximumVerticalGap = Math.Max(24, referenceContainer.Height * 0.22);
-            double maximumHorizontalGap = Math.Max(28, referenceContainer.Width * 0.20);
+            double maximumVerticalGap = Math.Max(26, referenceContainer.Height * 0.25);
+            double maximumHorizontalGap = Math.Max(30, referenceContainer.Width * 0.22);
             double horizontalOverlap = AxisOverlap(
                 member.TextBox.X,
                 member.TextBox.Right,
@@ -121,19 +122,19 @@ public static class BalloonRegionGrouper
             double horizontalCentreDistance = Math.Abs(memberCentre.X - candidateCentre.X);
             double verticalCentreDistance = Math.Abs(memberCentre.Y - candidateCentre.Y);
 
-            bool verticallyStacked = verticalCentreDistance >= minimumHeight * 0.45
+            bool verticallyStacked = verticalCentreDistance >= minimumHeight * 0.42
                 && verticalGap <= maximumVerticalGap
-                && (horizontalOverlap >= 0.16
-                    || horizontalCentreDistance <= referenceContainer.Width * 0.28);
+                && (horizontalOverlap >= 0.13
+                    || horizontalCentreDistance <= referenceContainer.Width * 0.31);
 
             bool sameLineBalloonFragments = memberIsBalloon
                 && candidateIsBalloon
-                && verticalOverlap >= 0.60
-                && horizontalGap <= Math.Max(9, minimumHeight * 0.30);
+                && verticalOverlap >= 0.56
+                && horizontalGap <= Math.Max(10, minimumHeight * 0.34);
 
             bool sameLineEmphasis = mixedClassifierPair
-                && verticalOverlap >= 0.30
-                && horizontalGap <= Math.Max(24, minimumHeight * 1.20);
+                && verticalOverlap >= 0.28
+                && horizontalGap <= Math.Max(25, minimumHeight * 1.24);
 
             if ((!verticallyStacked && !sameLineBalloonFragments && !sameLineEmphasis)
                 || horizontalGap > maximumHorizontalGap)
@@ -151,9 +152,9 @@ public static class BalloonRegionGrouper
                 }
 
                 bool embeddedInBalloon = Contains(balloonContainer, Centre(emphasis.TextBox))
-                    && emphasis.TextBox.Area <= balloonContainer.Area * 0.24
-                    && emphasis.TextBox.Width <= balloonContainer.Width * 0.62
-                    && emphasis.TextBox.Height <= balloonContainer.Height * 0.52;
+                    && emphasis.TextBox.Area <= balloonContainer.Area * 0.25
+                    && emphasis.TextBox.Width <= balloonContainer.Width * 0.64
+                    && emphasis.TextBox.Height <= balloonContainer.Height * 0.54;
                 if (!embeddedInBalloon && !HasSharedOcrEvidence(member, candidate))
                 {
                     continue;
@@ -177,10 +178,10 @@ public static class BalloonRegionGrouper
         double widthReference = Math.Max(1, Math.Min(first.Width, second.Width));
         double heightReference = Math.Max(1, Math.Min(first.Height, second.Height));
 
-        return overlap >= 0.78
-            && areaRatio <= 1.75
-            && centreDistanceX <= widthReference * 0.20
-            && centreDistanceY <= heightReference * 0.22;
+        return overlap >= 0.74
+            && areaRatio <= 1.90
+            && centreDistanceX <= widthReference * 0.23
+            && centreDistanceY <= heightReference * 0.25;
     }
 
     private static double SharedContainerScore(
