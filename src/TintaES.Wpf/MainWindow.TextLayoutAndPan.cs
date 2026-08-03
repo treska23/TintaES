@@ -6,12 +6,12 @@ namespace TintaES.Wpf;
 
 /// <summary>
 /// Desplazamiento directo del lector: el botón izquierdo arrastra la página sin teclas
-/// modificadoras. Los campos de texto quedan fuera del visor y no compiten con el gesto.
+/// modificadoras, también cuando se pulsa sobre una zona con traducción. La consulta con
+/// ratón se realiza exclusivamente al pasar el puntero por encima.
 /// </summary>
 public partial class MainWindow
 {
     private bool _isSpacePanning;
-    private bool _mainTranslationMouseHeld;
     private Point _panStartPointer;
     private double _panStartHorizontalOffset;
     private double _panStartVerticalOffset;
@@ -25,16 +25,9 @@ public partial class MainWindow
             return;
         }
 
-        if (TryShowMainTranslationAt(e.GetPosition(ImageStage)))
-        {
-            _mainTranslationMouseHeld = true;
-            Mouse.Capture(ImageScrollViewer, CaptureMode.Element);
-            e.Handled = true;
-            return;
-        }
-
+        // La tarjeta de hover desaparece en cuanto empieza el gesto. No se comprueba si hay
+        // texto debajo: el botón izquierdo siempre pertenece al desplazamiento de la página.
         HideMainTranslation();
-
         _isSpacePanning = true;
         _panStartPointer = e.GetPosition(ImageScrollViewer);
         _panStartHorizontalOffset = ImageScrollViewer.HorizontalOffset;
@@ -65,13 +58,6 @@ public partial class MainWindow
     {
         base.OnPreviewMouseLeftButtonUp(e);
 
-        if (_mainTranslationMouseHeld)
-        {
-            EndMainTranslationMouseHold();
-            e.Handled = true;
-            return;
-        }
-
         if (!_isSpacePanning)
         {
             return;
@@ -90,21 +76,6 @@ public partial class MainWindow
         }
 
         _isSpacePanning = false;
-        if (Mouse.Captured == ImageScrollViewer)
-        {
-            Mouse.Capture(null);
-        }
-    }
-
-    private void EndMainTranslationMouseHold()
-    {
-        if (!_mainTranslationMouseHeld)
-        {
-            return;
-        }
-
-        _mainTranslationMouseHeld = false;
-        HideMainTranslation();
         if (Mouse.Captured == ImageScrollViewer)
         {
             Mouse.Capture(null);
