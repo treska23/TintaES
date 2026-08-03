@@ -69,11 +69,37 @@ public sealed class ComicRegion : INotifyPropertyChanged
 
     public Guid Id { get; set; } = Guid.NewGuid();
     public int Order { get; set; }
-    public string Original { get => _original; set => Set(ref _original, value); }
+
+    public string Original
+    {
+        get => _original;
+        set
+        {
+            Set(ref _original, value ?? string.Empty);
+            if (EuropeanSpanishDialect.RequiresRetry(_original, _translation))
+            {
+                Set(ref _translation, string.Empty, nameof(Translation));
+            }
+        }
+    }
+
     // Lecturas del mismo bloque obtenidas por otros OCR. No se muestran ni se exportan:
     // sirven para que el traductor pueda reconstruir letras dudosas sin mezclar bocadillos.
     public IReadOnlyList<string> OcrAlternatives { get; set; } = [];
-    public string Translation { get => _translation; set => Set(ref _translation, value); }
+
+    public string Translation
+    {
+        get => _translation;
+        set
+        {
+            string candidate = value ?? string.Empty;
+            if (EuropeanSpanishDialect.RequiresRetry(_original, candidate))
+            {
+                candidate = string.Empty;
+            }
+            Set(ref _translation, candidate);
+        }
+    }
 
     // El lienzo de resultado nunca debe volver a colocar el OCR inglés ni un aviso técnico
     // sobre un fondo ya reconstruido. El original continúa disponible en el inspector.
