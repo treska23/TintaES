@@ -29,10 +29,10 @@ public static class ComicRegionHitResolver
 
     private static NormalizedRect CreateTextHitBox(NormalizedRect text)
     {
-        // Un margen pequeño permite pulsar el blanco inmediato entre las letras y el borde,
-        // pero nunca convierte todo el bocadillo ni la viñeta en una zona activa.
-        double marginX = Math.Clamp(text.Height * 0.24, 9, 28);
-        double marginY = Math.Clamp(text.Height * 0.17, 7, 20);
+        // Se abre solo un poco respecto a la versión anterior: facilita pulsar frases partidas
+        // en varias líneas, pero sigue quedándose muy lejos del tamaño del bocadillo completo.
+        double marginX = Math.Clamp(text.Height * 0.27, 10, 30);
+        double marginY = Math.Clamp(text.Height * 0.19, 8, 22);
         return new NormalizedRect(
             text.X - marginX,
             text.Y - marginY,
