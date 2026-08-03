@@ -7,14 +7,23 @@ using System.Windows.Media;
 namespace TintaES.Wpf;
 
 /// <summary>
-/// Panel vertical para visualizar páginas y elegir cuáles se exportan. El texto navega a la
-/// página y únicamente el CheckBox modifica la selección de exportación.
+/// Panel vertical de páginas. La selección visual de miniaturas y el estado de sus checkbox son
+/// independientes: se pueden seleccionar varias miniaturas y aplicarles después un único cambio
+/// de check, sin confundir la página visible con las páginas incluidas en una acción o exportación.
 /// </summary>
 public partial class MainWindow
 {
     private const int SafeExportBatchSize = 20;
 
+    // Páginas con el checkbox activado. Este conjunto sigue siendo la selección que consumen
+    // traducción, revisión y exportación para no romper las rutas existentes.
     private readonly HashSet<int> _selectedComicPageIndices = [];
+
+    // Miniaturas seleccionadas visualmente. No implica que sus checkbox estén activados.
+    private readonly HashSet<int> _highlightedComicPageIndices = [];
+    private readonly Dictionary<string, ThumbnailSelectionState> _thumbnailSelectionStates =
+        new(StringComparer.OrdinalIgnoreCase);
+
     private readonly Dictionary<int, CheckBox> _pageSelectionCheckBoxes = [];
     private readonly Dictionary<int, TextBlock> _pageSelectionLabels = [];
     private readonly Dictionary<int, Border> _pageSelectionRows = [];
@@ -26,6 +35,7 @@ public partial class MainWindow
     private TextBlock? _pageSelectionSummary;
     private Button? _pageSelectionToggleButton;
     private string? _pageSelectionSessionKey;
+    private string? _thumbnailSelectionSessionKey;
     private int _lastPageSelectionVisualIndex = -2;
     private int _pageSelectionAnchorIndex = -1;
     private bool _syncingPageSelection;
@@ -86,7 +96,7 @@ public partial class MainWindow
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         header.Children.Add(new TextBlock
         {
-            Text = "PÁGINAS A EXPORTAR",
+            Text = "PÁGINAS",
             VerticalAlignment = VerticalAlignment.Center,
             FontSize = 10,
             FontWeight = FontWeights.Bold,
@@ -144,7 +154,9 @@ public partial class MainWindow
             _pageSelectionToggleButton.Click += (_, _) =>
                 SetPageSelectionPanelVisible(_pageSelectionPanel.Visibility != Visibility.Visible);
             int index = navigationPanel.Children.IndexOf(_pageCounterText);
-            navigationPanel.Children.Insert(Math.Min(navigationPanel.Children.Count, index + 1), _pageSelectionToggleButton);
+            navigationPanel.Children.Insert(
+                Math.Min(navigationPanel.Children.Count, index + 1),
+                _pageSelectionToggleButton);
             _pageCounterText.LayoutUpdated += (_, _) => SyncPageSelectionPanel();
         }
 
@@ -174,10 +186,11 @@ public partial class MainWindow
         }
 
         string key = BuildActiveDocumentSessionKey();
+        SynchronizeThumbnailSelectionSession(key);
+
         if (!string.Equals(key, _pageSelectionSessionKey, StringComparison.OrdinalIgnoreCase))
         {
             _pageSelectionSessionKey = key;
-            _pageSelectionAnchorIndex = -1;
             _selectedComicPageIndices.Clear();
             _exportedComicPageIndices.Clear();
             foreach (int index in Enumerable.Range(0, _comicPages.Count))
@@ -194,6 +207,55 @@ public partial class MainWindow
             RefreshPageSelectionVisuals();
         }
         UpdatePageSelectionSummary();
+    }
+
+    private void SynchronizeThumbnailSelectionSession(string key)
+    {
+        if (string.Equals(
+                key,
+                _thumbnailSelectionSessionKey,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        _thumbnailSelectionSessionKey = key;
+        _highlightedComicPageIndices.Clear();
+        _pageSelectionAnchorIndex = -1;
+
+        if (!string.IsNullOrWhiteSpace(key)
+            && _thumbnailSelectionStates.TryGetValue(key, out ThumbnailSelectionState? stored))
+        {
+            foreach (int index in stored.Indices.Where(index =>
+                         index >= 0 && index < _comicPages.Count))
+            {
+                _highlightedComicPageIndices.Add(index);
+            }
+            _pageSelectionAnchorIndex = stored.AnchorIndex >= 0
+                                        && stored.AnchorIndex < _comicPages.Count
+                ? stored.AnchorIndex
+                : -1;
+            return;
+        }
+
+        if (_comicPageIndex >= 0 && _comicPageIndex < _comicPages.Count)
+        {
+            _highlightedComicPageIndices.Add(_comicPageIndex);
+            _pageSelectionAnchorIndex = _comicPageIndex;
+        }
+        SaveThumbnailSelectionState();
+    }
+
+    private void SaveThumbnailSelectionState()
+    {
+        if (string.IsNullOrWhiteSpace(_thumbnailSelectionSessionKey))
+        {
+            return;
+        }
+
+        _thumbnailSelectionStates[_thumbnailSelectionSessionKey] = new ThumbnailSelectionState(
+            _highlightedComicPageIndices.ToHashSet(),
+            _pageSelectionAnchorIndex);
     }
 
     private void RebuildPageSelectionItems()
@@ -223,12 +285,14 @@ public partial class MainWindow
                     Padding = new Thickness(0),
                     HorizontalAlignment = HorizontalAlignment.Left,
                     VerticalAlignment = VerticalAlignment.Top,
-                    ToolTip = "Incluir o excluir esta página de la exportación CBZ"
+                    ToolTip =
+                        "Clic: aplicar el check a la selección de miniaturas. " +
+                        "Shift + clic: dejar marcada únicamente esta página."
                 };
                 checkBox.PreviewMouseLeftButtonDown += (_, e) =>
                     PageSelectionCheckBox_PreviewMouseLeftButtonDown(capturedIndex, e);
-                checkBox.Checked += (_, _) => SetPageSelected(capturedIndex, true);
-                checkBox.Unchecked += (_, _) => SetPageSelected(capturedIndex, false);
+                checkBox.PreviewKeyDown += (_, e) =>
+                    PageSelectionCheckBox_PreviewKeyDown(capturedIndex, e);
 
                 var label = new TextBlock
                 {
@@ -237,7 +301,9 @@ public partial class MainWindow
                     VerticalAlignment = VerticalAlignment.Center,
                     Background = Brushes.Transparent,
                     Cursor = Cursors.Hand,
-                    ToolTip = "Pulsa para visualizar esta página. Shift + clic selecciona un rango."
+                    ToolTip =
+                        "Clic: seleccionar y abrir. Ctrl + clic: añadir o quitar. " +
+                        "Shift + clic: seleccionar un rango."
                 };
                 label.PreviewMouseLeftButtonDown += (_, e) =>
                     PageSelectionLabel_PreviewMouseLeftButtonDown(capturedIndex, e);
@@ -256,7 +322,8 @@ public partial class MainWindow
                     Margin = new Thickness(5, 2, 5, 2),
                     Background = Brushes.Transparent,
                     BorderBrush = Brushes.Transparent,
-                    BorderThickness = new Thickness(0)
+                    BorderThickness = new Thickness(1),
+                    CornerRadius = new CornerRadius(3)
                 };
 
                 _pageSelectionCheckBoxes[index] = checkBox;
@@ -273,26 +340,9 @@ public partial class MainWindow
         RefreshPageSelectionVisuals();
     }
 
-    private void PageSelectionCheckBox_PreviewMouseLeftButtonDown(int index, MouseButtonEventArgs e)
-    {
-        if (index < 0 || index >= _comicPages.Count)
-        {
-            return;
-        }
-
-        if ((Keyboard.Modifiers & ModifierKeys.Shift) != 0 && _pageSelectionAnchorIndex >= 0)
-        {
-            e.Handled = true;
-            bool selectRange = _selectedComicPageIndices.Contains(_pageSelectionAnchorIndex);
-            ApplyPageSelectionRange(_pageSelectionAnchorIndex, index, selectRange);
-            return;
-        }
-
-        _pageSelectionAnchorIndex = index;
-        // No marcamos el evento como Handled: el CheckBox nativo cambia IsChecked normalmente.
-    }
-
-    private void PageSelectionLabel_PreviewMouseLeftButtonDown(int index, MouseButtonEventArgs e)
+    private void PageSelectionCheckBox_PreviewMouseLeftButtonDown(
+        int index,
+        MouseButtonEventArgs e)
     {
         if (index < 0 || index >= _comicPages.Count)
         {
@@ -300,17 +350,117 @@ public partial class MainWindow
         }
 
         e.Handled = true;
-        if ((Keyboard.Modifiers & ModifierKeys.Shift) != 0)
+        TogglePageChecksFromThumbnail(index, Keyboard.Modifiers);
+    }
+
+    private void PageSelectionCheckBox_PreviewKeyDown(int index, KeyEventArgs e)
+    {
+        if (e.Key != Key.Space || index < 0 || index >= _comicPages.Count)
         {
-            if (_pageSelectionAnchorIndex < 0)
-            {
-                _pageSelectionAnchorIndex = index;
-            }
-            ApplyPageSelectionRange(_pageSelectionAnchorIndex, index, selected: true);
             return;
         }
 
-        _pageSelectionAnchorIndex = index;
+        e.Handled = true;
+        TogglePageChecksFromThumbnail(index, Keyboard.Modifiers);
+    }
+
+    private void TogglePageChecksFromThumbnail(int index, ModifierKeys modifiers)
+    {
+        // Shift sobre un checkbox es el acceso rápido exclusivo solicitado: esta página queda
+        // marcada y todas las demás se desmarcan, sin depender de la selección visual.
+        if ((modifiers & ModifierKeys.Shift) != 0)
+        {
+            _selectedComicPageIndices.Clear();
+            _selectedComicPageIndices.Add(index);
+            SynchronizePageChecksAfterChange();
+            return;
+        }
+
+        int[] targets = _highlightedComicPageIndices.Contains(index)
+            ? _highlightedComicPageIndices
+                .Where(item => item >= 0 && item < _comicPages.Count)
+                .Distinct()
+                .OrderBy(item => item)
+                .ToArray()
+            : [index];
+
+        if (targets.Length == 0)
+        {
+            targets = [index];
+        }
+
+        // Solo se desmarca el grupo cuando ya estaba completamente marcado. Tanto una mezcla
+        // como un grupo completamente desmarcado se convierten en un grupo marcado.
+        bool allChecked = targets.All(item => _selectedComicPageIndices.Contains(item));
+        ApplyPageCheckState(targets, isChecked: !allChecked);
+    }
+
+    private void ApplyPageCheckState(IEnumerable<int> indices, bool isChecked)
+    {
+        foreach (int index in indices
+                     .Where(index => index >= 0 && index < _comicPages.Count)
+                     .Distinct())
+        {
+            if (isChecked)
+            {
+                _selectedComicPageIndices.Add(index);
+            }
+            else
+            {
+                _selectedComicPageIndices.Remove(index);
+            }
+        }
+
+        SynchronizePageChecksAfterChange();
+    }
+
+    private void SynchronizePageChecksAfterChange()
+    {
+        SyncPageSelectionCheckBoxes();
+        UpdatePageSelectionSummary();
+        UpdateCbzExportSelectionCaption();
+        RefreshPrimaryTranslationAction();
+    }
+
+    private void PageSelectionLabel_PreviewMouseLeftButtonDown(
+        int index,
+        MouseButtonEventArgs e)
+    {
+        if (index < 0 || index >= _comicPages.Count)
+        {
+            return;
+        }
+
+        e.Handled = true;
+        ModifierKeys modifiers = Keyboard.Modifiers;
+        if ((modifiers & ModifierKeys.Shift) != 0)
+        {
+            if (_pageSelectionAnchorIndex < 0
+                || _pageSelectionAnchorIndex >= _comicPages.Count)
+            {
+                _pageSelectionAnchorIndex = index;
+            }
+            SelectThumbnailRange(_pageSelectionAnchorIndex, index);
+        }
+        else if ((modifiers & ModifierKeys.Control) != 0)
+        {
+            if (!_highlightedComicPageIndices.Add(index))
+            {
+                _highlightedComicPageIndices.Remove(index);
+            }
+            _pageSelectionAnchorIndex = index;
+        }
+        else
+        {
+            _highlightedComicPageIndices.Clear();
+            _highlightedComicPageIndices.Add(index);
+            _pageSelectionAnchorIndex = index;
+        }
+
+        SaveThumbnailSelectionState();
+        RefreshPageSelectionVisuals();
+        UpdatePageSelectionSummary();
+
         if (_comicBatchBusy || _pageNavigationBusy)
         {
             return;
@@ -322,7 +472,7 @@ public partial class MainWindow
         }
     }
 
-    private void ApplyPageSelectionRange(int anchorIndex, int targetIndex, bool selected)
+    private void SelectThumbnailRange(int anchorIndex, int targetIndex)
     {
         int first = Math.Max(0, Math.Min(anchorIndex, targetIndex));
         int last = Math.Min(_comicPages.Count - 1, Math.Max(anchorIndex, targetIndex));
@@ -331,21 +481,11 @@ public partial class MainWindow
             return;
         }
 
+        _highlightedComicPageIndices.Clear();
         for (int index = first; index <= last; index++)
         {
-            if (selected)
-            {
-                _selectedComicPageIndices.Add(index);
-            }
-            else
-            {
-                _selectedComicPageIndices.Remove(index);
-            }
+            _highlightedComicPageIndices.Add(index);
         }
-
-        SyncPageSelectionCheckBoxes();
-        UpdatePageSelectionSummary();
-        UpdateCbzExportSelectionCaption();
     }
 
     private void SyncPageSelectionCheckBoxes()
@@ -367,53 +507,49 @@ public partial class MainWindow
 
     private void RefreshPageSelectionVisuals()
     {
+        Brush accent = FindResource("AccentBrush") as Brush ?? Brushes.IndianRed;
+        Brush ink = FindResource("InkBrush") as Brush ?? Brushes.White;
+        var selectedBackground = new SolidColorBrush(Color.FromArgb(52, 76, 178, 187));
+
         foreach ((int index, CheckBox checkBox) in _pageSelectionCheckBoxes)
         {
             string state = _comicPages[index].Error is not null
                 ? "error"
                 : _comicPages[index].Processed ? "traducida" : "pendiente";
-            string exported = _exportedComicPageIndices.Contains(index) ? " · exportada" : string.Empty;
+            string exported = _exportedComicPageIndices.Contains(index)
+                ? " · exportada"
+                : string.Empty;
+            bool thumbnailSelected = _highlightedComicPageIndices.Contains(index);
 
             if (_pageSelectionLabels.TryGetValue(index, out TextBlock? label))
             {
-                label.Text = $"{index + 1:D3} · {_comicPages[index].DisplayName}\n      {state}{exported}";
-                label.FontWeight = index == _comicPageIndex ? FontWeights.Bold : FontWeights.Normal;
-                label.Foreground = index == _comicPageIndex
-                    ? FindResource("AccentBrush") as Brush ?? Brushes.IndianRed
-                    : FindResource("InkBrush") as Brush ?? Brushes.White;
+                label.Text =
+                    $"{index + 1:D3} · {_comicPages[index].DisplayName}\n      {state}{exported}";
+                label.FontWeight = index == _comicPageIndex
+                    ? FontWeights.Bold
+                    : FontWeights.Normal;
+                label.Foreground = index == _comicPageIndex ? accent : ink;
                 label.Opacity = 1;
-                label.Cursor = _comicBatchBusy || _pageNavigationBusy ? Cursors.Arrow : Cursors.Hand;
+                label.Cursor = _comicBatchBusy || _pageNavigationBusy
+                    ? Cursors.Arrow
+                    : Cursors.Hand;
             }
 
-            // La selección puede prepararse para la siguiente exportación mientras la actual sigue
-            // trabajando. La lista usada por la exportación ya se tomó al comenzar.
+            // La selección y los checkbox pueden prepararse mientras otra operación trabaja; la
+            // lista consumida por esa operación ya se copió al comenzar.
             checkBox.IsEnabled = true;
             checkBox.Opacity = 1;
             if (_pageSelectionRows.TryGetValue(index, out Border? row))
             {
                 row.Opacity = 1;
+                row.Background = thumbnailSelected
+                    ? selectedBackground
+                    : Brushes.Transparent;
+                row.BorderBrush = thumbnailSelected
+                    ? accent
+                    : Brushes.Transparent;
             }
         }
-    }
-
-    private void SetPageSelected(int index, bool selected)
-    {
-        if (_syncingPageSelection)
-        {
-            return;
-        }
-
-        if (selected)
-        {
-            _selectedComicPageIndices.Add(index);
-        }
-        else
-        {
-            _selectedComicPageIndices.Remove(index);
-        }
-
-        UpdatePageSelectionSummary();
-        UpdateCbzExportSelectionCaption();
     }
 
     private void SelectAllComicPages()
@@ -433,12 +569,15 @@ public partial class MainWindow
 
     private void SelectNextComicPageBatch()
     {
-        int start = _selectedComicPageIndices.Count == 0 ? 0 : _selectedComicPageIndices.Max() + 1;
+        int start = _selectedComicPageIndices.Count == 0
+            ? 0
+            : _selectedComicPageIndices.Max() + 1;
         if (start >= _comicPages.Count)
         {
             start = 0;
         }
-        ApplyPageSelection(Enumerable.Range(start, Math.Min(SafeExportBatchSize, _comicPages.Count - start)));
+        ApplyPageSelection(
+            Enumerable.Range(start, Math.Min(SafeExportBatchSize, _comicPages.Count - start)));
     }
 
     private void SelectNextComicPageBatchAfter(int lastExportedIndex)
@@ -449,21 +588,20 @@ public partial class MainWindow
             ApplyPageSelection([]);
             return;
         }
-        ApplyPageSelection(Enumerable.Range(start, Math.Min(SafeExportBatchSize, _comicPages.Count - start)));
+        ApplyPageSelection(
+            Enumerable.Range(start, Math.Min(SafeExportBatchSize, _comicPages.Count - start)));
     }
 
     private void ApplyPageSelection(IEnumerable<int> indices)
     {
         _selectedComicPageIndices.Clear();
-        foreach (int index in indices.Where(index => index >= 0 && index < _comicPages.Count))
+        foreach (int index in indices.Where(index =>
+                     index >= 0 && index < _comicPages.Count))
         {
             _selectedComicPageIndices.Add(index);
         }
 
-        _pageSelectionAnchorIndex = -1;
-        SyncPageSelectionCheckBoxes();
-        UpdatePageSelectionSummary();
-        UpdateCbzExportSelectionCaption();
+        SynchronizePageChecksAfterChange();
     }
 
     private IReadOnlyList<int> GetSelectedComicPageIndices() =>
@@ -482,10 +620,20 @@ public partial class MainWindow
         {
             return;
         }
-        _pageSelectionSummary.Text = _comicPages.Count == 0
-            ? "No hay páginas cargadas."
-            : $"{_selectedComicPageIndices.Count} de {_comicPages.Count} seleccionadas. " +
-              "Shift + clic selecciona un rango. Una exportación interrumpida puede reanudarse sin dañar el CBZ anterior.";
+
+        if (_comicPages.Count == 0)
+        {
+            _pageSelectionSummary.Text = "No hay páginas cargadas.";
+            return;
+        }
+
+        int highlighted = _highlightedComicPageIndices.Count(index =>
+            index >= 0 && index < _comicPages.Count);
+        _pageSelectionSummary.Text =
+            $"{_selectedComicPageIndices.Count} de {_comicPages.Count} marcadas · " +
+            $"{highlighted} miniatura(s) seleccionada(s). " +
+            "Ctrl + clic añade o quita; Shift + clic selecciona un rango. " +
+            "Un clic en un check se aplica a toda la selección; Shift + clic deja solo esa página marcada.";
     }
 
     private void SetPageSelectionPanelVisible(bool visible)
@@ -494,11 +642,19 @@ public partial class MainWindow
         {
             return;
         }
-        _pageSelectionPanel.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
-        _pageSelectionColumn.Width = visible ? new GridLength(252) : new GridLength(0);
+        _pageSelectionPanel.Visibility = visible
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+        _pageSelectionColumn.Width = visible
+            ? new GridLength(252)
+            : new GridLength(0);
         if (_pageSelectionToggleButton is not null)
         {
             _pageSelectionToggleButton.Content = visible ? "☷" : "☰";
         }
     }
+
+    private sealed record ThumbnailSelectionState(
+        HashSet<int> Indices,
+        int AnchorIndex);
 }
