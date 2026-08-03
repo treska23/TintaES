@@ -85,9 +85,13 @@ public partial class MainWindow
                     .ToArray()
                 : Enumerable.Range(0, _comicPages.Count).ToArray();
 
-            bool review = SelectedPagesCanBeReviewed(selected);
+            // Un archivo .tinta ya contiene el trabajo editable del proyecto. Su acción principal
+            // es repasar las traducciones guardadas, aunque alguna página concreta esté incompleta.
+            // El servicio de repaso filtrará las páginas sin texto sin volver a ejecutar el OCR.
+            bool openedProject = !string.IsNullOrWhiteSpace(_currentProjectPath);
+            bool review = openedProject || SelectedPagesCanBeReviewed(selected);
             string caption = review
-                ? "✦  Revisar traducción"
+                ? "✦  Repasar traducción"
                 : "✦  Detectar y traducir selección";
             string toolTip = selected.Length == 0
                 ? "Marca al menos una página en la columna izquierda"
