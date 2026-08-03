@@ -10,15 +10,16 @@ using System.Windows.Threading;
 namespace TintaES.Wpf;
 
 /// <summary>
-/// Cada página nueva entra encajada verticalmente en el área de trabajo. El Slider, la
-/// transformación real y el porcentaje visible comparten exactamente el mismo valor.
+/// El primer contenido de cada documento entra encajado verticalmente. Al navegar entre las
+/// páginas del mismo cómic se conserva exactamente el zoom elegido por el usuario. El Slider,
+/// la transformación real y el porcentaje visible comparten el mismo valor.
 /// </summary>
 public partial class MainWindow
 {
     private static readonly bool InitialPageZoomRegistered = RegisterInitialPageZoom();
 
     private bool _initialPageZoomInstalled;
-    private string? _lastAutoFitPageIdentity;
+    private string? _lastAutoFitDocumentIdentity;
     private int _verticalFitRequestVersion;
 
     private static bool RegisterInitialPageZoom()
@@ -65,23 +66,44 @@ public partial class MainWindow
             return;
         }
 
-        // Cambiar entre Original, Máscara, Fondo limpio y Resultado no debe alterar el zoom.
-        // La identidad usa el bitmap original para distinguir incluso una reapertura del mismo archivo.
-        string identity = $"{_sourcePath}|{_comicPageIndex}|{RuntimeHelpers.GetHashCode(_originalBitmap)}";
-        if (string.Equals(identity, _lastAutoFitPageIdentity, StringComparison.Ordinal))
+        string documentIdentity = ResolveZoomDocumentIdentity();
+        if (string.Equals(
+                documentIdentity,
+                _lastAutoFitDocumentIdentity,
+                StringComparison.OrdinalIgnoreCase))
         {
+            // Cambiar de página, de vista previa o de bitmap dentro del mismo cómic no debe
+            // recalcular el encaje. También invalidamos cualquier ajuste antiguo que aún
+            // estuviera esperando en el Dispatcher y reafirmamos el porcentaje actual.
+            _verticalFitRequestVersion++;
+            ApplyExactZoomTransform(ZoomSlider.Value);
+            SynchronizeZoomPercentageWithActualScale();
             return;
         }
 
-        _lastAutoFitPageIdentity = identity;
+        _lastAutoFitDocumentIdentity = documentIdentity;
         int requestVersion = ++_verticalFitRequestVersion;
 
         // La carga antigua todavía programa FitImageToViewport con prioridad Loaded. Ejecutamos
-        // después de ella para que el encaje vertical sea el resultado definitivo y no pueda ser
-        // pisado por el zoom heredado o por el antiguo ajuste simultáneo de ancho y alto.
+        // después de ella para que el encaje vertical sea el resultado definitivo al abrir un
+        // documento nuevo. La navegación posterior conservará el zoom escogido por el usuario.
         Dispatcher.BeginInvoke(
             () => _ = FitCurrentPageVerticallyAsync(requestVersion),
             DispatcherPriority.ContextIdle);
+    }
+
+    private string ResolveZoomDocumentIdentity()
+    {
+        if (_comicPages.Count > 0)
+        {
+            string project = _currentProjectPath ?? string.Empty;
+            string firstPage = _comicPages[0].SourcePath ?? string.Empty;
+            return $"comic|{project}|{firstPage}|{_comicPages.Count}";
+        }
+
+        // En una imagen independiente cada carga constituye un documento nuevo, incluso si se
+        // vuelve a abrir el mismo archivo durante la sesión.
+        return $"image|{_sourcePath}|{RuntimeHelpers.GetHashCode(_originalBitmap!)}";
     }
 
     internal Task FitCurrentPageVerticallyAsync() =>
@@ -152,7 +174,7 @@ public partial class MainWindow
             return;
         }
 
-        // Interceptamos antes del atajo antiguo, que ajustaba simultáneamente por ancho y alto.
+        // Ctrl+0 sigue permitiendo pedir expresamente un nuevo ajuste vertical.
         e.Handled = true;
         _ = FitCurrentPageVerticallyAsync();
     }
