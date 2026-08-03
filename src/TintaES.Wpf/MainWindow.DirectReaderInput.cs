@@ -19,10 +19,23 @@ public partial class MainWindow
         ImageScrollViewer.PanningMode = PanningMode.None;
         ImageScrollViewer.Cursor = Cursors.Hand;
         ImageStage.IsManipulationEnabled = true;
+
+        // Ratón: la traducción aparece por hover. El botón izquierdo queda reservado para
+        // arrastrar la página, incluso cuando el puntero está sobre una zona traducida.
+        ImageStage.MouseMove += MainImage_MouseMoveForTranslation;
+        ImageStage.MouseLeave += MainImage_MouseLeaveForTranslation;
+
+        // Táctil: no existe hover, así que la traducción permanece visible mientras el dedo
+        // está apoyado sobre el texto.
         ImageStage.PreviewTouchDown += MainImage_PreviewTouchDown;
         ImageStage.PreviewTouchUp += MainImage_PreviewTouchUp;
         ImageStage.LostTouchCapture += (_, _) => HideMainTranslation();
-        ImageScrollViewer.LostMouseCapture += (_, _) => EndMainTranslationMouseHold();
+
+        ImageScrollViewer.LostMouseCapture += (_, _) =>
+        {
+            EndSpacePan();
+            HideMainTranslation();
+        };
         ImageStage.ManipulationStarting += MainImage_ManipulationStarting;
         ImageStage.ManipulationDelta += MainImage_ManipulationDelta;
         ImageStage.ManipulationInertiaStarting += MainImage_ManipulationInertiaStarting;
