@@ -3,21 +3,22 @@ using System.Text.RegularExpressions;
 namespace TintaES.Core;
 
 /// <summary>
-/// Política lingüística única para las traducciones de TintaES. El destino es español
-/// europeo contemporáneo, no un español neutro indeterminado. En diálogo informal se usa
-/// tú para una persona y vosotros/vosotras para varias; usted/ustedes se reserva para una
-/// formalidad que esté realmente indicada por el original o por la escena.
+/// Política lingüística única para TintaES. El destino es español europeo contemporáneo,
+/// con el registro adulto y la intensidad del original. En este proyecto «ustedes» no se
+/// usa como plural general ni como tratamiento automático.
 /// </summary>
 public static class EuropeanSpanishDialect
 {
     public const string ModelInstruction =
         "Escribe exclusivamente en español de España contemporáneo, no en español neutro ni latinoamericano. " +
-        "En conversación informal usa tú para una persona y vosotros/vosotras para varias, con sus formas " +
-        "verbales y pronombres correspondientes (os, vuestro/a). No uses usted ni ustedes por defecto. " +
-        "Úsalos únicamente cuando el original o el contexto indiquen de verdad respeto formal, jerarquía, " +
-        "distancia social, tratamiento profesional, época histórica o fórmulas como sir, ma'am, Mr., Mrs., " +
-        "officer, doctor, Your Majesty o equivalentes. Mantén el registro del personaje y utiliza léxico " +
-        "habitual en España; evita regionalismos latinoamericanos como computadora, celular, carro, boleto, " +
+        "Para una sola persona usa tú en conversación normal y usted únicamente cuando el original o la escena " +
+        "marquen de verdad cortesía, jerarquía o distancia. Para varias personas usa vosotros/vosotras, con " +
+        "sus formas verbales y pronombres (os, vuestro/a). No uses «ustedes» en este proyecto: no lo emplees " +
+        "ni como plural general ni como tratamiento de cortesía automático. Mantén el registro exacto de los " +
+        "personajes. El cómic es para adultos: conserva tacos, insultos, amenazas, vulgaridad, violencia verbal " +
+        "y dobles sentidos con una intensidad equivalente; no censures, no pongas asteriscos, no eufemices y " +
+        "no suavices palabras como fuck, fucking, shit, asshole, bastard, bitch o motherfucker. Utiliza léxico " +
+        "habitual en España y evita regionalismos latinoamericanos como computadora, celular, carro, boleto, " +
         "estacionamiento, elevador, manejar, platicar o enojado cuando el sentido normal en España sea " +
         "ordenador, móvil, coche, billete/entrada, aparcamiento, ascensor, conducir, hablar o enfadado.";
 
@@ -34,8 +35,20 @@ public static class EuropeanSpanishDialect
         + @"my\s+lord|your\s+lordship|father|mother\s+superior)\b",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
-    private static readonly Regex ExplicitFormalTranslation = new(
-        @"\b(?:usted|ustedes)\b",
+    private static readonly Regex ExplicitSingularFormalTranslation = new(
+        @"\busted\b",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
+    private static readonly Regex StrongAdultSource = new(
+        @"\b(?:motherfucker(?:s)?|motherfucking|fucker(?:s)?|fucking|fuck(?:ed|ing|s)?|"
+        + @"bullshit|shit(?:ty|head|heads)?|asshole(?:s)?|bastard(?:s)?|bitch(?:es)?|"
+        + @"son\s+of\s+a\s+bitch|cunt(?:s)?|dickhead(?:s)?|prick(?:s)?)\b",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
+    private static readonly Regex StrongAdultSpanish = new(
+        @"\b(?:joder|jodid[oa]s?|mierda|put[oa]s?|putísimo|putísima|cabr[oó]n(?:es|a|as)?|"
+        + @"gilipollas|capull[oa]s?|hij[oa]s?\s+de\s+puta|coño|zorra(?:s)?|mamón(?:es|a|as)?|"
+        + @"cabronazo(?:s)?|cabronaza(?:s)?)\b",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
     public static bool RequiresRetry(string? source, string? translation)
@@ -51,10 +64,17 @@ public static class EuropeanSpanishDialect
             return true;
         }
 
-        // No convertimos mecánicamente las conjugaciones: se repite la traducción para que
-        // el modelo rehaga toda la frase con concordancia correcta. El tratamiento formal se
-        // conserva cuando el inglés contiene una señal suficientemente clara.
-        return ExplicitFormalTranslation.IsMatch(target)
-            && !ExplicitFormalSource.IsMatch(source ?? string.Empty);
+        // «Usted» singular sí existe en España, pero no se acepta como sustituto automático
+        // de cualquier YOU. La frase se rehace completa para conservar concordancias.
+        if (ExplicitSingularFormalTranslation.IsMatch(target)
+            && !ExplicitFormalSource.IsMatch(source ?? string.Empty))
+        {
+            return true;
+        }
+
+        // Si el original contiene un taco fuerte y el resultado no conserva ninguna marca de
+        // intensidad adulta, probablemente el modelo lo ha suavizado o censurado.
+        return StrongAdultSource.IsMatch(source ?? string.Empty)
+            && !StrongAdultSpanish.IsMatch(target);
     }
 }
