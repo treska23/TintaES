@@ -5,9 +5,9 @@ namespace TintaES.Wpf;
 public partial class MainWindow
 {
     /// <summary>
-    /// El botón principal obedece siempre a los checkbox del selector izquierdo. Cuando todas
-    /// las páginas marcadas ya conservan texto detectado, ejecuta solo la revisión lingüística;
-    /// si alguna todavía no tiene zonas, procesa únicamente esas páginas seleccionadas.
+    /// El botón principal obedece siempre a los checkbox del selector izquierdo. Los proyectos
+    /// .tinta ejecutan una revisión rápida de las páginas marcadas; un cómic nuevo detecta y
+    /// traduce únicamente la selección que todavía no contiene texto guardado.
     /// </summary>
     private void AnalyzeComicButton_Click(object sender, RoutedEventArgs e)
     {
@@ -34,7 +34,10 @@ public partial class MainWindow
             return;
         }
 
-        if (SelectedPagesCanBeReviewed(selected))
+        // Al abrir o guardar un proyecto .tinta, el trabajo de detección ya pertenece al
+        // proyecto editable. El botón repasa solo las traducciones marcadas y nunca relanza OCR.
+        if (!string.IsNullOrWhiteSpace(_currentProjectPath)
+            || SelectedPagesCanBeReviewed(selected))
         {
             _ = ReviewSelectedTranslationsAsync(selected, model);
             return;
@@ -49,7 +52,7 @@ public partial class MainWindow
         if (pendingDetection.Length == 0)
         {
             SetFooterStatus(
-                "Las páginas marcadas no necesitan detección. Selecciona solo páginas con texto para revisarlas.",
+                "Las páginas marcadas no necesitan detección. Selecciona solo páginas con texto para repasarlas.",
                 "#C99A35");
             return;
         }
