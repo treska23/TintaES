@@ -19,6 +19,24 @@ internal static class EuropeanSpanishDialectRegression
             "El plural informal debe rehacerse con vosotros/os y concordancia peninsular.");
 
         AssertRetry(
+            "Allow me to introduce myself.",
+            "Permítanme presentarme.",
+            expected: true,
+            "El imperativo plural debe usar permitidme en español peninsular.");
+
+        AssertRetry(
+            "Oh, shoot, where're my manners? Allow me the pleasure of introducing myself.",
+            "¡Ay, qué pena! Permítanme presentarme.",
+            expected: true,
+            "Where are my manners no puede convertirse en qué pena.");
+
+        AssertRetry(
+            "Oh, shoot, where're my manners? Allow me the pleasure of introducing myself.",
+            "¡Vaya, qué modales los míos! Permitidme el placer de presentarme.",
+            expected: false,
+            "La versión idiomática peninsular debe aceptarse.");
+
+        AssertRetry(
             "Call me on my phone.",
             "Llámame al celular.",
             expected: true,
