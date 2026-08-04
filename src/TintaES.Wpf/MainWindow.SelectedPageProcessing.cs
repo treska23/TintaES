@@ -4,9 +4,10 @@ using System.Windows.Threading;
 namespace TintaES.Wpf;
 
 /// <summary>
-/// Hace que los checkboxes del panel izquierdo controlen también qué páginas se analizan y
-/// traducen. Antes de iniciar el OCR prepara una única ficha documental de la obra, que se
-/// reutiliza para todas las páginas seleccionadas.
+/// Mantiene un único controlador para la acción principal. La selección por checkbox se resuelve
+/// dentro de AnalyzeComicButton_Click, que decide entre repasar un proyecto existente o ejecutar
+/// detección y traducción desde cero. Este instalador no puede volver a sustituir esa decisión por
+/// el antiguo procesamiento directo.
 /// </summary>
 public partial class MainWindow
 {
@@ -46,38 +47,18 @@ public partial class MainWindow
             return;
         }
 
-        AnalyzeButton.Click -= AnalyzeComicButton_Click;
+        // El controlador antiguo llamaba siempre al pipeline largo, aunque el botón mostrase
+        // «Repasar traducción». Se elimina expresamente y se deja una sola ruta de ejecución.
         AnalyzeButton.Click -= AnalyzeSelectedComicPagesButton_Click;
-        AnalyzeButton.Click += AnalyzeSelectedComicPagesButton_Click;
+        AnalyzeButton.Click -= AnalyzeComicButton_Click;
+        AnalyzeButton.Click += AnalyzeComicButton_Click;
         _selectedPageProcessingInstalled = true;
     }
 
-    private async void AnalyzeSelectedComicPagesButton_Click(object sender, RoutedEventArgs e)
-    {
-        if (!await EnsureComicResearchContextAsync())
-        {
-            return;
-        }
-
-        if (_comicPages.Count == 0)
-        {
-            AnalyzeComicButton_Click(sender, e);
-            return;
-        }
-
-        IReadOnlyList<int> selected = GetSelectedComicPageIndices();
-        if (selected.Count == 0)
-        {
-            SetFooterStatus("No hay páginas seleccionadas para analizar y traducir.", "#C99A35");
-            return;
-        }
-
-        if (ModelComboBox.SelectedValue is not string model || string.IsNullOrWhiteSpace(model))
-        {
-            SetFooterStatus("Selecciona un modelo de traducción antes de continuar.", "#C99A35");
-            return;
-        }
-
-        await AnalyzeSelectedComicPagesReliablyAsync(selected, model);
-    }
+    /// <summary>
+    /// Nombre conservado para compatibilidad con compilaciones o enlaces antiguos. Toda llamada
+    /// termina en el controlador unificado y, por tanto, respeta Repasar traducción.
+    /// </summary>
+    private void AnalyzeSelectedComicPagesButton_Click(object sender, RoutedEventArgs e) =>
+        AnalyzeComicButton_Click(sender, e);
 }
