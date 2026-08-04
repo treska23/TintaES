@@ -32,6 +32,12 @@ public partial class MainWindow
     {
         if (_comicBatchBusy || _pageNavigationBusy)
         {
+            MessageBox.Show(
+                this,
+                "No se pudo iniciar el repaso porque hay otra operación en curso.",
+                "Resultado del repaso de traducción",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
             return;
         }
 
@@ -47,6 +53,13 @@ public partial class MainWindow
             SetFooterStatus(
                 "Las páginas seleccionadas todavía no contienen texto detectado para revisar.",
                 "#C99A35");
+            MessageBox.Show(
+                this,
+                "No se ha repasado ningún texto porque las páginas marcadas todavía no contienen " +
+                "zonas con texto original guardado.",
+                "Resultado del repaso de traducción",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
             return;
         }
 
@@ -181,19 +194,41 @@ public partial class MainWindow
         finally
         {
             _comicBatchBusy = false;
-            SetBusy(false);
-            UpdateComicControls();
-            UpdateProjectCommandAvailability();
-            RefreshPageSelectionVisuals();
-            UpdatePageSelectionSummary();
-            SynchronizeActiveDocumentState();
+            try
+            {
+                SetBusy(false);
+                UpdateComicControls();
+                UpdateProjectCommandAvailability();
+                RefreshPageSelectionVisuals();
+                UpdatePageSelectionSummary();
+                SynchronizeActiveDocumentState();
+            }
+            catch (Exception exception)
+            {
+                failures.Add(new TranslationReviewFailure(
+                    _comicPageIndex + 1,
+                    "Actualización de la interfaz",
+                    CompactReviewFailure(exception.Message)));
+            }
         }
 
-        if (_comicPageIndex >= 0 && _comicPageIndex < _comicPages.Count)
+        // La reconstrucción visual es secundaria. Cualquier error se añade al informe, pero jamás
+        // puede impedir que aparezca la ventana de finalización.
+        try
         {
-            RegionListBox.Items.Refresh();
-            RebuildOverlay();
-            ShowRegionEditor(_selectedRegion);
+            if (_comicPageIndex >= 0 && _comicPageIndex < _comicPages.Count)
+            {
+                RegionListBox.Items.Refresh();
+                RebuildOverlay();
+                ShowRegionEditor(_selectedRegion);
+            }
+        }
+        catch (Exception exception)
+        {
+            failures.Add(new TranslationReviewFailure(
+                _comicPageIndex + 1,
+                "Actualización de la página visible",
+                CompactReviewFailure(exception.Message)));
         }
 
         if (cancelled)
@@ -201,43 +236,62 @@ public partial class MainWindow
             SetFooterStatus(
                 $"Revisión cancelada · {changes.Count} traducción(es) modificada(s) conservadas.",
                 "#C99A35");
-            return;
+        }
+        else
+        {
+            string unresolvedText = unresolved > 0
+                ? $" · {unresolved} pendiente(s)"
+                : string.Empty;
+            string failureText = failures.Count > 0
+                ? $" · {failures.Count} error(es)"
+                : string.Empty;
+            SetFooterStatus(
+                $"Revisión terminada · {reviewed} textos repasados · {changes.Count} cambio(s)" +
+                unresolvedText + failureText,
+                failures.Count == 0 && unresolved == 0 ? "#58A77D" : "#C99A35");
         }
 
-        string unresolvedText = unresolved > 0
-            ? $" · {unresolved} pendiente(s)"
-            : string.Empty;
-        string failureText = failures.Count > 0
-            ? $" · {failures.Count} página(s) con error"
-            : string.Empty;
-        SetFooterStatus(
-            $"Revisión terminada · {reviewed} textos repasados · {changes.Count} cambio(s)" +
-            unresolvedText + failureText,
-            failures.Count == 0 && unresolved == 0 ? "#58A77D" : "#C99A35");
-
-        ShowTranslationReviewReport(reviewed, changes, unresolved, failures);
+        // Se publica a prioridad ApplicationIdle para que el overlay de carga ya haya desaparecido.
+        // Esta llamada se realiza siempre: con cambios, sin cambios, con errores o al cancelar.
+        await Dispatcher.InvokeAsync(
+            () => ShowTranslationReviewReport(
+                reviewed,
+                changes,
+                unresolved,
+                failures,
+                cancelled),
+            DispatcherPriority.ApplicationIdle);
     }
 
     private void ShowTranslationReviewReport(
         int reviewed,
         IReadOnlyList<TranslationReviewChange> changes,
         int unresolved,
-        IReadOnlyList<TranslationReviewFailure> failures)
+        IReadOnlyList<TranslationReviewFailure> failures,
+        bool cancelled)
     {
         var lines = new List<string>
         {
+            cancelled ? "Estado: repaso cancelado" : "Estado: repaso terminado",
+            string.Empty,
             $"Textos examinados: {reviewed}",
             $"Traducciones modificadas: {changes.Count}",
             $"Textos pendientes: {unresolved}",
-            $"Páginas con error: {failures.Count}"
+            $"Errores: {failures.Count}"
         };
 
-        if (changes.Count == 0 && failures.Count == 0)
+        if (changes.Count == 0 && failures.Count == 0 && !cancelled)
         {
             lines.Add(string.Empty);
             lines.Add(
                 "El repaso sí se ha ejecutado, pero Ollama no ha propuesto ningún cambio " +
                 "válido respecto a las traducciones guardadas.");
+        }
+
+        if (cancelled)
+        {
+            lines.Add(string.Empty);
+            lines.Add("Los cambios completados antes de la cancelación se han conservado.");
         }
 
         if (changes.Count > 0)
@@ -284,6 +338,7 @@ public partial class MainWindow
             }
         }
 
+        Activate();
         MessageBox.Show(
             this,
             string.Join(Environment.NewLine, lines),
