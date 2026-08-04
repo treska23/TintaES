@@ -39,8 +39,6 @@ public partial class MainWindow
         {
             try
             {
-                // Se espera expresamente a que termine. Antes se lanzaba la tarea sin observarla;
-                // una excepción durante el refresco final podía eliminar el informe sin mostrar error.
                 await ReviewSelectedTranslationsAsync(selected, model);
             }
             catch (Exception exception)
@@ -69,6 +67,13 @@ public partial class MainWindow
             SetFooterStatus(
                 "Las páginas marcadas no necesitan detección. Selecciona solo páginas con texto para repasarlas.",
                 "#C99A35");
+            return;
+        }
+
+        // El controlador antiguo preparaba el contexto antes del pipeline largo. Al unificar la
+        // acción se conserva ese paso únicamente para la detección; el repaso tiene su propia ruta.
+        if (!await EnsureComicResearchContextAsync())
+        {
             return;
         }
 
