@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Threading;
 using TintaES.Core;
@@ -58,10 +59,10 @@ public partial class MainWindow
         CancellationToken cancellationToken = _analysisCancellation.Token;
 
         int reviewed = 0;
-        int changed = 0;
         int unresolved = 0;
-        int failedPages = 0;
         bool cancelled = false;
+        var changes = new List<TranslationReviewChange>();
+        var failures = new List<TranslationReviewFailure>();
 
         _comicBatchBusy = true;
         SetBusy(true);
@@ -84,6 +85,10 @@ public partial class MainWindow
                 ComicBookPageState page = _comicPages[pageIndex];
                 bool wasProcessed = page.Processed;
                 string? previousError = page.Error;
+                Dictionary<Guid, string> previousTranslations = page.Regions
+                    .ToDictionary(
+                        region => region.Id,
+                        region => CompactReviewText(region.Translation));
 
                 BusyTitleText.Text =
                     $"Página {pageIndex + 1}/{_comicPages.Count} · revisando español…";
@@ -109,8 +114,28 @@ public partial class MainWindow
                         cancellationToken,
                         pageProgress);
                     reviewed += result.Reviewed;
-                    changed += result.Changed;
                     unresolved += result.Unresolved;
+
+                    foreach (ComicRegion region in page.Regions.Where(region =>
+                                 region.IsEnabled
+                                 && !string.IsNullOrWhiteSpace(region.Original)))
+                    {
+                        string before = previousTranslations.TryGetValue(region.Id, out string? value)
+                            ? value
+                            : string.Empty;
+                        string after = CompactReviewText(region.Translation);
+                        if (string.Equals(before, after, StringComparison.Ordinal))
+                        {
+                            continue;
+                        }
+
+                        changes.Add(new TranslationReviewChange(
+                            pageIndex + 1,
+                            region.Order,
+                            CompactReviewText(region.Original),
+                            before,
+                            after));
+                    }
 
                     ComicRegion[] expected = page.Regions
                         .Where(region => region.IsEnabled
@@ -122,7 +147,8 @@ public partial class MainWindow
                         ? null
                         : $"Revisión parcial: quedan {missing} texto(s) sin traducción válida.";
 
-                    if (result.Changed > 0
+                    bool pageChanged = changes.Any(change => change.PageNumber == pageIndex + 1);
+                    if (pageChanged
                         || page.Processed != wasProcessed
                         || !string.Equals(page.Error, previousError, StringComparison.Ordinal))
                     {
@@ -133,9 +159,12 @@ public partial class MainWindow
                 {
                     throw;
                 }
-                catch (Exception)
+                catch (Exception exception)
                 {
-                    failedPages++;
+                    failures.Add(new TranslationReviewFailure(
+                        pageIndex + 1,
+                        page.DisplayName,
+                        CompactReviewFailure(exception.Message)));
                 }
 
                 double completed = (position + 1d) / selected.Length * 100;
@@ -170,7 +199,7 @@ public partial class MainWindow
         if (cancelled)
         {
             SetFooterStatus(
-                $"Revisión cancelada · {changed} traducción(es) corregida(s) conservadas.",
+                $"Revisión cancelada · {changes.Count} traducción(es) modificada(s) conservadas.",
                 "#C99A35");
             return;
         }
@@ -178,12 +207,114 @@ public partial class MainWindow
         string unresolvedText = unresolved > 0
             ? $" · {unresolved} pendiente(s)"
             : string.Empty;
-        string failureText = failedPages > 0
-            ? $" · {failedPages} página(s) con error"
+        string failureText = failures.Count > 0
+            ? $" · {failures.Count} página(s) con error"
             : string.Empty;
         SetFooterStatus(
-            $"Revisión terminada · {reviewed} textos repasados · {changed} corrección(es)" +
+            $"Revisión terminada · {reviewed} textos repasados · {changes.Count} cambio(s)" +
             unresolvedText + failureText,
-            failedPages == 0 && unresolved == 0 ? "#58A77D" : "#C99A35");
+            failures.Count == 0 && unresolved == 0 ? "#58A77D" : "#C99A35");
+
+        ShowTranslationReviewReport(reviewed, changes, unresolved, failures);
     }
+
+    private void ShowTranslationReviewReport(
+        int reviewed,
+        IReadOnlyList<TranslationReviewChange> changes,
+        int unresolved,
+        IReadOnlyList<TranslationReviewFailure> failures)
+    {
+        var lines = new List<string>
+        {
+            $"Textos examinados: {reviewed}",
+            $"Traducciones modificadas: {changes.Count}",
+            $"Textos pendientes: {unresolved}",
+            $"Páginas con error: {failures.Count}"
+        };
+
+        if (changes.Count == 0 && failures.Count == 0)
+        {
+            lines.Add(string.Empty);
+            lines.Add(
+                "El repaso sí se ha ejecutado, pero Ollama no ha propuesto ningún cambio " +
+                "válido respecto a las traducciones guardadas.");
+        }
+
+        if (changes.Count > 0)
+        {
+            lines.Add(string.Empty);
+            lines.Add("Cambios realizados:");
+            foreach (TranslationReviewChange change in changes.Take(8))
+            {
+                lines.Add(string.Empty);
+                lines.Add(
+                    $"Página {change.PageNumber} · zona {change.RegionOrder}: " +
+                    AbbreviateReviewText(change.Original, 90));
+                lines.Add(
+                    "Antes: " +
+                    (string.IsNullOrWhiteSpace(change.Before)
+                        ? "[sin traducción]"
+                        : AbbreviateReviewText(change.Before, 120)));
+                lines.Add(
+                    "Después: " +
+                    (string.IsNullOrWhiteSpace(change.After)
+                        ? "[pendiente; se rechazó una traducción cruzada o inválida]"
+                        : AbbreviateReviewText(change.After, 120)));
+            }
+
+            if (changes.Count > 8)
+            {
+                lines.Add(string.Empty);
+                lines.Add($"…y {changes.Count - 8} cambio(s) más.");
+            }
+        }
+
+        if (failures.Count > 0)
+        {
+            lines.Add(string.Empty);
+            lines.Add("Errores:");
+            foreach (TranslationReviewFailure failure in failures.Take(6))
+            {
+                lines.Add(
+                    $"Página {failure.PageNumber} · {failure.DisplayName}: {failure.Message}");
+            }
+            if (failures.Count > 6)
+            {
+                lines.Add($"…y {failures.Count - 6} error(es) más.");
+            }
+        }
+
+        MessageBox.Show(
+            this,
+            string.Join(Environment.NewLine, lines),
+            "Resultado del repaso de traducción",
+            MessageBoxButton.OK,
+            failures.Count == 0 ? MessageBoxImage.Information : MessageBoxImage.Warning);
+    }
+
+    private static string CompactReviewText(string? value) =>
+        Regex.Replace((value ?? string.Empty).Trim(), @"\s+", " ");
+
+    private static string CompactReviewFailure(string? value)
+    {
+        string compact = CompactReviewText(value);
+        return compact.Length <= 220 ? compact : compact[..217] + "…";
+    }
+
+    private static string AbbreviateReviewText(string value, int maximumLength) =>
+        value.Length <= maximumLength
+            ? value
+            : value[..Math.Max(1, maximumLength - 1)] + "…";
+
+    private sealed record TranslationReviewChange(
+        int PageNumber,
+        int RegionOrder,
+        string Original,
+        string Before,
+        string After);
+
+    private sealed record TranslationReviewFailure(
+        int PageNumber,
+        string DisplayName,
+        string Message);
 }
