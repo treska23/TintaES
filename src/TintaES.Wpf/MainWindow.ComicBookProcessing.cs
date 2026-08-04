@@ -9,7 +9,7 @@ public partial class MainWindow
     /// .tinta ejecutan una revisión rápida de las páginas marcadas; un cómic nuevo detecta y
     /// traduce únicamente la selección que todavía no contiene texto guardado.
     /// </summary>
-    private void AnalyzeComicButton_Click(object sender, RoutedEventArgs e)
+    private async void AnalyzeComicButton_Click(object sender, RoutedEventArgs e)
     {
         if (_comicPages.Count == 0)
         {
@@ -37,7 +37,24 @@ public partial class MainWindow
         if (!string.IsNullOrWhiteSpace(_currentProjectPath)
             || SelectedPagesCanBeReviewed(selected))
         {
-            _ = ReviewSelectedTranslationsAsync(selected, model);
+            try
+            {
+                // Se espera expresamente a que termine. Antes se lanzaba la tarea sin observarla;
+                // una excepción durante el refresco final podía eliminar el informe sin mostrar error.
+                await ReviewSelectedTranslationsAsync(selected, model);
+            }
+            catch (Exception exception)
+            {
+                _comicBatchBusy = false;
+                SetBusy(false);
+                SetFooterStatus("El repaso terminó con un error inesperado.", "#EE594B");
+                MessageBox.Show(
+                    this,
+                    "El repaso de traducción no pudo completar su informe.\n\n" + exception.Message,
+                    "Resultado del repaso de traducción",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Error);
+            }
             return;
         }
 
@@ -55,7 +72,7 @@ public partial class MainWindow
             return;
         }
 
-        _ = AnalyzeSelectedComicPagesReliablyAsync(pendingDetection, model);
+        await AnalyzeSelectedComicPagesReliablyAsync(pendingDetection, model);
     }
 
     /// <summary>
