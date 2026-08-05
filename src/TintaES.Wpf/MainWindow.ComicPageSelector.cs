@@ -86,11 +86,18 @@ public partial class MainWindow
     {
         InstallComicBookHandlers();
 
+        // Existe un único selector para abrir proyectos, archivos de cómic o páginas sueltas.
+        // Se eliminan expresamente todos los controladores heredados para que el orden de carga
+        // de los módulos no pueda volver a mostrar un diálogo limitado a CBZ o imágenes.
         OpenImageButton.Click -= OpenImageButton_Click;
         OpenImageButton.Click -= OpenComicFilesButton_Click;
+        OpenImageButton.Click -= OpenStandaloneDocumentsButton_Click;
+        OpenImageButton.Click -= OpenComicArchiveFilesButton_Click;
         OpenImageButton.Click -= OpenComicFilesButton_Click_Multi;
         OpenImageButton.Click += OpenComicFilesButton_Click_Multi;
         OpenImageButton.Content = "Abrir cómic";
+        OpenImageButton.ToolTip =
+            "Abrir un proyecto TintaES, un cómic CBZ/CBR/RAR o una o varias páginas";
 
         InstallProjectCommands();
         InstallClassicMenu();
@@ -132,7 +139,14 @@ public partial class MainWindow
         var dialog = new OpenFileDialog
         {
             Title = "Abrir proyecto, cómic o seleccionar varias páginas",
-            Filter = "TintaES, CBZ o páginas|*.tinta;*.cbz;*.png;*.jpg;*.jpeg;*.webp;*.bmp;*.tif;*.tiff|Proyecto TintaES|*.tinta|Cómic CBZ|*.cbz|Imágenes|*.png;*.jpg;*.jpeg;*.webp;*.bmp;*.tif;*.tiff|Todos los archivos|*.*",
+            Filter =
+                "TintaES, cómics o páginas (*.tinta;*.cbz;*.cbr;*.rar;*.png;*.jpg;*.jpeg;*.webp;*.bmp;*.tif;*.tiff)|" +
+                "*.tinta;*.cbz;*.cbr;*.rar;*.png;*.jpg;*.jpeg;*.webp;*.bmp;*.tif;*.tiff|" +
+                "Proyecto TintaES (*.tinta)|*.tinta|" +
+                "Cómics CBZ, CBR o RAR (*.cbz;*.cbr;*.rar)|*.cbz;*.cbr;*.rar|" +
+                "Imágenes (*.png;*.jpg;*.jpeg;*.webp;*.bmp;*.tif;*.tiff)|" +
+                "*.png;*.jpg;*.jpeg;*.webp;*.bmp;*.tif;*.tiff|" +
+                "Todos los archivos (*.*)|*.*",
             FilterIndex = 1,
             Multiselect = true,
             CheckFileExists = true
@@ -147,32 +161,18 @@ public partial class MainWindow
         {
             string[] selected = dialog.FileNames;
             string[] projectFiles = selected
-                .Where(path => string.Equals(Path.GetExtension(path), ".tinta", StringComparison.OrdinalIgnoreCase))
+                .Where(path => string.Equals(
+                    Path.GetExtension(path),
+                    ".tinta",
+                    StringComparison.OrdinalIgnoreCase))
                 .ToArray();
             if (projectFiles.Length > 0)
             {
                 if (selected.Length != 1 || projectFiles.Length != 1)
                 {
-                    MessageBox.Show(this, "Abre un proyecto .tinta por separado.", "Tinta ES",
-                        MessageBoxButton.OK, MessageBoxImage.Information);
-                    return;
-                }
-
-                await AwaitCurrentDocumentReadyForOpenAsync();
-                _ = LoadTintaProjectAsync(projectFiles[0]);
-                return;
-            }
-
-            string[] cbzFiles = selected
-                .Where(path => string.Equals(Path.GetExtension(path), ".cbz", StringComparison.OrdinalIgnoreCase))
-                .ToArray();
-            if (cbzFiles.Length > 0)
-            {
-                if (selected.Length != 1 || cbzFiles.Length != 1)
-                {
                     MessageBox.Show(
                         this,
-                        "Abre un CBZ por separado o selecciona varias imágenes. No mezcles un CBZ con páginas sueltas en la misma selección.",
+                        "Abre un proyecto .tinta por separado.",
                         "Tinta ES",
                         MessageBoxButton.OK,
                         MessageBoxImage.Information);
@@ -180,7 +180,28 @@ public partial class MainWindow
                 }
 
                 await AwaitCurrentDocumentReadyForOpenAsync();
-                LoadComicFromCbz(cbzFiles[0]);
+                await LoadTintaProjectAsync(projectFiles[0]);
+                return;
+            }
+
+            string[] archiveFiles = selected
+                .Where(IsSupportedComicArchive)
+                .ToArray();
+            if (archiveFiles.Length > 0)
+            {
+                if (selected.Length != 1 || archiveFiles.Length != 1)
+                {
+                    MessageBox.Show(
+                        this,
+                        "Abre un único CBZ, CBR o RAR cada vez. No mezcles un archivo de cómic con páginas sueltas en la misma selección.",
+                        "Tinta ES",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Information);
+                    return;
+                }
+
+                await AwaitCurrentDocumentReadyForOpenAsync();
+                await LoadComicFromArchiveAsync(archiveFiles[0]);
                 UpdateProjectCommandAvailability();
                 UpdateClassicMenuAvailability();
                 SyncPageSelectionPanel();
@@ -195,7 +216,7 @@ public partial class MainWindow
             {
                 MessageBox.Show(
                     this,
-                    "Selecciona un proyecto .tinta, un archivo CBZ o una o varias imágenes.",
+                    "Selecciona un proyecto .tinta, un cómic CBZ/CBR/RAR o una o varias imágenes.",
                     "Tinta ES",
                     MessageBoxButton.OK,
                     MessageBoxImage.Information);
@@ -213,7 +234,10 @@ public partial class MainWindow
         }
         catch (Exception exception)
         {
-            ShowComicOpenError(exception);
+            string selectedPath = dialog.FileNames.Length == 1
+                ? dialog.FileName
+                : string.Empty;
+            ShowComicOpenError(CreateFriendlyArchiveException(exception, selectedPath));
         }
     }
 
