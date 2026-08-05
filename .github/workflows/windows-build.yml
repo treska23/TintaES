@@ -41,5 +41,5 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-      - name: Build core tests
-        run: dotnet build tests/TintaES.Core.Tests/TintaES.Core.Tests.csproj --configuration Release
+      - name: Run core tests
+        run: dotnet run --project tests/TintaES.Core.Tests/TintaES.Core.Tests.csproj --configuration Release
