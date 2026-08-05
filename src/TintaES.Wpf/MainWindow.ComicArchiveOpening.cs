@@ -141,7 +141,7 @@ public partial class MainWindow
         string sourceDirectory = Path.Combine(_comicWorkspace!, "source");
         Directory.CreateDirectory(sourceDirectory);
 
-        using IArchive archive = ArchiveFactory.Open(archivePath);
+        using IArchive archive = ArchiveFactory.OpenArchive(archivePath);
         var entries = archive.Entries
             .Where(entry => !entry.IsDirectory)
             .Where(entry => IsSupportedComicImage(entry.Key ?? string.Empty))
