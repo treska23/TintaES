@@ -23,14 +23,19 @@ public partial class MainWindow
             return;
         }
 
-        int[] selected = OrderSelectedPagesFromCurrent(
-            GetSelectedComicPageIndices()
-                .Where(index => index >= 0 && index < _comicPages.Count));
+        // Se copia el estado real de los checkbox una sola vez. A partir de aquí el lote trabaja
+        // con esta instantánea inmutable y ningún refresco posterior puede ampliarlo al cómic entero.
+        int[] selected = OrderSelectedPagesFromCurrent(CaptureCheckedComicPageIndices());
         if (selected.Length == 0)
         {
             SetFooterStatus("Marca al menos una página en la columna izquierda.", "#C99A35");
             return;
         }
+
+        SetFooterStatus(
+            $"Selección fijada · {selected.Length} de {_comicPages.Count} páginas: " +
+            FormatCheckedPageScope(selected),
+            "#4CB2BB");
 
         // Al abrir o guardar un proyecto .tinta, el trabajo de detección ya pertenece al
         // proyecto editable. El botón repasa solo las traducciones marcadas y nunca relanza OCR.
