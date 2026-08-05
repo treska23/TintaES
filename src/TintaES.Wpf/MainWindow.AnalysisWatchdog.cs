@@ -112,7 +112,19 @@ public partial class MainWindow
             }
         }
 
-        return await analysisTask;
+        OrganicAnalysisResult result = await analysisTask;
+        int completedReadings = OcrReadingCompletion.PromoteCompleteAlternatives(
+            result.Analysis.Regions);
+        if (completedReadings > 0)
+        {
+            progress?.Report(new AnalysisProgress(
+                100,
+                100,
+                completedReadings == 1
+                    ? "Se ha recuperado una frase incompleta del OCR."
+                    : $"Se han recuperado {completedReadings} frases incompletas del OCR."));
+        }
+        return result;
     }
 
     private async Task RunLongOperationWithPromptAsync(
