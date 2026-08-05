@@ -1,13 +1,13 @@
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Threading;
 
 namespace TintaES.Wpf;
 
 /// <summary>
-/// Mantiene un único controlador para la acción principal. La selección por checkbox se resuelve
-/// dentro de AnalyzeComicButton_Click, que decide entre repasar un proyecto existente o ejecutar
-/// detección y traducción desde cero. Este instalador no puede volver a sustituir esa decisión por
-/// el antiguo procesamiento directo.
+/// Mantiene una única entrada para la acción principal. El clic se intercepta como evento de
+/// clase antes de cualquier controlador heredado del XAML o instalado por módulos antiguos; así
+/// ninguna segunda ruta puede iniciar un lote distinto del que marcan los checkbox.
 /// </summary>
 public partial class MainWindow
 {
@@ -21,6 +21,11 @@ public partial class MainWindow
             LoadedEvent,
             new RoutedEventHandler(MainWindow_SelectedPageProcessingLoaded),
             handledEventsToo: true);
+
+        EventManager.RegisterClassHandler(
+            typeof(Button),
+            Button.ClickEvent,
+            new RoutedEventHandler(MainWindow_PrimaryTranslationButtonClassClick));
         return true;
     }
 
@@ -32,6 +37,24 @@ public partial class MainWindow
                 window.InstallSelectedPageProcessing,
                 DispatcherPriority.ApplicationIdle);
         }
+    }
+
+    private static void MainWindow_PrimaryTranslationButtonClassClick(
+        object sender,
+        RoutedEventArgs e)
+    {
+        if (sender is not Button button
+            || Window.GetWindow(button) is not MainWindow window
+            || !ReferenceEquals(button, window.AnalyzeButton))
+        {
+            return;
+        }
+
+        // Los controladores de instancia se ejecutan después de los controladores de clase.
+        // Marcar el evento aquí garantiza que solo exista una orden de traducción por clic,
+        // independientemente del orden en que los módulos hayan instalado sus handlers.
+        e.Handled = true;
+        window.AnalyzeComicButton_Click(button, e);
     }
 
     private void InstallSelectedPageProcessing()
@@ -47,17 +70,18 @@ public partial class MainWindow
             return;
         }
 
-        // El controlador antiguo llamaba siempre al pipeline largo, aunque el botón mostrase
-        // «Repasar traducción». Se elimina expresamente y se deja una sola ruta de ejecución.
+        // Se retiran las rutas conocidas. El class handler de arriba sigue siendo la autoridad
+        // incluso si otro instalador antiguo intenta volver a conectar una de ellas después.
+        AnalyzeButton.Click -= AnalyzeButton_Click;
+        AnalyzeButton.Click -= AnalyzeButton_Click_Responsive;
         AnalyzeButton.Click -= AnalyzeSelectedComicPagesButton_Click;
         AnalyzeButton.Click -= AnalyzeComicButton_Click;
-        AnalyzeButton.Click += AnalyzeComicButton_Click;
         _selectedPageProcessingInstalled = true;
     }
 
     /// <summary>
     /// Nombre conservado para compatibilidad con compilaciones o enlaces antiguos. Toda llamada
-    /// termina en el controlador unificado y, por tanto, respeta Repasar traducción.
+    /// termina en el controlador unificado y usa una instantánea de los checkbox visibles.
     /// </summary>
     private void AnalyzeSelectedComicPagesButton_Click(object sender, RoutedEventArgs e) =>
         AnalyzeComicButton_Click(sender, e);
