@@ -9,7 +9,7 @@ namespace TintaES.Wpf;
 /// </summary>
 public partial class MainWindow
 {
-    internal const string CurrentUiBuildStamp = "UI 2026.08.05-r55-cbr-dialog-route";
+    internal const string CurrentUiBuildStamp = "UI 2026.08.05-r56-unified-cbr-dialog";
     private const int CurrentUiBootstrapMaxAttempts = 3;
 
     private static readonly bool CurrentUiBootstrapRegistered = RegisterCurrentUiBootstrap();
@@ -75,6 +75,7 @@ public partial class MainWindow
         RunCurrentUiInstaller(InstallComicReaderCommand, "lector de cómic", failures);
         RunCurrentUiInstaller(InstallPageSelectionPanel, "selector de páginas", failures);
         RunCurrentUiInstaller(InstallStandaloneImageTabs, "pestañas de páginas sueltas", failures);
+        RunCurrentUiInstaller(InstallDirectPageSelector, "selector unificado TintaES/CBZ/CBR/RAR", failures);
         RunCurrentUiInstaller(InstallComicResearch, "contexto web del cómic", failures);
         RunCurrentUiInstaller(InstallSelectedPageProcessing, "procesamiento fiable de páginas", failures);
         RunCurrentUiInstaller(InstallEditorTools, "herramientas de edición", failures);
