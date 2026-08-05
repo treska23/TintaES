@@ -9,7 +9,7 @@ namespace TintaES.Wpf;
 /// </summary>
 public partial class MainWindow
 {
-    internal const string CurrentUiBuildStamp = "UI 2026.08.04-r54-review-popup-route";
+    internal const string CurrentUiBuildStamp = "UI 2026.08.05-r55-cbr-dialog-route";
     private const int CurrentUiBootstrapMaxAttempts = 3;
 
     private static readonly bool CurrentUiBootstrapRegistered = RegisterCurrentUiBootstrap();
@@ -69,6 +69,7 @@ public partial class MainWindow
         var failures = new List<string>();
         RunCurrentUiInstaller(InstallOllamaLongRequests, "peticiones largas de Ollama", failures);
         RunCurrentUiInstaller(InstallComicBookHandlers, "sesión de cómic", failures);
+        RunCurrentUiInstaller(InstallComicArchiveOpening, "apertura CBZ/CBR/RAR", failures);
         RunCurrentUiInstaller(InstallProjectCommands, "comandos de proyecto", failures);
         RunCurrentUiInstaller(InstallPsdExportCommand, "exportación PSD", failures);
         RunCurrentUiInstaller(InstallComicReaderCommand, "lector de cómic", failures);
