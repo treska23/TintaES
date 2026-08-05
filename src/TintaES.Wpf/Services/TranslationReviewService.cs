@@ -28,6 +28,11 @@ public sealed class TranslationReviewService
         CancellationToken cancellationToken,
         IProgress<AnalysisProgress>? progress = null)
     {
+        // El proyecto puede haber guardado como principal una lectura parcial y conservar la
+        // frase completa entre las alternativas OCR. Se corrige antes de construir el prompt:
+        // así Repasar traducción también puede arreglar media frase sin repetir la detección.
+        OcrReadingCompletion.PromoteCompleteAlternatives(regions);
+
         ComicRegion[] targets = regions
             .Where(region => region.IsEnabled
                              && !string.IsNullOrWhiteSpace(region.Original))
