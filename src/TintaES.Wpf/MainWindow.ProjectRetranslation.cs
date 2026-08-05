@@ -7,14 +7,16 @@ using TintaES.Core;
 namespace TintaES.Wpf;
 
 /// <summary>
-/// Añade una segunda acción para proyectos guardados: repasar conserva detección y geometría;
-/// volver a traducir ejecuta de nuevo el pipeline completo sobre las páginas marcadas.
+/// Mantiene separadas las dos operaciones: el botón principal repite detección, OCR y traducción;
+/// este segundo botón repasa únicamente el español ya guardado en las páginas marcadas.
 /// </summary>
 public partial class MainWindow
 {
     private static readonly bool ProjectRetranslationRegistered =
         RegisterProjectRetranslation();
 
+    // Nombre histórico conservado para no romper otros módulos parciales. El botón representa
+    // ahora exclusivamente la revisión lingüística, no una segunda ruta de detección.
     private Button? _retranslateProjectButton;
     private bool _projectRetranslationInstalled;
     private bool _refreshingProjectRetranslation;
@@ -53,12 +55,12 @@ public partial class MainWindow
         {
             _retranslateProjectButton = new Button
             {
-                Content = "↻  Volver a traducir",
+                Content = "✦  Repasar traducción",
                 Style = FindResource("ToolbarButton") as Style,
                 Margin = new Thickness(7, 0, 0, 0),
                 Visibility = Visibility.Collapsed,
                 ToolTip =
-                    "Repetir detección, OCR y traducción desde cero únicamente en las páginas marcadas"
+                    "Revisar únicamente el español de las páginas marcadas, sin repetir detección ni OCR"
             };
             _retranslateProjectButton.Click += RetranslateProjectButton_Click;
 
@@ -89,30 +91,32 @@ public partial class MainWindow
         _refreshingProjectRetranslation = true;
         try
         {
-            bool openedProject = !string.IsNullOrWhiteSpace(_currentProjectPath);
-            bool containsTranslatedWork = _comicPages.Any(PageHasReviewableText);
-            bool visible = openedProject && containsTranslatedWork;
-            _retranslateProjectButton.Visibility = visible
+            bool containsReviewableWork = _comicPages.Any(PageHasReviewableText);
+            _retranslateProjectButton.Visibility = containsReviewableWork
                 ? Visibility.Visible
                 : Visibility.Collapsed;
 
-            if (!visible)
+            if (!containsReviewableWork)
             {
                 _retranslateProjectButton.IsEnabled = false;
                 return;
             }
 
-            int selectedCount = GetSelectedComicPageIndices()
-                .Count(index => index >= 0 && index < _comicPages.Count);
+            int[] selected = GetSelectedComicPageIndices()
+                .Where(index => index >= 0 && index < _comicPages.Count)
+                .ToArray();
+            int reviewableCount = selected.Count(index =>
+                PageHasReviewableText(_comicPages[index]));
             bool busy = _comicBatchBusy
                         || _pageNavigationBusy
                         || BusyOverlay.Visibility == Visibility.Visible;
             bool hasModel = ModelComboBox.SelectedItem is not null;
-            _retranslateProjectButton.IsEnabled = selectedCount > 0 && hasModel && !busy;
-            _retranslateProjectButton.ToolTip = selectedCount == 0
+            _retranslateProjectButton.IsEnabled = reviewableCount > 0 && hasModel && !busy;
+            _retranslateProjectButton.ToolTip = selected.Length == 0
                 ? "Marca al menos una página en la columna izquierda"
-                : "Repetir detección, OCR y traducción desde cero en las páginas marcadas; " +
-                  "la versión anterior se conserva si una página falla";
+                : reviewableCount == 0
+                    ? "Ninguna página marcada contiene todavía texto que se pueda repasar"
+                    : $"Repasar el español de {reviewableCount} página(s) marcada(s), sin repetir OCR ni detección";
         }
         finally
         {
@@ -122,40 +126,54 @@ public partial class MainWindow
 
     private async void RetranslateProjectButton_Click(object sender, RoutedEventArgs e)
     {
-        if (string.IsNullOrWhiteSpace(_currentProjectPath)
-            || ModelComboBox.SelectedValue is not string model
+        if (ModelComboBox.SelectedValue is not string model
             || string.IsNullOrWhiteSpace(model))
         {
+            SetFooterStatus("Selecciona un modelo de traducción antes de continuar.", "#C99A35");
             return;
         }
 
         int[] selected = OrderSelectedPagesFromCurrent(
-            GetSelectedComicPageIndices()
-                .Where(index => index >= 0 && index < _comicPages.Count));
+            CaptureCheckedComicPageIndices()
+                .Where(index => index >= 0 && index < _comicPages.Count)
+                .Where(index => PageHasReviewableText(_comicPages[index])));
         if (selected.Length == 0)
         {
-            SetFooterStatus("Marca al menos una página en la columna izquierda.", "#C99A35");
+            SetFooterStatus(
+                "Las páginas marcadas todavía no contienen texto detectado para repasar.",
+                "#C99A35");
+            MessageBox.Show(
+                this,
+                "No hay texto guardado en las páginas marcadas. Usa Detectar y traducir para " +
+                "crear primero las zonas y sus traducciones.",
+                "Repasar traducción",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
             return;
         }
 
-        MessageBoxResult answer = MessageBox.Show(
-            this,
-            $"Se volverán a detectar y traducir desde cero {selected.Length} página(s) marcada(s).\n\n" +
-            "Esto tardará bastante más que Repasar traducción. Las zonas y traducciones actuales " +
-            "solo se sustituirán cuando la nueva versión de cada página termine correctamente.\n\n" +
-            "¿Continuar?",
-            "Volver a traducir",
-            MessageBoxButton.YesNo,
-            MessageBoxImage.Warning,
-            MessageBoxResult.No);
-        if (answer != MessageBoxResult.Yes)
+        try
         {
-            return;
+            await ReviewSelectedTranslationsAsync(selected, model);
         }
-
-        await RetranslateSelectedPagesFromScratchAsync(selected, model);
+        catch (Exception exception)
+        {
+            _comicBatchBusy = false;
+            SetBusy(false);
+            SetFooterStatus("El repaso terminó con un error inesperado.", "#EE594B");
+            MessageBox.Show(
+                this,
+                "El repaso de traducción no pudo completar su informe.\n\n" + exception.Message,
+                "Resultado del repaso de traducción",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
     }
 
+    /// <summary>
+    /// Pipeline completo utilizado por Detectar y traducir cuando alguna página marcada ya
+    /// contiene trabajo. Cada página conserva su versión anterior si el reemplazo falla.
+    /// </summary>
     private async Task RetranslateSelectedPagesFromScratchAsync(
         IReadOnlyList<int> selectedIndices,
         string model)
@@ -279,7 +297,7 @@ public partial class MainWindow
                 BusyProgressBar.Value = completedPercent;
                 FooterProgressBar.Value = completedPercent;
                 FooterStatusText.Text = completed
-                    ? $"Página {humanPage} retraducida desde cero"
+                    ? $"Página {humanPage} detectada y traducida desde cero"
                     : $"Página {humanPage}: se conserva la traducción anterior";
                 await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Render);
             }
@@ -318,7 +336,7 @@ public partial class MainWindow
         if (cancelled)
         {
             SetFooterStatus(
-                $"Retraducción cancelada · {completedPages} página(s) actualizada(s); " +
+                $"Detección y traducción canceladas · {completedPages} página(s) actualizada(s); " +
                 "la página en curso conserva su versión anterior.",
                 "#C99A35");
             return;
@@ -330,14 +348,14 @@ public partial class MainWindow
                 ? $" · {partialPages} parcial(es)"
                 : string.Empty;
             SetFooterStatus(
-                $"Retraducción completa · {completedPages} página(s){partialText} · " +
+                $"Detección y traducción completas · {completedPages} página(s){partialText} · " +
                 FormatDuration(stopwatch.Elapsed.TotalSeconds),
                 partialPages == 0 ? "#58A77D" : "#C99A35");
             return;
         }
 
         SetFooterStatus(
-            $"Retraducción terminada · {completedPages} página(s) actualizada(s) · " +
+            $"Detección y traducción terminadas · {completedPages} página(s) actualizada(s) · " +
             $"{failures.Count} conservaron su versión anterior",
             "#C99A35");
 
@@ -350,7 +368,7 @@ public partial class MainWindow
             this,
             "No se pudo completar el nuevo análisis de algunas páginas. Sus zonas y traducciones " +
             "anteriores se han conservado.\n\n" + details,
-            "Retraducción parcial",
+            "Detección y traducción parciales",
             MessageBoxButton.OK,
             MessageBoxImage.Warning);
     }
