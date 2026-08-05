@@ -9,7 +9,7 @@ namespace TintaES.Wpf;
 /// </summary>
 public partial class MainWindow
 {
-    internal const string CurrentUiBuildStamp = "UI 2026.08.05-r57-checked-page-scope";
+    internal const string CurrentUiBuildStamp = "UI 2026.08.05-r58-complete-balloon-ocr";
     private const int CurrentUiBootstrapMaxAttempts = 3;
 
     private static readonly bool CurrentUiBootstrapRegistered = RegisterCurrentUiBootstrap();
