@@ -5,9 +5,8 @@ using System.Windows.Threading;
 namespace TintaES.Wpf;
 
 /// <summary>
-/// Mantiene el botón principal sincronizado con los checkbox de páginas. Los módulos antiguos
-/// todavía escriben su título genérico al actualizar la barra; este controlador restablece el
-/// estado correcto inmediatamente y sin crear un segundo botón.
+/// Mantiene la acción principal dedicada siempre al pipeline completo. Repasar traducción es una
+/// orden independiente y nunca sustituye ni cambia el significado de Detectar y traducir.
 /// </summary>
 public partial class MainWindow
 {
@@ -64,9 +63,7 @@ public partial class MainWindow
 
     private void RefreshPrimaryTranslationAction()
     {
-        if (_refreshingPrimaryTranslationAction
-            || AnalyzeButton is null
-            || _comicPages.Count == 0)
+        if (_refreshingPrimaryTranslationAction || AnalyzeButton is null)
         {
             return;
         }
@@ -79,41 +76,33 @@ public partial class MainWindow
                 _pageSelectionSessionKey,
                 sessionKey,
                 StringComparison.OrdinalIgnoreCase);
-            int[] selected = selectionInitialized
-                ? GetSelectedComicPageIndices()
-                    .Where(index => index >= 0 && index < _comicPages.Count)
-                    .ToArray()
-                : Enumerable.Range(0, _comicPages.Count).ToArray();
+            int[] selected = _comicPages.Count == 0
+                ? []
+                : selectionInitialized
+                    ? GetSelectedComicPageIndices()
+                        .Where(index => index >= 0 && index < _comicPages.Count)
+                        .ToArray()
+                    : Enumerable.Range(0, _comicPages.Count).ToArray();
 
-            // Un archivo .tinta ya contiene el trabajo editable del proyecto. Su acción principal
-            // es repasar las traducciones guardadas, aunque alguna página concreta esté incompleta.
-            // El servicio de repaso filtrará las páginas sin texto sin volver a ejecutar el OCR.
-            bool openedProject = !string.IsNullOrWhiteSpace(_currentProjectPath);
-            bool review = openedProject || SelectedPagesCanBeReviewed(selected);
-            string caption = review
-                ? "✦  Repasar traducción"
-                : "✦  Detectar y traducir selección";
-            string toolTip = selected.Length == 0
-                ? "Marca al menos una página en la columna izquierda"
-                : review
-                    ? "Repasar solo el texto de las páginas marcadas, sin repetir OCR ni detección"
-                    : "Detectar y traducir únicamente las páginas marcadas";
-
+            const string caption = "✦  Detectar y traducir";
             if (!string.Equals(AnalyzeButton.Content?.ToString(), caption, StringComparison.Ordinal))
             {
                 AnalyzeButton.Content = caption;
             }
-            AnalyzeButton.ToolTip = toolTip;
+
+            AnalyzeButton.ToolTip = selected.Length == 0
+                ? "Marca al menos una página en la columna izquierda"
+                : "Volver a detectar los bocadillos, ejecutar OCR y traducir únicamente las páginas marcadas";
 
             bool busy = _comicBatchBusy
                         || _pageNavigationBusy
                         || BusyOverlay.Visibility == Visibility.Visible;
             bool hasModel = ModelComboBox.SelectedItem is not null;
-            bool enabled = selected.Length > 0 && hasModel && !busy;
-            if (AnalyzeButton.IsEnabled != enabled)
-            {
-                AnalyzeButton.IsEnabled = enabled;
-            }
+            AnalyzeButton.IsEnabled = selected.Length > 0 && hasModel && !busy;
+
+            // La acción de repaso vive en un botón separado, pero comparte el mismo refresco para
+            // que aparezca o se desactive inmediatamente al cambiar los checkbox.
+            RefreshProjectRetranslationAction();
         }
         finally
         {
