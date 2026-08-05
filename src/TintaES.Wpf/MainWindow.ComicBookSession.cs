@@ -143,52 +143,12 @@ public partial class MainWindow
         previewPanel.Children.Insert(2, _nextPageButton);
     }
 
-    private async void OpenComicFilesButton_Click(object sender, RoutedEventArgs e)
-    {
-        var dialog = new OpenFileDialog
-        {
-            Title = "Abrir cómic o páginas",
-            Filter = "Cómic CBZ|*.cbz|Imágenes|*.png;*.jpg;*.jpeg;*.webp;*.bmp;*.tif;*.tiff|Todos los archivos|*.*",
-            Multiselect = true,
-            CheckFileExists = true
-        };
-
-        if (dialog.ShowDialog(this) != true)
-        {
-            return;
-        }
-
-        try
-        {
-            await AwaitCurrentDocumentReadyForOpenAsync();
-            if (dialog.FileNames.Length == 1
-                && string.Equals(Path.GetExtension(dialog.FileName), ".cbz", StringComparison.OrdinalIgnoreCase))
-            {
-                LoadComicFromCbz(dialog.FileName);
-                return;
-            }
-
-            string[] images = dialog.FileNames
-                .Where(IsSupportedComicImage)
-                .OrderBy(path => path, NaturalPageComparer.Instance)
-                .ToArray();
-            if (images.Length == 0)
-            {
-                MessageBox.Show(this, "Selecciona un archivo CBZ o una o varias imágenes.", "Tinta ES",
-                    MessageBoxButton.OK, MessageBoxImage.Information);
-                return;
-            }
-
-            string title = images.Length == 1
-                ? Path.GetFileNameWithoutExtension(images[0])
-                : new DirectoryInfo(Path.GetDirectoryName(images[0]) ?? string.Empty).Name;
-            LoadComicSession(images, title);
-        }
-        catch (Exception exception)
-        {
-            ShowComicOpenError(exception);
-        }
-    }
+    /// <summary>
+    /// Ruta heredada del botón Abrir. Se conserva por compatibilidad, pero ya no crea su propio
+    /// selector limitado a CBZ: siempre delega al selector único que admite CBZ, CBR, RAR e imágenes.
+    /// </summary>
+    private void OpenComicFilesButton_Click(object sender, RoutedEventArgs e) =>
+        OpenComicArchiveFilesButton_Click(sender, e);
 
     private async void OpenComicFolderButton_Click(object sender, RoutedEventArgs e)
     {
