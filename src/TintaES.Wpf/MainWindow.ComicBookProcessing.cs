@@ -5,9 +5,9 @@ namespace TintaES.Wpf;
 public partial class MainWindow
 {
     /// <summary>
-    /// El botón principal obedece siempre a los checkbox del selector izquierdo. Los proyectos
-    /// .tinta ejecutan una revisión rápida de las páginas marcadas; un cómic nuevo detecta y
-    /// traduce únicamente la selección que todavía no contiene texto guardado.
+    /// El botón principal ejecuta siempre el pipeline completo sobre los checkbox seleccionados:
+    /// detección, OCR y traducción. Repasar traducción tiene su propio botón y nunca sustituye
+    /// esta acción, incluso cuando el documento ya contiene trabajo traducido.
     /// </summary>
     private async void AnalyzeComicButton_Click(object sender, RoutedEventArgs e)
     {
@@ -37,52 +37,41 @@ public partial class MainWindow
             FormatCheckedPageScope(selected),
             "#4CB2BB");
 
-        // Al abrir o guardar un proyecto .tinta, el trabajo de detección ya pertenece al
-        // proyecto editable. El botón repasa solo las traducciones marcadas y nunca relanza OCR.
-        if (!string.IsNullOrWhiteSpace(_currentProjectPath)
-            || SelectedPagesCanBeReviewed(selected))
+        bool replacesExistingWork = selected.Any(index =>
+            _comicPages[index].Processed
+            || _comicPages[index].Regions.Count > 0
+            || PageHasReviewableText(_comicPages[index]));
+
+        if (replacesExistingWork)
         {
-            try
+            MessageBoxResult answer = MessageBox.Show(
+                this,
+                $"Se volverán a detectar, leer y traducir desde cero {selected.Length} página(s) marcada(s).\n\n" +
+                "Las páginas que ya estaban traducidas conservarán su versión anterior si el nuevo " +
+                "análisis falla o se cancela.\n\n¿Continuar?",
+                "Detectar y traducir",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning,
+                MessageBoxResult.No);
+            if (answer != MessageBoxResult.Yes)
             {
-                await ReviewSelectedTranslationsAsync(selected, model);
+                SetFooterStatus("Detección y traducción canceladas antes de comenzar.", "#C99A35");
+                return;
             }
-            catch (Exception exception)
-            {
-                _comicBatchBusy = false;
-                SetBusy(false);
-                SetFooterStatus("El repaso terminó con un error inesperado.", "#EE594B");
-                MessageBox.Show(
-                    this,
-                    "El repaso de traducción no pudo completar su informe.\n\n" + exception.Message,
-                    "Resultado del repaso de traducción",
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Error);
-            }
-            return;
         }
 
-        int[] pendingDetection = selected
-            .Where(index => !_comicPages[index].SuppressBatchProcessing)
-            .Where(index => !PageHasReviewableText(_comicPages[index]))
-            .Where(index => PageNeedsTranslation(_comicPages[index]))
-            .ToArray();
-
-        if (pendingDetection.Length == 0)
-        {
-            SetFooterStatus(
-                "Las páginas marcadas no necesitan detección. Selecciona solo páginas con texto para repasarlas.",
-                "#C99A35");
-            return;
-        }
-
-        // El controlador antiguo preparaba el contexto antes del pipeline largo. Al unificar la
-        // acción se conserva ese paso únicamente para la detección; el repaso tiene su propia ruta.
         if (!await EnsureComicResearchContextAsync())
         {
             return;
         }
 
-        await AnalyzeSelectedComicPagesReliablyAsync(pendingDetection, model);
+        if (replacesExistingWork)
+        {
+            await RetranslateSelectedPagesFromScratchAsync(selected, model);
+            return;
+        }
+
+        await AnalyzeSelectedComicPagesReliablyAsync(selected, model);
     }
 
     /// <summary>
