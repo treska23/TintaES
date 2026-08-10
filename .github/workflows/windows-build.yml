@@ -15,7 +15,7 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
 
     steps:
       - name: Checkout
@@ -40,6 +40,42 @@ jobs:
           path: wpf-build.log
           if-no-files-found: error
           retention-days: 1
+
+      - name: Build standalone reader
+        shell: pwsh
+        run: |
+          dotnet build src/TintaES.Reader/TintaES.Reader.csproj --configuration Release *> reader-build.log
+          $exitCode = $LASTEXITCODE
+          Get-Content reader-build.log | Select-String -Pattern "error (CS|MC|XDG|NETSDK)"
+          if ($exitCode -ne 0) { exit $exitCode }
+
+      - name: Upload reader build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reader-build-log
+          path: reader-build.log
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Publish portable reader
+        shell: pwsh
+        run: |
+          dotnet publish src/TintaES.Reader/TintaES.Reader.csproj `
+            --configuration Release `
+            --runtime win-x64 `
+            --self-contained true `
+            -p:PublishSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            --output reader-publish
+
+      - name: Upload portable reader
+        uses: actions/upload-artifact@v4
+        with:
+          name: TintaESReader-win-x64
+          path: reader-publish/**
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Run core tests
         run: dotnet run --project tests/TintaES.Core.Tests/TintaES.Core.Tests.csproj --configuration Release
