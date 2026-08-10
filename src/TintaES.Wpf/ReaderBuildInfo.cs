@@ -6,5 +6,5 @@ namespace TintaES.Wpf;
 /// </summary>
 internal static class ReaderBuildInfo
 {
-    internal const string CurrentBuildStamp = "Reader 2026.08.10-r2-local-tinta-library";
+    internal const string CurrentBuildStamp = "Reader 2026.08.10-r3-hover-library";
 }
