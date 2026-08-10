@@ -8,14 +8,15 @@ using System.Windows.Media;
 namespace TintaES.Wpf;
 
 /// <summary>
-/// Biblioteca exclusiva del ejecutable independiente. Busca proyectos .tinta disponibles en
-/// discos locales sin bloquear la interfaz y permite abrirlos directamente desde un panel lateral.
+/// Biblioteca exclusiva del ejecutable independiente. Forma parte estructural de la ventana del
+/// Reader: aparece al arrancar y busca proyectos .tinta en discos fijos y extraíbles sin bloquear
+/// la interfaz. Los resultados se publican en cuanto se encuentran, sin esperar al final del disco.
 /// </summary>
 public sealed partial class ComicReaderWindow
 {
-    private static readonly bool StandaloneLibraryRegistered = RegisterStandaloneLibrary();
-
     private readonly ObservableCollection<ReaderLibraryItem> _libraryItems = [];
+    private readonly Dictionary<string, ReaderLibraryItem> _libraryItemsByPath =
+        new(StringComparer.OrdinalIgnoreCase);
     private CancellationTokenSource? _libraryScanCancellation;
     private Border? _libraryPanel;
     private ListBox? _libraryList;
@@ -23,39 +24,44 @@ public sealed partial class ComicReaderWindow
     private Button? _libraryToggleButton;
     private bool _libraryInstalled;
     private bool _libraryVisible = true;
+    private int _libraryFoundCount;
 
-    private static bool RegisterStandaloneLibrary()
+    /// <summary>
+    /// Lo llama App directamente antes de mostrar la ventana. Si esta función faltase o no pudiera
+    /// instalarse, el proyecto Reader ni siquiera debe darse por arrancado silenciosamente.
+    /// </summary>
+    internal void EnsureStandaloneLibraryInstalled()
     {
-        EventManager.RegisterClassHandler(
-            typeof(ComicReaderWindow),
-            LoadedEvent,
-            new RoutedEventHandler(ComicReaderWindow_StandaloneLibraryLoaded),
-            handledEventsToo: true);
-        return true;
-    }
-
-    private static void ComicReaderWindow_StandaloneLibraryLoaded(object sender, RoutedEventArgs e)
-    {
-        if (sender is ComicReaderWindow reader)
+        InstallStandaloneLibrary();
+        if (!_libraryInstalled || _libraryPanel is null || _libraryList is null)
         {
-            reader.Dispatcher.BeginInvoke(
-                reader.InstallStandaloneLibrary,
-                System.Windows.Threading.DispatcherPriority.ContextIdle);
+            throw new InvalidOperationException(
+                "No se pudo crear la biblioteca local de proyectos .tinta.");
         }
     }
 
     private void InstallStandaloneLibrary()
     {
-        if (_libraryInstalled || _readerRoot is null || _readerToolbar is null)
+        if (_libraryInstalled)
         {
             return;
         }
 
-        _libraryInstalled = true;
+        if (_readerRoot is null || _readerToolbar is null)
+        {
+            throw new InvalidOperationException(
+                "El visor todavía no ha creado la superficie necesaria para la biblioteca.");
+        }
+
         Grid root = _readerRoot;
         if (root.ColumnDefinitions.Count == 0)
         {
-            root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(255) });
+            root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(270) });
+            root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        }
+        else if (root.ColumnDefinitions.Count == 1)
+        {
+            root.ColumnDefinitions[0].Width = new GridLength(270);
             root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         }
 
@@ -73,13 +79,15 @@ public sealed partial class ComicReaderWindow
 
         if (_readerToolbar.Children.OfType<StackPanel>().FirstOrDefault() is { } toolbarItems)
         {
-            _libraryToggleButton = CreateToolbarButton("Biblioteca", 88);
+            _libraryToggleButton = CreateToolbarButton("Biblioteca", 92);
             _libraryToggleButton.Margin = new Thickness(6, 0, 0, 0);
-            _libraryToggleButton.ToolTip = "Mostrar u ocultar los proyectos .tinta encontrados en el equipo";
+            _libraryToggleButton.ToolTip =
+                "Mostrar u ocultar los proyectos .tinta encontrados en los discos del equipo";
             _libraryToggleButton.Click += (_, _) => ToggleLibraryPanel();
             toolbarItems.Children.Add(_libraryToggleButton);
         }
 
+        _libraryInstalled = true;
         Closed += (_, _) =>
         {
             _libraryScanCancellation?.Cancel();
@@ -108,14 +116,14 @@ public sealed partial class ComicReaderWindow
             Width = 30,
             Height = 28,
             HorizontalAlignment = HorizontalAlignment.Right,
-            ToolTip = "Volver a buscar proyectos .tinta"
+            ToolTip = "Volver a buscar proyectos .tinta en los discos"
         };
         DockPanel.SetDock(refresh, Dock.Right);
         refresh.Click += async (_, _) => await RefreshLocalLibraryAsync();
         header.Children.Add(refresh);
         header.Children.Add(new TextBlock
         {
-            Text = "BIBLIOTECA",
+            Text = "BIBLIOTECA .TINTA",
             Foreground = Brushes.White,
             FontSize = 13,
             FontWeight = FontWeights.Bold,
@@ -125,7 +133,7 @@ public sealed partial class ComicReaderWindow
 
         _libraryStatus = new TextBlock
         {
-            Text = "Buscando proyectos…",
+            Text = "Buscando proyectos .tinta…",
             Foreground = new SolidColorBrush(Color.FromRgb(158, 166, 173)),
             FontSize = 11,
             TextWrapping = TextWrapping.Wrap,
@@ -151,9 +159,10 @@ public sealed partial class ComicReaderWindow
 
         var hint = new TextBlock
         {
-            Text = "Doble clic o Intro para abrir",
+            Text = "Busca automáticamente en los discos · doble clic o Intro para abrir",
             Foreground = new SolidColorBrush(Color.FromRgb(125, 133, 140)),
             FontSize = 10,
+            TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(12, 7, 10, 10)
         };
         Grid.SetRow(hint, 3);
@@ -174,16 +183,19 @@ public sealed partial class ComicReaderWindow
         root.SetValue(FrameworkElement.MarginProperty, new Thickness(7, 6, 7, 7));
 
         var name = new FrameworkElementFactory(typeof(TextBlock));
-        name.SetBinding(TextBlock.TextProperty, new System.Windows.Data.Binding(nameof(ReaderLibraryItem.Name)));
+        name.SetBinding(TextBlock.TextProperty,
+            new System.Windows.Data.Binding(nameof(ReaderLibraryItem.Name)));
         name.SetValue(TextBlock.FontWeightProperty, FontWeights.SemiBold);
         name.SetValue(TextBlock.ForegroundProperty, Brushes.White);
         name.SetValue(TextBlock.TextTrimmingProperty, TextTrimming.CharacterEllipsis);
         root.AppendChild(name);
 
         var path = new FrameworkElementFactory(typeof(TextBlock));
-        path.SetBinding(TextBlock.TextProperty, new System.Windows.Data.Binding(nameof(ReaderLibraryItem.Directory)));
+        path.SetBinding(TextBlock.TextProperty,
+            new System.Windows.Data.Binding(nameof(ReaderLibraryItem.Directory)));
         path.SetValue(TextBlock.FontSizeProperty, 9.5d);
-        path.SetValue(TextBlock.ForegroundProperty, new SolidColorBrush(Color.FromRgb(143, 151, 158)));
+        path.SetValue(TextBlock.ForegroundProperty,
+            new SolidColorBrush(Color.FromRgb(143, 151, 158)));
         path.SetValue(TextBlock.TextTrimmingProperty, TextTrimming.CharacterEllipsis);
         path.SetValue(FrameworkElement.MarginProperty, new Thickness(0, 3, 0, 0));
         root.AppendChild(path);
@@ -199,6 +211,9 @@ public sealed partial class ComicReaderWindow
         _libraryScanCancellation = new CancellationTokenSource();
         CancellationToken token = _libraryScanCancellation.Token;
 
+        _libraryItems.Clear();
+        _libraryItemsByPath.Clear();
+        _libraryFoundCount = 0;
         if (_libraryStatus is not null)
         {
             _libraryStatus.Text = "Buscando proyectos .tinta en los discos…";
@@ -206,25 +221,24 @@ public sealed partial class ComicReaderWindow
 
         try
         {
-            ReaderLibraryItem[] found = await Task.Run(() => ScanLocalProjects(token), token);
+            await Task.Run(
+                () => ScanLocalProjects(token, item =>
+                    Dispatcher.BeginInvoke(() => PublishLibraryItem(item))),
+                token);
+
             if (token.IsCancellationRequested)
             {
                 return;
             }
 
-            _libraryItems.Clear();
-            foreach (ReaderLibraryItem item in found)
-            {
-                _libraryItems.Add(item);
-            }
-
             if (_libraryStatus is not null)
             {
-                _libraryStatus.Text = found.Length == 0
-                    ? "No se han encontrado proyectos .tinta."
-                    : found.Length == 1
-                        ? "1 proyecto encontrado"
-                        : $"{found.Length} proyectos encontrados";
+                _libraryStatus.Text = _libraryFoundCount switch
+                {
+                    0 => "Búsqueda terminada · no se encontraron proyectos .tinta.",
+                    1 => "Búsqueda terminada · 1 proyecto .tinta encontrado.",
+                    _ => $"Búsqueda terminada · {_libraryFoundCount} proyectos .tinta encontrados."
+                };
             }
         }
         catch (OperationCanceledException)
@@ -239,9 +253,30 @@ public sealed partial class ComicReaderWindow
         }
     }
 
-    private static ReaderLibraryItem[] ScanLocalProjects(CancellationToken cancellationToken)
+    private void PublishLibraryItem(ReaderLibraryItem item)
     {
-        var found = new Dictionary<string, ReaderLibraryItem>(StringComparer.OrdinalIgnoreCase);
+        if (_libraryScanCancellation?.IsCancellationRequested != false
+            || _libraryItemsByPath.ContainsKey(item.FullPath))
+        {
+            return;
+        }
+
+        _libraryItemsByPath[item.FullPath] = item;
+        _libraryItems.Add(item);
+        _libraryFoundCount++;
+        if (_libraryStatus is not null)
+        {
+            _libraryStatus.Text = _libraryFoundCount == 1
+                ? "Buscando… · 1 proyecto encontrado hasta ahora"
+                : $"Buscando… · {_libraryFoundCount} proyectos encontrados hasta ahora";
+        }
+    }
+
+    private static void ScanLocalProjects(
+        CancellationToken cancellationToken,
+        Action<ReaderLibraryItem> onFound)
+    {
+        var emitted = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (DriveInfo drive in DriveInfo.GetDrives())
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -250,18 +285,14 @@ public sealed partial class ComicReaderWindow
                 continue;
             }
 
-            ScanDirectory(drive.RootDirectory.FullName, found, cancellationToken);
+            ScanDirectory(drive.RootDirectory.FullName, emitted, onFound, cancellationToken);
         }
-
-        return found.Values
-            .OrderByDescending(item => item.ModifiedUtc)
-            .ThenBy(item => item.Name, StringComparer.CurrentCultureIgnoreCase)
-            .ToArray();
     }
 
     private static void ScanDirectory(
         string root,
-        IDictionary<string, ReaderLibraryItem> found,
+        ISet<string> emitted,
+        Action<ReaderLibraryItem> onFound,
         CancellationToken cancellationToken)
     {
         var pending = new Stack<string>();
@@ -274,17 +305,25 @@ public sealed partial class ComicReaderWindow
 
             try
             {
-                foreach (string file in Directory.EnumerateFiles(current, "*.tinta", SearchOption.TopDirectoryOnly))
+                foreach (string file in Directory.EnumerateFiles(
+                             current,
+                             "*.tinta",
+                             SearchOption.TopDirectoryOnly))
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     try
                     {
                         var info = new FileInfo(file);
-                        found[info.FullName] = new ReaderLibraryItem(
+                        if (!emitted.Add(info.FullName))
+                        {
+                            continue;
+                        }
+
+                        onFound(new ReaderLibraryItem(
                             Path.GetFileNameWithoutExtension(info.Name),
                             info.FullName,
                             info.DirectoryName ?? string.Empty,
-                            info.LastWriteTimeUtc);
+                            info.LastWriteTimeUtc));
                     }
                     catch (IOException)
                     {
@@ -315,13 +354,29 @@ public sealed partial class ComicReaderWindow
     private static bool ShouldSkipDirectory(string path)
     {
         string name = Path.GetFileName(path);
-        return name.Equals("$Recycle.Bin", StringComparison.OrdinalIgnoreCase)
-               || name.Equals("System Volume Information", StringComparison.OrdinalIgnoreCase)
-               || name.Equals("Windows", StringComparison.OrdinalIgnoreCase)
-               || name.Equals("Program Files", StringComparison.OrdinalIgnoreCase)
-               || name.Equals("Program Files (x86)", StringComparison.OrdinalIgnoreCase)
-               || name.Equals("ProgramData", StringComparison.OrdinalIgnoreCase)
-               || name.StartsWith("$", StringComparison.Ordinal);
+        if (name.Equals("$Recycle.Bin", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("System Volume Information", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("Windows", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("Program Files", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("Program Files (x86)", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("ProgramData", StringComparison.OrdinalIgnoreCase)
+            || name.StartsWith("$", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        try
+        {
+            return (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0;
+        }
+        catch (IOException)
+        {
+            return true;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return true;
+        }
     }
 
     private async void LibraryList_MouseDoubleClick(object sender, MouseButtonEventArgs e)
@@ -351,7 +406,7 @@ public sealed partial class ComicReaderWindow
         _libraryVisible = !_libraryVisible;
         _libraryPanel.Visibility = _libraryVisible ? Visibility.Visible : Visibility.Collapsed;
         _readerRoot.ColumnDefinitions[0].Width = _libraryVisible
-            ? new GridLength(255)
+            ? new GridLength(270)
             : new GridLength(0);
         if (_libraryToggleButton is not null)
         {
