@@ -48,20 +48,33 @@ public sealed partial class ComicReaderWindow
 
     private static void ComicReaderWindow_TintaOpeningLoaded(object sender, RoutedEventArgs e)
     {
-        if (sender is not ComicReaderWindow reader || reader._readerTintaOpeningInstalled)
+        if (sender is ComicReaderWindow reader)
+        {
+            reader.EnsureReaderHoverInstalled();
+        }
+    }
+
+    /// <summary>
+    /// Instala de forma explícita la interacción vigente del lector: con ratón la traducción
+    /// aparece al pasar por encima del bocadillo, sin necesidad de hacer clic. El ejecutable
+    /// independiente llama a este método antes de mostrar la ventana para no depender de Loaded.
+    /// </summary>
+    internal void EnsureReaderHoverInstalled()
+    {
+        if (_readerTintaOpeningInstalled)
         {
             return;
         }
 
-        reader._readerTintaOpeningInstalled = true;
-        reader._viewerHost.PreviewMouseMove += reader.ReaderTranslationHover_PreviewMouseMove;
-        reader._viewerHost.MouseLeave += reader.ReaderTranslationHover_MouseLeave;
-        reader.Closed += reader.ReaderTintaOpening_Closed;
+        _readerTintaOpeningInstalled = true;
+        _viewerHost.PreviewMouseMove += ReaderTranslationHover_PreviewMouseMove;
+        _viewerHost.MouseLeave += ReaderTranslationHover_MouseLeave;
+        Closed += ReaderTintaOpening_Closed;
 
-        if (reader._readerDocument is null && reader._archive is null)
+        if (_readerDocument is null && _archive is null)
         {
-            reader._loadingText.Text = "Abre un proyecto .tinta o un CBZ para empezar.";
-            reader._statusText.Text = "Sin proyecto abierto";
+            _loadingText.Text = "Abre un proyecto .tinta o un CBZ para empezar.";
+            _statusText.Text = "Sin proyecto abierto";
         }
     }
 
@@ -154,10 +167,15 @@ public sealed partial class ComicReaderWindow
     private void ReaderTranslationHover_PreviewMouseMove(object sender, MouseEventArgs e)
     {
         if (_readerDocument is null
-            || _dragging
             || _translationMouseHeld
             || DateTime.UtcNow < _ignoreSyntheticMouseUntilUtc)
         {
+            return;
+        }
+
+        if (_dragging)
+        {
+            HideTranslationCard();
             return;
         }
 
