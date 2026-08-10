@@ -3,6 +3,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using Microsoft.Win32;
+using TintaES.Core;
 
 namespace TintaES.Wpf;
 
@@ -56,6 +57,12 @@ public sealed partial class ComicReaderWindow
         reader._viewerHost.PreviewMouseMove += reader.ReaderTranslationHover_PreviewMouseMove;
         reader._viewerHost.MouseLeave += reader.ReaderTranslationHover_MouseLeave;
         reader.Closed += reader.ReaderTintaOpening_Closed;
+
+        if (reader._readerDocument is null && reader._archive is null)
+        {
+            reader._loadingText.Text = "Abre un proyecto .tinta o un CBZ para empezar.";
+            reader._statusText.Text = "Sin proyecto abierto";
+        }
     }
 
     private async Task OpenReaderFileFromDialogAsync()
