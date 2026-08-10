@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.19041.0</TargetPlatformMinVersion>
+    <UseWPF>true</UseWPF>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>TintaESReader</AssemblyName>
+    <RootNamespace>TintaES.Reader</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\TintaES.Core\TintaES.Core.csproj" />
+
+    <!-- El lector comparte únicamente el visor. No referencia TintaES.Wpf, por lo que no arrastra
+         Ollama, OCR, SharpCompress, el motor Python ni las herramientas de edición. -->
+    <Compile Include="..\TintaES.Wpf\ComicReaderWindow.cs" Link="Shared\ComicReaderWindow.cs" />
+    <Compile Include="..\TintaES.Wpf\ComicReaderWindow.Translations.cs" Link="Shared\ComicReaderWindow.Translations.cs" />
+    <Compile Include="..\TintaES.Wpf\ComicReaderWindow.ScreenBounds.cs" Link="Shared\ComicReaderWindow.ScreenBounds.cs" />
+    <Compile Include="..\TintaES.Wpf\ComicReaderWindow.TintaOpening.cs" Link="Shared\ComicReaderWindow.TintaOpening.cs" />
+    <Compile Include="..\TintaES.Wpf\ReaderComicDocument.cs" Link="Shared\ReaderComicDocument.cs" />
+    <Compile Include="..\TintaES.Wpf\ReaderTintaProjectLoader.cs" Link="Shared\ReaderTintaProjectLoader.cs" />
+    <Compile Include="..\TintaES.Wpf\ReaderBuildInfo.cs" Link="Shared\ReaderBuildInfo.cs" />
+  </ItemGroup>
+</Project>
