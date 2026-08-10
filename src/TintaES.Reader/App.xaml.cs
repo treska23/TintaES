@@ -12,6 +12,12 @@ public partial class App : Application
         base.OnStartup(e);
 
         var reader = new ComicReaderWindow();
+
+        // La biblioteca es una parte obligatoria del ejecutable Reader, no una extensión que se
+        // instala después del Loaded. Se crea antes de mostrar la ventana para que siempre esté
+        // visible y empiece a localizar proyectos .tinta desde el primer arranque.
+        reader.EnsureStandaloneLibraryInstalled();
+
         MainWindow = reader;
         reader.Show();
 
