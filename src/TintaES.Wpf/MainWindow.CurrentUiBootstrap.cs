@@ -9,7 +9,7 @@ namespace TintaES.Wpf;
 /// </summary>
 public partial class MainWindow
 {
-    internal const string CurrentUiBuildStamp = "UI 2026.08.18-r61-auto-backup";
+    internal const string CurrentUiBuildStamp = "UI 2026.08.18-r62-save-dirty-state";
     private const int CurrentUiBootstrapMaxAttempts = 3;
 
     private static readonly bool CurrentUiBootstrapRegistered = RegisterCurrentUiBootstrap();
@@ -84,6 +84,7 @@ public partial class MainWindow
         RunCurrentUiInstaller(InstallSimpleWhiteMaskPainting, "pincel blanco simple", failures);
         RunCurrentUiInstaller(InstallPageSaveAndShortcuts, "guardado de página", failures);
         RunCurrentUiInstaller(InstallClassicMenu, "menú superior", failures);
+        RunCurrentUiInstaller(InstallSaveDirtyTracking, "estado de guardado", failures);
         RunCurrentUiInstaller(InstallAddImagePagesCommand, "agregar páginas", failures);
         RunCurrentUiInstaller(InstallResponsiveInspector, "inspector rápido", failures);
         RunCurrentUiInstaller(TryInstallEditorMenuCommands, "menú de edición", failures);
