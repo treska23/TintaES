@@ -13,11 +13,12 @@ public partial class App : Application
 
         var reader = new ComicReaderWindow();
 
-        // El Reader independiente instala antes de mostrarse las dos funciones que definen
-        // su experiencia actual: biblioteca local .tinta y traducción por hover con ratón.
-        // Así ninguna de ellas depende del orden de eventos Loaded.
+        // El Reader independiente conserva la biblioteca, pero la lectura replica la experiencia
+        // del programa madre: hover con ratón y presión táctil muestran la traducción centrada.
         reader.EnsureStandaloneLibraryInstalled();
         reader.EnsureReaderHoverInstalled();
+        reader.EnsureMotherTranslationInteractionInstalled();
+        reader.EnsureStandaloneResponsiveLayoutInstalled();
 
         MainWindow = reader;
         reader.Show();
