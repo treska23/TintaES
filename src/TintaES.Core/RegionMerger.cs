@@ -25,20 +25,11 @@ public static class RegionMerger
             }
 
             ComicRegion existing = merged[duplicateIndex];
-            ComicRegion winner = ChooseRicherReading(existing, candidate);
-            ComicRegion alternate = ReferenceEquals(winner, candidate) ? existing : candidate;
-            winner.StoredOcrAlternatives = winner.StoredOcrAlternatives
-                .Concat([alternate.Original])
-                .Concat(alternate.StoredOcrAlternatives)
-                .Where(value => !string.IsNullOrWhiteSpace(value))
-                .Where(value => !string.Equals(
-                    value.Trim(),
-                    winner.Original.Trim(),
-                    StringComparison.OrdinalIgnoreCase))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .Take(8)
-                .ToArray();
-            merged[duplicateIndex] = winner;
+            if (candidate.Confidence > existing.Confidence
+                || candidate.Original.Length > existing.Original.Length)
+            {
+                merged[duplicateIndex] = candidate;
+            }
         }
 
         var ordered = merged
@@ -55,18 +46,6 @@ public static class RegionMerger
 
         ResolveCompetingRenderAreas(ordered);
         return ordered;
-    }
-
-    private static ComicRegion ChooseRicherReading(ComicRegion first, ComicRegion second)
-    {
-        int firstEvidence = NormalizeText(first.Original).Length;
-        int secondEvidence = NormalizeText(second.Original).Length;
-        if (firstEvidence != secondEvidence)
-        {
-            return secondEvidence > firstEvidence ? second : first;
-        }
-
-        return second.Confidence > first.Confidence ? second : first;
     }
 
     public static void ResolveCompetingRenderAreas(IReadOnlyList<ComicRegion> regions)
@@ -483,12 +462,8 @@ public static class RegionMerger
 
     private static bool IsDuplicate(ComicRegion left, ComicRegion right)
     {
-        double intersection = IntersectionArea(left.TextBox, right.TextBox);
         double overlap = IntersectionOverUnion(left.TextBox, right.TextBox);
-        double overlapOverSmaller = intersection / Math.Max(
-            1,
-            Math.Min(left.TextBox.Area, right.TextBox.Area));
-        if (overlap < 0.16 && overlapOverSmaller < 0.78)
+        if (overlap < 0.16)
         {
             return false;
         }
@@ -498,13 +473,7 @@ public static class RegionMerger
         return leftText == rightText
             || leftText.Contains(rightText, StringComparison.Ordinal)
             || rightText.Contains(leftText, StringComparison.Ordinal)
-            || overlap > 0.58
-            // El OCR por mosaicos puede devolver una palabra o media frase dentro del
-            // rectángulo de la lectura completa. Aunque el texto esté dañado y no coincida,
-            // no debe sobrevivir como otro bocadillo independiente.
-            || (overlapOverSmaller >= 0.82
-                && Math.Max(left.TextBox.Area, right.TextBox.Area)
-                   >= Math.Min(left.TextBox.Area, right.TextBox.Area) * 1.15);
+            || overlap > 0.58;
     }
 
     private static string NormalizeText(string value)
