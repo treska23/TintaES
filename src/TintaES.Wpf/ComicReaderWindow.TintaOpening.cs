@@ -8,14 +8,15 @@ using TintaES.Core;
 namespace TintaES.Wpf;
 
 /// <summary>
-/// Apertura directa de proyectos .tinta y consulta por hover. Está aislado del editor para que
-/// el mismo código pueda compilarse dentro del ejecutable TintaESReader.
+/// Apertura directa de proyectos .tinta y consulta por hover/toque. Está aislado del editor para
+/// que el mismo código pueda compilarse dentro del ejecutable TintaESReader.
 /// </summary>
 public sealed partial class ComicReaderWindow
 {
     private static readonly bool ReaderTintaOpeningRegistered = RegisterReaderTintaOpening();
     private bool _readerTintaOpeningInstalled;
     private bool _readerFileOpening;
+    private TouchDevice? _readerTranslationTouchDevice;
 
     private static bool RegisterReaderTintaOpening()
     {
@@ -55,9 +56,8 @@ public sealed partial class ComicReaderWindow
     }
 
     /// <summary>
-    /// Instala de forma explícita la interacción vigente del lector: con ratón la traducción
-    /// aparece al pasar por encima del bocadillo, sin necesidad de hacer clic. El ejecutable
-    /// independiente llama a este método antes de mostrar la ventana para no depender de Loaded.
+    /// Instala la interacción vigente del lector: con ratón la traducción aparece al pasar por
+    /// encima y con pantalla táctil aparece mientras el dedo permanece sobre el bocadillo.
     /// </summary>
     internal void EnsureReaderHoverInstalled()
     {
@@ -69,6 +69,23 @@ public sealed partial class ComicReaderWindow
         _readerTintaOpeningInstalled = true;
         _viewerHost.PreviewMouseMove += ReaderTranslationHover_PreviewMouseMove;
         _viewerHost.MouseLeave += ReaderTranslationHover_MouseLeave;
+
+        // ScrollViewer y el sistema de manipulaciones de WPF pueden marcar un evento táctil
+        // como manejado antes de que llegue a una suscripción normal. handledEventsToo hace que
+        // el Reader siga recibiéndolo y pueda dar prioridad a un toque sobre un bocadillo.
+        _viewerHost.AddHandler(
+            UIElement.PreviewTouchDownEvent,
+            new EventHandler<TouchEventArgs>(ReaderTranslationTouch_PreviewTouchDown),
+            handledEventsToo: true);
+        _viewerHost.AddHandler(
+            UIElement.PreviewTouchMoveEvent,
+            new EventHandler<TouchEventArgs>(ReaderTranslationTouch_PreviewTouchMove),
+            handledEventsToo: true);
+        _viewerHost.AddHandler(
+            UIElement.PreviewTouchUpEvent,
+            new EventHandler<TouchEventArgs>(ReaderTranslationTouch_PreviewTouchUp),
+            handledEventsToo: true);
+
         Closed += ReaderTintaOpening_Closed;
 
         if (_readerDocument is null && _archive is null)
@@ -168,6 +185,7 @@ public sealed partial class ComicReaderWindow
     {
         if (_readerDocument is null
             || _translationMouseHeld
+            || _readerTranslationTouchDevice is not null
             || DateTime.UtcNow < _ignoreSyntheticMouseUntilUtc)
         {
             return;
@@ -193,14 +211,99 @@ public sealed partial class ComicReaderWindow
 
     private void ReaderTranslationHover_MouseLeave(object sender, MouseEventArgs e)
     {
-        if (!_translationMouseHeld && !_viewerHost.AreAnyTouchesCapturedWithin)
+        if (!_translationMouseHeld && _readerTranslationTouchDevice is null)
         {
             HideTranslationCard();
         }
     }
 
+    private ComicRegion? ResolveReaderTouchRegionAt(Point pagePoint)
+    {
+        if (_readerDocument is null
+            || _pageIndex < 0
+            || _pageIndex >= _readerDocument.Pages.Count
+            || _pageStage.ActualWidth <= 1
+            || _pageStage.ActualHeight <= 1
+            || pagePoint.X < 0
+            || pagePoint.Y < 0
+            || pagePoint.X > _pageStage.ActualWidth
+            || pagePoint.Y > _pageStage.ActualHeight)
+        {
+            return null;
+        }
+
+        double x = pagePoint.X / _pageStage.ActualWidth * 1000d;
+        double y = pagePoint.Y / _pageStage.ActualHeight * 1000d;
+        return ComicRegionHitResolver.ResolveForTouch(
+            _readerDocument.Pages[_pageIndex].Regions,
+            x,
+            y);
+    }
+
+    private void ReaderTranslationTouch_PreviewTouchDown(object? sender, TouchEventArgs e)
+    {
+        _ignoreSyntheticMouseUntilUtc = DateTime.UtcNow.AddMilliseconds(750);
+
+        if (_readerTranslationTouchDevice is not null
+            && _readerTranslationTouchDevice != e.TouchDevice)
+        {
+            return;
+        }
+
+        ComicRegion? region = ResolveReaderTouchRegionAt(
+            e.GetTouchPoint(_pageStage).Position);
+        if (region is null)
+        {
+            HideTranslationCard();
+            return;
+        }
+
+        _readerTranslationTouchDevice = e.TouchDevice;
+        ShowTranslationCard(region);
+        e.TouchDevice.Capture(_viewerHost);
+        e.Handled = true;
+    }
+
+    private void ReaderTranslationTouch_PreviewTouchMove(object? sender, TouchEventArgs e)
+    {
+        if (_readerTranslationTouchDevice != e.TouchDevice)
+        {
+            return;
+        }
+
+        _ignoreSyntheticMouseUntilUtc = DateTime.UtcNow.AddMilliseconds(750);
+        ComicRegion? region = ResolveReaderTouchRegionAt(
+            e.GetTouchPoint(_pageStage).Position);
+        if (region is null)
+        {
+            HideTranslationCard();
+        }
+        else
+        {
+            ShowTranslationCard(region);
+        }
+        e.Handled = true;
+    }
+
+    private void ReaderTranslationTouch_PreviewTouchUp(object? sender, TouchEventArgs e)
+    {
+        if (_readerTranslationTouchDevice != e.TouchDevice)
+        {
+            return;
+        }
+
+        _readerTranslationTouchDevice = null;
+        if (e.TouchDevice.Captured is not null)
+        {
+            e.TouchDevice.Capture(null);
+        }
+        HideTranslationCard();
+        e.Handled = true;
+    }
+
     private void ReaderTintaOpening_Closed(object? sender, EventArgs e)
     {
+        _readerTranslationTouchDevice = null;
         _readerDocument?.Dispose();
         _readerDocument = null;
     }
