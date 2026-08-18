@@ -2,8 +2,7 @@ namespace TintaES.Core;
 
 /// <summary>
 /// Resuelve zonas de interacción sobre la página. El ratón usa una caja pequeña alrededor
-/// del texto; el toque dispone además de una zona táctil mayor y, cuando el detector está
-/// suficientemente seguro, del interior del bocadillo.
+/// del texto; el toque dispone de objetivos más amplios basados en texto, render y bocadillo.
 /// </summary>
 public static class ComicRegionHitResolver
 {
@@ -26,9 +25,10 @@ public static class ComicRegionHitResolver
     }
 
     /// <summary>
-    /// Resuelve un toque de dedo. Primero conserva exactamente la prioridad del ratón y, si no
-    /// hay impacto, permite una tolerancia mayor alrededor del texto y el interior de un globo
-    /// fiable. Así no hace falta acertar sobre las letras con el dedo.
+    /// Resuelve un toque de dedo. Primero conserva la prioridad precisa del ratón. Si el dedo
+    /// cae un poco fuera, usa la zona táctil ampliada y las áreas de lectura ya guardadas en el
+    /// proyecto. RenderBox permite que proyectos .tinta antiguos sigan siendo táctiles aunque
+    /// BubbleBox falte o tenga una confianza baja.
     /// </summary>
     public static ComicRegion? ResolveForTouch(
         IEnumerable<ComicRegion> regions,
@@ -47,9 +47,10 @@ public static class ComicRegionHitResolver
 
         TouchCandidate[] candidates = readable
             .Select(region => CreateTouchCandidate(region, x, y))
-            .Where(candidate => candidate.TouchTextHit || candidate.BubbleHit)
+            .Where(candidate => candidate.TouchTextHit || candidate.RenderHit || candidate.BubbleHit)
             .OrderByDescending(candidate => candidate.TouchTextHit)
-            .ThenBy(candidate => candidate.BubbleArea)
+            .ThenByDescending(candidate => candidate.RenderHit)
+            .ThenBy(candidate => candidate.InteractionArea)
             .ThenBy(candidate => candidate.DistanceToTextCentre)
             .ThenBy(candidate => candidate.Region.Order)
             .ToArray();
@@ -65,7 +66,6 @@ public static class ComicRegionHitResolver
 
     private static NormalizedRect CreateTextHitBox(NormalizedRect text)
     {
-        // Ratón: margen pequeño para que dos zonas próximas no compitan al pasar el puntero.
         double marginX = Math.Clamp(text.Height * 0.27, 10, 30);
         double marginY = Math.Clamp(text.Height * 0.19, 8, 22);
         return new NormalizedRect(
@@ -77,8 +77,6 @@ public static class ComicRegionHitResolver
 
     private static NormalizedRect CreateTouchTextHitBox(NormalizedRect text)
     {
-        // Dedo: el objetivo debe ser bastante mayor que el trazo OCR. Sigue siendo una caja
-        // local y no puede crecer media viñeta si la geometría detectada es defectuosa.
         double marginX = Math.Clamp(text.Height * 0.68, 18, 58);
         double marginY = Math.Clamp(text.Height * 0.48, 14, 44);
         return new NormalizedRect(
@@ -111,14 +109,23 @@ public static class ComicRegionHitResolver
         NormalizedRect text = region.TextBox.Clamp();
         NormalizedRect touchText = ResolveTouchHitBox(region);
         bool touchTextHit = Contains(touchText, x, y);
+
+        NormalizedRect render = region.RenderBox.Clamp();
+        double renderAreaRatio = render.Area / Math.Max(1, text.Area);
+        bool plausibleRender = render.Area <= 150_000
+            && render.Width <= 520
+            && render.Height <= 520
+            && renderAreaRatio is >= 0.75 and <= 80
+            && Contains(render, text.X + text.Width / 2, text.Y + text.Height / 2);
+        bool renderHit = plausibleRender && Contains(render, x, y);
+
         bool bubbleHit = false;
         double bubbleArea = double.MaxValue;
-
         if (region.BubbleBox is { } detectedBubble)
         {
             NormalizedRect bubble = detectedBubble.Clamp();
             double areaRatio = bubble.Area / Math.Max(1, text.Area);
-            bool plausibleBubble = region.BubbleConfidence >= 0.45
+            bool plausibleBubble = region.BubbleConfidence >= 0.20
                 && bubble.Area <= 150_000
                 && bubble.Width <= 520
                 && bubble.Height <= 520
@@ -131,11 +138,18 @@ public static class ComicRegionHitResolver
             }
         }
 
+        double interactionArea = touchTextHit
+            ? touchText.Area
+            : renderHit
+                ? render.Area
+                : bubbleArea;
+
         return new TouchCandidate(
             region,
             touchTextHit,
+            renderHit,
             bubbleHit,
-            bubbleArea,
+            interactionArea,
             DistanceSquaredToCenter(text, x, y));
     }
 
@@ -180,7 +194,8 @@ public static class ComicRegionHitResolver
     private sealed record TouchCandidate(
         ComicRegion Region,
         bool TouchTextHit,
+        bool RenderHit,
         bool BubbleHit,
-        double BubbleArea,
+        double InteractionArea,
         double DistanceToTextCentre);
 }
