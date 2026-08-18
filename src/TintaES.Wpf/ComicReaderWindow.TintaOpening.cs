@@ -18,6 +18,10 @@ public sealed partial class ComicReaderWindow
     private bool _readerFileOpening;
     private TouchDevice? _readerTranslationTouchDevice;
 
+    // El ejecutable Reader implementa este hook; dentro de TintaES.Wpf puede quedar sin
+    // implementación. Así el visor compartido no adquiere ninguna dependencia del proyecto ligero.
+    partial void OnStandaloneReaderContentOpened();
+
     private static bool RegisterReaderTintaOpening()
     {
         EventManager.RegisterClassHandler(
@@ -144,6 +148,7 @@ public sealed partial class ComicReaderWindow
                     _readerDocument = document;
                     await OpenDocumentAsync();
                     previous?.Dispose();
+                    OnStandaloneReaderContentOpened();
                 }
                 catch
                 {
@@ -159,6 +164,7 @@ public sealed partial class ComicReaderWindow
                 _readerDocument?.Dispose();
                 _readerDocument = null;
                 await OpenArchiveAsync(path);
+                OnStandaloneReaderContentOpened();
                 return;
             }
 
