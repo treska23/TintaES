@@ -38,6 +38,7 @@ public partial class MainWindow
     private string? _thumbnailSelectionSessionKey;
     private int _lastPageSelectionVisualIndex = -2;
     private int _pageSelectionAnchorIndex = -1;
+    private int _pageCheckAnchorIndex = -1;
     private bool _syncingPageSelection;
 
     private void InstallPageSelectionPanel()
@@ -191,6 +192,7 @@ public partial class MainWindow
         if (!string.Equals(key, _pageSelectionSessionKey, StringComparison.OrdinalIgnoreCase))
         {
             _pageSelectionSessionKey = key;
+            _pageCheckAnchorIndex = -1;
             _selectedComicPageIndices.Clear();
             _exportedComicPageIndices.Clear();
             foreach (int index in Enumerable.Range(0, _comicPages.Count))
@@ -287,7 +289,8 @@ public partial class MainWindow
                     VerticalAlignment = VerticalAlignment.Top,
                     ToolTip =
                         "Clic: aplicar el check a la selección de miniaturas. " +
-                        "Shift + clic: dejar marcada únicamente esta página."
+                        "Shift + clic: dejar marcada únicamente esta página. " +
+                        "Ctrl + Shift + clic: marcar el rango desde el último check."
                 };
                 checkBox.PreviewMouseLeftButtonDown += (_, e) =>
                     PageSelectionCheckBox_PreviewMouseLeftButtonDown(capturedIndex, e);
@@ -366,12 +369,31 @@ public partial class MainWindow
 
     private void TogglePageChecksFromThumbnail(int index, ModifierKeys modifiers)
     {
-        // Shift sobre un checkbox es el acceso rápido exclusivo solicitado: esta página queda
-        // marcada y todas las demás se desmarcan, sin depender de la selección visual.
-        if ((modifiers & ModifierKeys.Shift) != 0)
+        bool controlPressed = (modifiers & ModifierKeys.Control) != 0;
+        bool shiftPressed = (modifiers & ModifierKeys.Shift) != 0;
+
+        // Ctrl + Shift es una selección de rango de checks, independiente de la selección visual
+        // de miniaturas. Conserva los checks que ya hubiera y añade desde el último check operado
+        // hasta el actual. Debe evaluarse antes de Shift para que no caiga en el acceso exclusivo.
+        if (controlPressed && shiftPressed)
+        {
+            int anchor = _pageCheckAnchorIndex >= 0 && _pageCheckAnchorIndex < _comicPages.Count
+                ? _pageCheckAnchorIndex
+                : index;
+            int first = Math.Min(anchor, index);
+            int last = Math.Max(anchor, index);
+            ApplyPageCheckState(Enumerable.Range(first, last - first + 1), isChecked: true);
+            _pageCheckAnchorIndex = index;
+            return;
+        }
+
+        // Shift sobre un checkbox es el acceso rápido exclusivo: esta página queda marcada y
+        // todas las demás se desmarcan, sin depender de la selección visual de miniaturas.
+        if (shiftPressed)
         {
             _selectedComicPageIndices.Clear();
             _selectedComicPageIndices.Add(index);
+            _pageCheckAnchorIndex = index;
             SynchronizePageChecksAfterChange();
             return;
         }
@@ -393,6 +415,7 @@ public partial class MainWindow
         // como un grupo completamente desmarcado se convierten en un grupo marcado.
         bool allChecked = targets.All(item => _selectedComicPageIndices.Contains(item));
         ApplyPageCheckState(targets, isChecked: !allChecked);
+        _pageCheckAnchorIndex = index;
     }
 
     private void ApplyPageCheckState(IEnumerable<int> indices, bool isChecked)
@@ -594,6 +617,7 @@ public partial class MainWindow
 
     private void ApplyPageSelection(IEnumerable<int> indices)
     {
+        _pageCheckAnchorIndex = -1;
         _selectedComicPageIndices.Clear();
         foreach (int index in indices.Where(index =>
                      index >= 0 && index < _comicPages.Count))
@@ -632,8 +656,8 @@ public partial class MainWindow
         _pageSelectionSummary.Text =
             $"{_selectedComicPageIndices.Count} de {_comicPages.Count} marcadas · " +
             $"{highlighted} miniatura(s) seleccionada(s). " +
-            "Ctrl + clic añade o quita; Shift + clic selecciona un rango. " +
-            "Un clic en un check se aplica a toda la selección; Shift + clic deja solo esa página marcada.";
+            "Ctrl + clic añade o quita; Shift + clic selecciona un rango de miniaturas. " +
+            "En checks: clic aplica al grupo, Shift deja solo una y Ctrl + Shift marca el rango desde el último check.";
     }
 
     private void SetPageSelectionPanelVisible(bool visible)
