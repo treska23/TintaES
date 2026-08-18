@@ -9,13 +9,9 @@ namespace TintaES.Wpf;
 /// </summary>
 public partial class MainWindow
 {
-<<<<<<< HEAD
     internal const string CurrentUiBuildStamp = "UI 2026.08.18-r62-save-dirty-state";
-=======
-    internal const string CurrentUiBuildStamp = "UI 2026.08.10-r60-complete-balloon-ocr";
->>>>>>> c82a328 (Preserve local Codex OCR changes)
     private const int CurrentUiBootstrapMaxAttempts = 3;
-
+    
     private static readonly bool CurrentUiBootstrapRegistered = RegisterCurrentUiBootstrap();
 
     private bool _currentUiBootstrapInstalled;
