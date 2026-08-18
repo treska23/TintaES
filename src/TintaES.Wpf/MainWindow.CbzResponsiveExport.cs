@@ -340,17 +340,9 @@ public partial class MainWindow
             _selectedComicPageIndices.Remove(pageIndex);
         }
 
-        _syncingPageSelection = true;
-        try
+        if (_pageSelectionCheckBoxes.TryGetValue(pageIndex, out System.Windows.Controls.CheckBox? checkBox))
         {
-            if (_pageSelectionCheckBoxes.TryGetValue(pageIndex, out System.Windows.Controls.CheckBox? checkBox))
-            {
-                checkBox.IsChecked = pending;
-            }
-        }
-        finally
-        {
-            _syncingPageSelection = false;
+            checkBox.IsChecked = pending;
         }
 
         UpdatePageSelectionSummary();
