@@ -10,6 +10,10 @@ public static class OcrReadingCompletion
 {
     private const int MaximumReadingLength = 280;
     private const int MaximumAddedWords = 12;
+    private const int DominantAlternativeMaximumPrimaryWords = 2;
+    private const int DominantAlternativeMaximumPrimaryCharacters = 14;
+    private const int DominantAlternativeMinimumWords = 5;
+    private const int DominantAlternativeMinimumCharacters = 24;
 
     public static int PromoteCompleteAlternatives(IEnumerable<ComicRegion> regions)
     {
@@ -24,7 +28,8 @@ public static class OcrReadingCompletion
                 continue;
             }
 
-            string? completion = ChooseCompletion(current, region.StoredOcrAlternatives);
+            string? completion = ChooseCompletion(current, region.StoredOcrAlternatives)
+                ?? ChooseDominantConsensusCompletion(region, current, region.StoredOcrAlternatives);
             if (completion is null)
             {
                 continue;
@@ -92,6 +97,110 @@ public static class OcrReadingCompletion
             .ThenByDescending(candidate => candidate.Text.Length)
             .Select(candidate => candidate.Text)
             .FirstOrDefault();
+    }
+
+    private static string? ChooseDominantConsensusCompletion(
+        ComicRegion region,
+        string original,
+        IEnumerable<string>? alternatives)
+    {
+        if (region.IsManual)
+        {
+            return null;
+        }
+
+        string type = region.Type?.Trim().ToLowerInvariant() ?? string.Empty;
+        bool sentenceContainer = type is "dialogue" or "thought" or "caption" or "narration";
+        if (!sentenceContainer)
+        {
+            return null;
+        }
+
+        // Un SFX corto puede quedar provisionalmente tipado como diálogo solo si el detector
+        // cree que vive dentro de un contenedor. Sin una caja suficientemente convincente no
+        // sustituimos nunca una lectura corta por una frase ajena.
+        if (type is "dialogue" or "thought" && region.BubbleConfidence < 0.45)
+        {
+            return null;
+        }
+
+        string[] currentTokens = Tokenize(original);
+        int currentCharacters = currentTokens.Sum(token => token.Length);
+        if (currentTokens.Length == 0
+            || currentTokens.Length > DominantAlternativeMaximumPrimaryWords
+            || currentCharacters < 3
+            || currentCharacters > DominantAlternativeMaximumPrimaryCharacters)
+        {
+            return null;
+        }
+
+        var candidates = (alternatives ?? [])
+            .Select(Compact)
+            .Where(candidate => candidate.Length > original.Length)
+            .Where(candidate => candidate.Length <= MaximumReadingLength)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Select(candidate => new DominantCandidate(
+                candidate,
+                Tokenize(candidate)))
+            .Where(candidate => candidate.Tokens.Length >= DominantAlternativeMinimumWords)
+            .Where(candidate => candidate.Characters >= DominantAlternativeMinimumCharacters)
+            .Where(candidate => candidate.Characters >= currentCharacters * 3)
+            .ToArray();
+
+        if (candidates.Length < 2)
+        {
+            return null;
+        }
+
+        // Para corregir una lectura primaria totalmente errónea (p. ej. "GURK." sobre una
+        // didascalia larga) exigimos consenso entre al menos dos OCR auxiliares. Así una única
+        // lectura de un bocadillo vecino no puede secuestrar una zona corta legítima.
+        return candidates
+            .Where(candidate => candidates.Any(other =>
+                !ReferenceEquals(candidate, other)
+                && !string.Equals(candidate.Text, other.Text, StringComparison.OrdinalIgnoreCase)
+                && ReadingsAgree(candidate.Tokens, other.Tokens)))
+            .OrderByDescending(candidate => candidate.Tokens.Length)
+            .ThenByDescending(candidate => candidate.Characters)
+            .ThenByDescending(candidate => candidate.Text.Length)
+            .Select(candidate => candidate.Text)
+            .FirstOrDefault();
+    }
+
+    private static bool ReadingsAgree(
+        IReadOnlyList<string> first,
+        IReadOnlyList<string> second)
+    {
+        IReadOnlyList<string> shorter = first.Count <= second.Count ? first : second;
+        IReadOnlyList<string> longer = ReferenceEquals(shorter, first) ? second : first;
+        bool[] used = new bool[longer.Count];
+        int meaningful = 0;
+        int matches = 0;
+
+        foreach (string token in shorter)
+        {
+            if (token.Length < 2)
+            {
+                continue;
+            }
+
+            meaningful++;
+            for (int index = 0; index < longer.Count; index++)
+            {
+                if (used[index] || !TokensMatch(longer[index], token))
+                {
+                    continue;
+                }
+
+                used[index] = true;
+                matches++;
+                break;
+            }
+        }
+
+        return meaningful >= 4
+            && matches >= 4
+            && matches / (double)meaningful >= 0.60;
     }
 
     private static TokenAlignment FindBestAlignment(
@@ -263,6 +372,11 @@ public static class OcrReadingCompletion
             " ",
             (value ?? string.Empty)
                 .Split([' ', '\t', '\r', '\n'], StringSplitOptions.RemoveEmptyEntries));
+
+    private sealed record DominantCandidate(string Text, string[] Tokens)
+    {
+        public int Characters => Tokens.Sum(token => token.Length);
+    }
 
     private readonly record struct TokenAlignment(int First, int Last)
     {
