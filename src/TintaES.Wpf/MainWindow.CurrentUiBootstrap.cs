@@ -9,7 +9,7 @@ namespace TintaES.Wpf;
 /// </summary>
 public partial class MainWindow
 {
-    internal const string CurrentUiBuildStamp = "UI 2026.08.18-r60-selection-cleanup";
+    internal const string CurrentUiBuildStamp = "UI 2026.08.18-r61-auto-backup";
     private const int CurrentUiBootstrapMaxAttempts = 3;
 
     private static readonly bool CurrentUiBootstrapRegistered = RegisterCurrentUiBootstrap();
@@ -71,6 +71,7 @@ public partial class MainWindow
         RunCurrentUiInstaller(InstallComicBookHandlers, "sesión de cómic", failures);
         RunCurrentUiInstaller(InstallComicArchiveOpening, "apertura CBZ/CBR/RAR", failures);
         RunCurrentUiInstaller(InstallProjectCommands, "comandos de proyecto", failures);
+        RunCurrentUiInstaller(InstallAutoBackupRecovery, "copias automáticas de recuperación", failures);
         RunCurrentUiInstaller(InstallPsdExportCommand, "exportación PSD", failures);
         RunCurrentUiInstaller(InstallComicReaderCommand, "lector de cómic", failures);
         RunCurrentUiInstaller(InstallPageSelectionPanel, "selector de páginas", failures);
