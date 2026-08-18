@@ -25,11 +25,20 @@ public static class RegionMerger
             }
 
             ComicRegion existing = merged[duplicateIndex];
-            if (candidate.Confidence > existing.Confidence
-                || candidate.Original.Length > existing.Original.Length)
-            {
-                merged[duplicateIndex] = candidate;
-            }
+            ComicRegion winner = ChooseRicherReading(existing, candidate);
+            ComicRegion alternate = ReferenceEquals(winner, candidate) ? existing : candidate;
+            winner.StoredOcrAlternatives = winner.StoredOcrAlternatives
+                .Concat([alternate.Original])
+                .Concat(alternate.StoredOcrAlternatives)
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Where(value => !string.Equals(
+                    value.Trim(),
+                    winner.Original.Trim(),
+                    StringComparison.OrdinalIgnoreCase))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(8)
+                .ToArray();
+            merged[duplicateIndex] = winner;
         }
 
         var ordered = merged
@@ -46,6 +55,18 @@ public static class RegionMerger
 
         ResolveCompetingRenderAreas(ordered);
         return ordered;
+    }
+
+    private static ComicRegion ChooseRicherReading(ComicRegion first, ComicRegion second)
+    {
+        int firstEvidence = NormalizeText(first.Original).Length;
+        int secondEvidence = NormalizeText(second.Original).Length;
+        if (firstEvidence != secondEvidence)
+        {
+            return secondEvidence > firstEvidence ? second : first;
+        }
+
+        return second.Confidence > first.Confidence ? second : first;
     }
 
     public static void ResolveCompetingRenderAreas(IReadOnlyList<ComicRegion> regions)
