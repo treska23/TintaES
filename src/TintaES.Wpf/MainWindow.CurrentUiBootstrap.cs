@@ -9,7 +9,7 @@ namespace TintaES.Wpf;
 /// </summary>
 public partial class MainWindow
 {
-    internal const string CurrentUiBuildStamp = "UI 2026.08.18-r62-save-dirty-state";
+    internal const string CurrentUiBuildStamp = "UI 2026.08.18-r63-ocr-region-recovery";
     private const int CurrentUiBootstrapMaxAttempts = 3;
     
     private static readonly bool CurrentUiBootstrapRegistered = RegisterCurrentUiBootstrap();
