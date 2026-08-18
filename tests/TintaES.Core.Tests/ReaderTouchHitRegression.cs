@@ -15,7 +15,8 @@ internal static class ReaderTouchHitRegression
             IsEnabled = true,
             BubbleConfidence = 0.92,
             TextBox = new NormalizedRect(420, 420, 100, 40),
-            BubbleBox = new NormalizedRect(360, 350, 220, 180)
+            BubbleBox = new NormalizedRect(360, 350, 220, 180),
+            RenderBox = new NormalizedRect(370, 365, 200, 150)
         };
 
         ComicRegion? mouse = ComicRegionHitResolver.Resolve([speech], 380, 380);
@@ -28,16 +29,38 @@ internal static class ReaderTouchHitRegression
             ReferenceEquals(touch, speech),
             "Un dedo dentro de un bocadillo fiable debe resolver su traducción aunque no caiga sobre las letras.");
 
-        var enormousFalseBubble = new ComicRegion
+        var oldProjectRegion = new ComicRegion
         {
             Order = 2,
+            Original = "OLD PROJECT WITHOUT A RELIABLE BUBBLE BOX",
+            Translation = "PROYECTO ANTIGUO SIN BUBBLEBOX FIABLE",
+            Type = "dialogue",
+            IsEnabled = true,
+            BubbleConfidence = 0,
+            TextBox = new NormalizedRect(420, 420, 100, 40),
+            BubbleBox = null,
+            RenderBox = new NormalizedRect(360, 350, 220, 180)
+        };
+
+        ComicRegion? oldProjectTouch = ComicRegionHitResolver.ResolveForTouch(
+            [oldProjectRegion],
+            380,
+            380);
+        Require(
+            ReferenceEquals(oldProjectTouch, oldProjectRegion),
+            "Un .tinta antiguo debe seguir siendo táctil usando su RenderBox guardado.");
+
+        var enormousFalseBubble = new ComicRegion
+        {
+            Order = 3,
             Original = "DO NOT CAPTURE THE WHOLE PANEL",
             Translation = "NO CAPTURES TODA LA VIÑETA",
             Type = "dialogue",
             IsEnabled = true,
             BubbleConfidence = 0.98,
             TextBox = new NormalizedRect(440, 440, 90, 35),
-            BubbleBox = new NormalizedRect(80, 80, 840, 840)
+            BubbleBox = new NormalizedRect(80, 80, 840, 840),
+            RenderBox = new NormalizedRect(430, 430, 110, 60)
         };
 
         ComicRegion? rejected = ComicRegionHitResolver.ResolveForTouch(
