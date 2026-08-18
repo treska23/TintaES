@@ -277,7 +277,6 @@ public partial class MainWindow
         _pageSelectionAnchorIndex = session.PageSelectionAnchorIndex;
         _editorHistorySessionKey = BuildActiveDocumentSessionKey();
         _pageSelectionSessionKey = BuildActiveDocumentSessionKey();
-        _pageSelectionDefaultsSessionKey = null;
     }
 
     private void ClearPerDocumentEditorState()
@@ -289,8 +288,8 @@ public partial class MainWindow
         _selectedComicPageIndices.Clear();
         _exportedComicPageIndices.Clear();
         _pageSelectionAnchorIndex = -1;
+        _pageCheckAnchorIndex = -1;
         _pageSelectionSessionKey = null;
-        _pageSelectionDefaultsSessionKey = null;
     }
 
     private string BuildActiveDocumentSessionKey() =>
