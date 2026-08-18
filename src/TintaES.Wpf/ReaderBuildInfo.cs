@@ -6,5 +6,5 @@ namespace TintaES.Wpf;
 /// </summary>
 internal static class ReaderBuildInfo
 {
-    internal const string CurrentBuildStamp = "Reader 2026.08.19-r5-immersive-touch";
+    internal const string CurrentBuildStamp = "Reader 2026.08.19-r6-mother-touch-responsive";
 }
