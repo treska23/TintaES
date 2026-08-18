@@ -483,18 +483,147 @@ public static class RegionMerger
 
     private static bool IsDuplicate(ComicRegion left, ComicRegion right)
     {
+        double intersection = IntersectionArea(left.TextBox, right.TextBox);
         double overlap = IntersectionOverUnion(left.TextBox, right.TextBox);
-        if (overlap < 0.16)
+        double overlapOverSmaller = intersection / Math.Max(
+            1,
+            Math.Min(left.TextBox.Area, right.TextBox.Area));
+        if (overlap < 0.16 && overlapOverSmaller < 0.82)
         {
             return false;
         }
 
         string leftText = NormalizeText(left.Original);
         string rightText = NormalizeText(right.Original);
-        return leftText == rightText
+        if (leftText == rightText
             || leftText.Contains(rightText, StringComparison.Ordinal)
             || rightText.Contains(leftText, StringComparison.Ordinal)
-            || overlap > 0.58;
+            || overlap > 0.58)
+        {
+            return true;
+        }
+
+        double largerArea = Math.Max(left.TextBox.Area, right.TextBox.Area);
+        double smallerArea = Math.Max(1, Math.Min(left.TextBox.Area, right.TextBox.Area));
+        return overlapOverSmaller >= 0.82
+            && largerArea >= smallerArea * 1.15
+            && HasStrongTextualRelation(left.Original, right.Original);
+    }
+
+    private static bool HasStrongTextualRelation(string first, string second)
+    {
+        string[] firstTokens = TokenizeForDuplicate(first);
+        string[] secondTokens = TokenizeForDuplicate(second);
+        IReadOnlyList<string> shorter = firstTokens.Length <= secondTokens.Length
+            ? firstTokens
+            : secondTokens;
+        IReadOnlyList<string> longer = ReferenceEquals(shorter, firstTokens)
+            ? secondTokens
+            : firstTokens;
+        if (shorter.Count < 3)
+        {
+            return false;
+        }
+
+        int matches = 0;
+        int searchStart = 0;
+        foreach (string token in shorter)
+        {
+            int found = -1;
+            for (int index = searchStart; index < longer.Count; index++)
+            {
+                if (DuplicateTokensMatch(token, longer[index]))
+                {
+                    found = index;
+                    break;
+                }
+            }
+
+            if (found < 0)
+            {
+                continue;
+            }
+
+            matches++;
+            searchStart = found + 1;
+        }
+
+        int required = Math.Max(3, (int)Math.Ceiling(shorter.Count * 0.60));
+        return matches >= required;
+    }
+
+    private static string[] TokenizeForDuplicate(string value)
+    {
+        var tokens = new List<string>();
+        var current = new StringBuilder();
+        foreach (char character in value.Normalize(NormalizationForm.FormKC))
+        {
+            if (char.IsLetterOrDigit(character))
+            {
+                current.Append(char.ToUpperInvariant(character));
+                continue;
+            }
+
+            FlushDuplicateToken(current, tokens);
+        }
+        FlushDuplicateToken(current, tokens);
+        return tokens.Where(token => token.Length >= 2).ToArray();
+    }
+
+    private static void FlushDuplicateToken(StringBuilder current, ICollection<string> tokens)
+    {
+        if (current.Length == 0)
+        {
+            return;
+        }
+
+        tokens.Add(current.ToString());
+        current.Clear();
+    }
+
+    private static bool DuplicateTokensMatch(string first, string second)
+    {
+        if (string.Equals(first, second, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        int shorter = Math.Min(first.Length, second.Length);
+        int lengthDifference = Math.Abs(first.Length - second.Length);
+        int allowedDistance = shorter >= 5 ? 2 : shorter >= 3 ? 1 : 0;
+        if (allowedDistance == 0 || lengthDifference > allowedDistance)
+        {
+            return false;
+        }
+
+        return BoundedEditDistance(first, second, allowedDistance) <= allowedDistance;
+    }
+
+    private static int BoundedEditDistance(string first, string second, int stopAfter)
+    {
+        int[] previous = Enumerable.Range(0, second.Length + 1).ToArray();
+        int[] current = new int[second.Length + 1];
+        for (int firstIndex = 1; firstIndex <= first.Length; firstIndex++)
+        {
+            current[0] = firstIndex;
+            int rowMinimum = current[0];
+            for (int secondIndex = 1; secondIndex <= second.Length; secondIndex++)
+            {
+                int substitution = previous[secondIndex - 1]
+                    + (first[firstIndex - 1] == second[secondIndex - 1] ? 0 : 1);
+                current[secondIndex] = Math.Min(
+                    Math.Min(previous[secondIndex] + 1, current[secondIndex - 1] + 1),
+                    substitution);
+                rowMinimum = Math.Min(rowMinimum, current[secondIndex]);
+            }
+
+            if (rowMinimum > stopAfter)
+            {
+                return rowMinimum;
+            }
+            (previous, current) = (current, previous);
+        }
+        return previous[second.Length];
     }
 
     private static string NormalizeText(string value)
