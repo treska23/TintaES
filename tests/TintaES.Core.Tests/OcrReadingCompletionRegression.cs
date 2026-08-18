@@ -48,6 +48,7 @@ internal static class OcrReadingCompletionRegression
         Require(
             neighbouring.Translation == "De acuerdo.",
             "Una alternativa ajena no debe invalidar una traducción correcta.");
+
         var damagedEnding = new ComicRegion
         {
             Original = "WE CAN DO TH",
@@ -79,6 +80,43 @@ internal static class OcrReadingCompletionRegression
         Require(
             OcrReadingCompletion.PromoteCompleteAlternatives([shortInteriorCoincidence]) == 0,
             "No debe promocionar una coincidencia corta situada dentro de otro bocadillo.");
+
+        var longCaptionEnding = new ComicRegion
+        {
+            Original = "at the aquarium.",
+            Translation = "en el acuario.",
+            Type = "dialogue",
+            BubbleConfidence = 0.92,
+            StoredOcrAlternatives =
+            [
+                "He isn't everywhere, but he seems to know where their biggest attacks will be, and he meets them head-on. Like tonight at the aquarium."
+            ]
+        };
+        Require(
+            OcrReadingCompletion.PromoteCompleteAlternatives([longCaptionEnding]) == 1,
+            "Debe recuperar una didascalia larga aunque el OCR principal conserve solo su frase final.");
+        Require(
+            longCaptionEnding.Original.StartsWith("He isn't everywhere", StringComparison.OrdinalIgnoreCase)
+            && longCaptionEnding.Original.EndsWith("at the aquarium.", StringComparison.OrdinalIgnoreCase),
+            "La didascalia completa debe sustituir al fragmento final antes de traducir.");
+        Require(
+            string.IsNullOrWhiteSpace(longCaptionEnding.Translation),
+            "La traducción del fragmento final debe invalidarse al recuperar la didascalia completa.");
+
+        var longSfxLookalike = new ComicRegion
+        {
+            Original = "AT THE AQUARIUM",
+            Translation = "EN EL ACUARIO",
+            Type = "sfx",
+            BubbleConfidence = 0.05,
+            StoredOcrAlternatives =
+            [
+                "He isn't everywhere, but he seems to know where their biggest attacks will be, and he meets them head-on. Like tonight at the aquarium."
+            ]
+        };
+        Require(
+            OcrReadingCompletion.PromoteCompleteAlternatives([longSfxLookalike]) == 0,
+            "Un SFX no debe absorber una didascalia larga aunque coincida con su frase final.");
     }
 
     private static void Require(bool condition, string message)
