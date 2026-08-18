@@ -27,8 +27,9 @@ public sealed class SupplementalTextDetectionService
         progress?.Report(new AnalysisProgress(2, 100, "Buscando textos pequeños que podrían quedar visibles…"));
         BitmapSource original = LoadBitmap(sourcePath);
 
-        Task<ComicAnalysis> windowsTask =
-            new WindowsOcrService().RecognizeAsync(original, cancellationToken);
+        Task<ComicAnalysis> windowsTask = RecognizeAtMultipleScalesAsync(
+            original,
+            cancellationToken);
         Task<BrightCandidateManifest> brightTask = RunBrightCandidateDetectorAsync(
             sourcePath,
             outputDirectory,
@@ -57,6 +58,22 @@ public sealed class SupplementalTextDetectionService
             cancellationToken);
         progress?.Report(new AnalysisProgress(7, 100, "Textos auxiliares localizados. Preparando el motor principal…"));
         return manifestPath;
+    }
+
+    private static async Task<ComicAnalysis> RecognizeAtMultipleScalesAsync(
+        BitmapSource source,
+        CancellationToken cancellationToken)
+    {
+        var ocr = new WindowsOcrService();
+        Task<ComicAnalysis> wholePageTask = ocr.RecognizeAsync(source, cancellationToken);
+        Task<ComicAnalysis> tiledTask = ocr.RecognizeWithTilingAsync(source, cancellationToken);
+        await Task.WhenAll(wholePageTask, tiledTask);
+
+        ComicAnalysis wholePage = await wholePageTask;
+        ComicAnalysis tiled = await tiledTask;
+        return new ComicAnalysis(
+            "en",
+            RegionMerger.Merge(wholePage.Regions.Concat(tiled.Regions)));
     }
 
     private static async Task<BrightCandidateManifest> RunBrightCandidateDetectorAsync(
@@ -183,6 +200,7 @@ public sealed class SupplementalTextDetectionService
         NormalizedRect box = region.TextBox;
         return new SupplementalRegion(
             region.Original,
+            region.StoredOcrAlternatives,
             region.Type,
             region.Confidence,
             (int)Math.Round(box.X / 1000 * width),
@@ -223,6 +241,7 @@ public sealed class SupplementalTextDetectionService
 
     private sealed record SupplementalRegion(
         string Original,
+        IReadOnlyList<string> OcrAlternatives,
         string Type,
         double Confidence,
         int X,

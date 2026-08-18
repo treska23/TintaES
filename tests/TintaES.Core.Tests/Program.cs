@@ -10,6 +10,7 @@ var tests = new (string Name, Func<Task> Run)[]
     ("Rechaza polígonos de bocadillo desmesurados", TestOversizedBubblePolygonAsync),
     ("Aprovecha el interior orgánico del bocadillo", TestDetectedBubbleInteriorAsync),
     ("Combina lecturas solapadas", TestMergeAsync),
+    ("Conserva las lecturas OCR alternativas", TestRetainedOcrEvidenceAsync),
     ("Agrupa todas las líneas de un bocadillo", TestWholeBalloonGroupingAsync),
     ("Une un encabezado OCR con su propio bocadillo", TestWholeBalloonHeaderTranslationAsync),
     ("Separa áreas de rotulación que compiten", TestCompetingRenderAreasAsync),
@@ -154,6 +155,51 @@ static Task TestMergeAsync()
     IReadOnlyList<ComicRegion> merged = RegionMerger.Merge([first, duplicate, second]);
     Assert(merged.Count == 2, "Las zonas solapadas del mismo texto deben combinarse.");
     Assert(merged.Any(region => region.Confidence == 0.95), "Debe conservar la lectura más fiable.");
+    return Task.CompletedTask;
+}
+
+static Task TestRetainedOcrEvidenceAsync()
+{
+    var partial = new ComicRegion
+    {
+        Original = "HELLO THER",
+        Confidence = 0.99,
+        TextBox = new NormalizedRect(100, 100, 120, 50),
+        RenderBox = new NormalizedRect(90, 90, 150, 80)
+    };
+    var complete = new ComicRegion
+    {
+        Original = "HELLO THERE!",
+        Confidence = 0.80,
+        TextBox = new NormalizedRect(105, 103, 118, 48),
+        RenderBox = new NormalizedRect(92, 92, 152, 78)
+    };
+
+    ComicRegion merged = RegionMerger.Merge([partial, complete]).Single();
+    Assert(merged.Original == "HELLO THERE!", "Debe conservar la lectura más completa y fiable.");
+    Assert(
+        merged.StoredOcrAlternatives.Contains("HELLO THER"),
+        "Debe retener la lectura descartada como evidencia OCR alternativa.");
+
+    var wholeBalloon = new ComicRegion
+    {
+        Original = "WULK'S NOT COMING OUT ANY TIME SOON",
+        Confidence = 0.90,
+        TextBox = new NormalizedRect(470, 370, 125, 44),
+        RenderBox = new NormalizedRect(460, 350, 150, 85)
+    };
+    var damagedTile = new ComicRegion
+    {
+        Original = "NOT COMIM ANY TIME S",
+        Confidence = 0.82,
+        TextBox = new NormalizedRect(472, 379, 81, 34),
+        RenderBox = new NormalizedRect(465, 365, 100, 60)
+    };
+    ComicRegion contained = RegionMerger.Merge([wholeBalloon, damagedTile]).Single();
+    Assert(
+        contained.Original == wholeBalloon.Original
+        && contained.StoredOcrAlternatives.Contains(damagedTile.Original),
+        "Un fragmento OCR contenido no debe convertirse en otro bocadillo.");
     return Task.CompletedTask;
 }
 

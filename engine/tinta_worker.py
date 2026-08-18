@@ -947,14 +947,17 @@ def attach_ocr_alternatives(
             if overlap_over_smaller(primary_box, source_box) < 0.42:
                 continue
 
-            value = str(source.get("original", "")).strip()
-            if (
-                value
-                and value.casefold() != primary["original"].casefold()
-                and value.casefold() not in {item.casefold() for item in alternatives}
-            ):
-                alternatives.append(value)
-        primary["ocrAlternatives"] = alternatives[:4]
+            readings = [source.get("original", "")]
+            readings.extend(source.get("ocrAlternatives", []) or [])
+            for reading in readings:
+                value = str(reading).strip()
+                if (
+                    value
+                    and value.casefold() != primary["original"].casefold()
+                    and value.casefold() not in {item.casefold() for item in alternatives}
+                ):
+                    alternatives.append(value)
+        primary["ocrAlternatives"] = alternatives[:8]
 
 
 def horizontal_overlap_ratio(first: dict, second: dict) -> float:

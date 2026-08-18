@@ -22,8 +22,10 @@ public sealed class WindowsOcrService
 
         int tileWidth = Math.Min(source.PixelWidth, 640);
         int tileHeight = Math.Min(source.PixelHeight, 640);
-        IReadOnlyList<int> xOrigins = CreateTileOrigins(source.PixelWidth, tileWidth, 90);
-        IReadOnlyList<int> yOrigins = CreateTileOrigins(source.PixelHeight, tileHeight, 90);
+        // El solape amplio evita que un bocadillo quede partido justo por el borde de dos
+        // mosaicos. RegionMerger elimina después las lecturas repetidas de la zona común.
+        IReadOnlyList<int> xOrigins = CreateTileOrigins(source.PixelWidth, tileWidth, 180);
+        IReadOnlyList<int> yOrigins = CreateTileOrigins(source.PixelHeight, tileHeight, 180);
         var detected = new List<ComicRegion>();
 
         foreach (int y in yOrigins)

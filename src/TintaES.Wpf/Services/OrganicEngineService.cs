@@ -19,7 +19,7 @@ public sealed record OrganicAnalysisResult(
 public sealed class OrganicEngineService
 {
     // Cambiar esta versión invalida únicamente la caché del análisis orgánico.
-    private const string CacheVersion = "organic-reader-v16-no-inpaint";
+    private const string CacheVersion = "organic-reader-v17-multiscale-ocr";
 
     private static readonly TimeSpan WorkerHeartbeatInterval = TimeSpan.FromSeconds(15);
 
