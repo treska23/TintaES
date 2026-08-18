@@ -14,6 +14,7 @@ namespace TintaES.Wpf;
 public partial class MainWindow
 {
     private bool _saveDirtyTrackingInstalled;
+    private bool _refreshingDirtySaveCommands;
 
     private void InstallSaveDirtyTracking()
     {
@@ -25,6 +26,7 @@ public partial class MainWindow
 
         _saveDirtyTrackingInstalled = true;
         _regions.CollectionChanged += SaveDirtyTracking_RegionsChanged;
+        LayoutUpdated += SaveDirtyTracking_LayoutUpdated;
         foreach (var region in _regions)
         {
             region.PropertyChanged -= SaveDirtyTracking_RegionPropertyChanged;
@@ -33,6 +35,9 @@ public partial class MainWindow
 
         RefreshDirtyAwareSaveCommands();
     }
+
+    private void SaveDirtyTracking_LayoutUpdated(object? sender, EventArgs e) =>
+        RefreshDirtyAwareSaveCommands();
 
     private void SaveDirtyTracking_RegionsChanged(
         object? sender,
@@ -110,8 +115,52 @@ public partial class MainWindow
 
     private void RefreshDirtyAwareSaveCommands()
     {
-        UpdateProjectCommandAvailability();
-        RefreshPageSaveAvailability();
-        UpdateClassicMenuAvailability();
+        if (_refreshingDirtySaveCommands)
+        {
+            return;
+        }
+
+        _refreshingDirtySaveCommands = true;
+        try
+        {
+            bool documentAvailable = _comicPages.Count > 0
+                                     && !_comicBatchBusy
+                                     && !_pageNavigationBusy
+                                     && !_pageSaveBusy
+                                     && BusyOverlay.Visibility != Visibility.Visible;
+            bool projectNeedsSave = ProjectNeedsUserSave();
+            bool currentPageNeedsSave = CurrentPageNeedsUserSave();
+
+            if (_saveProjectButton is not null)
+            {
+                _saveProjectButton.IsEnabled = documentAvailable && projectNeedsSave;
+                _saveProjectButton.ToolTip = !documentAvailable
+                    ? "Guardar el trabajo editable de TintaES"
+                    : projectNeedsSave
+                        ? "Guardar los cambios pendientes del proyecto"
+                        : "No hay cambios pendientes por guardar";
+            }
+
+            if (_saveCurrentPageButton is not null)
+            {
+                _saveCurrentPageButton.IsEnabled = documentAvailable && currentPageNeedsSave;
+                _saveCurrentPageButton.ToolTip = currentPageNeedsSave
+                    ? "Guardar únicamente los cambios de la página actual (Ctrl+S)"
+                    : "La página actual no tiene cambios pendientes";
+            }
+
+            if (_menuSaveProject is not null)
+            {
+                _menuSaveProject.IsEnabled = documentAvailable && projectNeedsSave;
+            }
+            if (_menuSaveCurrentPage is not null)
+            {
+                _menuSaveCurrentPage.IsEnabled = documentAvailable && currentPageNeedsSave;
+            }
+        }
+        finally
+        {
+            _refreshingDirtySaveCommands = false;
+        }
     }
 }
