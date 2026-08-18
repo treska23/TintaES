@@ -39,7 +39,6 @@ public partial class MainWindow
     private int _lastPageSelectionVisualIndex = -2;
     private int _pageSelectionAnchorIndex = -1;
     private int _pageCheckAnchorIndex = -1;
-    private bool _syncingPageSelection;
 
     private void InstallPageSelectionPanel()
     {
@@ -201,6 +200,8 @@ public partial class MainWindow
             }
             RebuildPageSelectionItems();
             SetPageSelectionPanelVisible(_comicPages.Count > 1);
+            UpdateCbzExportSelectionCaption();
+            RefreshPrimaryTranslationAction();
         }
 
         if (_lastPageSelectionVisualIndex != _comicPageIndex)
@@ -267,77 +268,69 @@ public partial class MainWindow
             return;
         }
 
-        _syncingPageSelection = true;
-        try
-        {
-            _pageSelectionItemsPanel.Children.Clear();
-            _pageSelectionCheckBoxes.Clear();
-            _pageSelectionLabels.Clear();
-            _pageSelectionRows.Clear();
+        _pageSelectionItemsPanel.Children.Clear();
+        _pageSelectionCheckBoxes.Clear();
+        _pageSelectionLabels.Clear();
+        _pageSelectionRows.Clear();
 
-            for (int index = 0; index < _comicPages.Count; index++)
+        for (int index = 0; index < _comicPages.Count; index++)
+        {
+            int capturedIndex = index;
+            var checkBox = new CheckBox
             {
-                int capturedIndex = index;
-                var checkBox = new CheckBox
-                {
-                    IsChecked = _selectedComicPageIndices.Contains(index),
-                    Width = 22,
-                    MinWidth = 22,
-                    Margin = new Thickness(7, 8, 4, 0),
-                    Padding = new Thickness(0),
-                    HorizontalAlignment = HorizontalAlignment.Left,
-                    VerticalAlignment = VerticalAlignment.Top,
-                    ToolTip =
-                        "Clic: aplicar el check a la selección de miniaturas. " +
-                        "Shift + clic: dejar marcada únicamente esta página. " +
-                        "Ctrl + Shift + clic: marcar el rango desde el último check."
-                };
-                checkBox.PreviewMouseLeftButtonDown += (_, e) =>
-                    PageSelectionCheckBox_PreviewMouseLeftButtonDown(capturedIndex, e);
-                checkBox.PreviewKeyDown += (_, e) =>
-                    PageSelectionCheckBox_PreviewKeyDown(capturedIndex, e);
+                IsChecked = _selectedComicPageIndices.Contains(index),
+                Width = 22,
+                MinWidth = 22,
+                Margin = new Thickness(7, 8, 4, 0),
+                Padding = new Thickness(0),
+                HorizontalAlignment = HorizontalAlignment.Left,
+                VerticalAlignment = VerticalAlignment.Top,
+                ToolTip =
+                    "Clic: aplicar el check a la selección de miniaturas. " +
+                    "Shift + clic: dejar marcada únicamente esta página. " +
+                    "Ctrl + Shift + clic: marcar el rango desde el último check."
+            };
+            checkBox.PreviewMouseLeftButtonDown += (_, e) =>
+                PageSelectionCheckBox_PreviewMouseLeftButtonDown(capturedIndex, e);
+            checkBox.PreviewKeyDown += (_, e) =>
+                PageSelectionCheckBox_PreviewKeyDown(capturedIndex, e);
 
-                var label = new TextBlock
-                {
-                    Margin = new Thickness(1, 5, 7, 5),
-                    TextWrapping = TextWrapping.Wrap,
-                    VerticalAlignment = VerticalAlignment.Center,
-                    Background = Brushes.Transparent,
-                    Cursor = Cursors.Hand,
-                    ToolTip =
-                        "Clic: seleccionar y abrir. Ctrl + clic: añadir o quitar. " +
-                        "Shift + clic: seleccionar un rango."
-                };
-                label.PreviewMouseLeftButtonDown += (_, e) =>
-                    PageSelectionLabel_PreviewMouseLeftButtonDown(capturedIndex, e);
+            var label = new TextBlock
+            {
+                Margin = new Thickness(1, 5, 7, 5),
+                TextWrapping = TextWrapping.Wrap,
+                VerticalAlignment = VerticalAlignment.Center,
+                Background = Brushes.Transparent,
+                Cursor = Cursors.Hand,
+                ToolTip =
+                    "Clic: seleccionar y abrir. Ctrl + clic: añadir o quitar. " +
+                    "Shift + clic: seleccionar un rango."
+            };
+            label.PreviewMouseLeftButtonDown += (_, e) =>
+                PageSelectionLabel_PreviewMouseLeftButtonDown(capturedIndex, e);
 
-                var rowGrid = new Grid();
-                rowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-                rowGrid.ColumnDefinitions.Add(new ColumnDefinition());
-                Grid.SetColumn(checkBox, 0);
-                Grid.SetColumn(label, 1);
-                rowGrid.Children.Add(checkBox);
-                rowGrid.Children.Add(label);
+            var rowGrid = new Grid();
+            rowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            rowGrid.ColumnDefinitions.Add(new ColumnDefinition());
+            Grid.SetColumn(checkBox, 0);
+            Grid.SetColumn(label, 1);
+            rowGrid.Children.Add(checkBox);
+            rowGrid.Children.Add(label);
 
-                var row = new Border
-                {
-                    Child = rowGrid,
-                    Margin = new Thickness(5, 2, 5, 2),
-                    Background = Brushes.Transparent,
-                    BorderBrush = Brushes.Transparent,
-                    BorderThickness = new Thickness(1),
-                    CornerRadius = new CornerRadius(3)
-                };
+            var row = new Border
+            {
+                Child = rowGrid,
+                Margin = new Thickness(5, 2, 5, 2),
+                Background = Brushes.Transparent,
+                BorderBrush = Brushes.Transparent,
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(3)
+            };
 
-                _pageSelectionCheckBoxes[index] = checkBox;
-                _pageSelectionLabels[index] = label;
-                _pageSelectionRows[index] = row;
-                _pageSelectionItemsPanel.Children.Add(row);
-            }
-        }
-        finally
-        {
-            _syncingPageSelection = false;
+            _pageSelectionCheckBoxes[index] = checkBox;
+            _pageSelectionLabels[index] = label;
+            _pageSelectionRows[index] = row;
+            _pageSelectionItemsPanel.Children.Add(row);
         }
 
         RefreshPageSelectionVisuals();
@@ -513,17 +506,9 @@ public partial class MainWindow
 
     private void SyncPageSelectionCheckBoxes()
     {
-        _syncingPageSelection = true;
-        try
+        foreach ((int index, CheckBox checkBox) in _pageSelectionCheckBoxes)
         {
-            foreach ((int index, CheckBox checkBox) in _pageSelectionCheckBoxes)
-            {
-                checkBox.IsChecked = _selectedComicPageIndices.Contains(index);
-            }
-        }
-        finally
-        {
-            _syncingPageSelection = false;
+            checkBox.IsChecked = _selectedComicPageIndices.Contains(index);
         }
         RefreshPageSelectionVisuals();
     }
