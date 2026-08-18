@@ -10,6 +10,9 @@ public static class OcrReadingCompletion
 {
     private const int MaximumReadingLength = 280;
     private const int MaximumAddedWords = 12;
+    private const int MaximumLongEdgeAddedWords = 40;
+    private const int LongEdgeMinimumPrimaryWords = 3;
+    private const int LongEdgeMinimumPrimaryCharacters = 10;
     private const int DominantAlternativeMaximumPrimaryWords = 2;
     private const int DominantAlternativeMaximumPrimaryCharacters = 14;
     private const int DominantAlternativeMinimumWords = 5;
@@ -29,6 +32,7 @@ public static class OcrReadingCompletion
             }
 
             string? completion = ChooseCompletion(current, region.StoredOcrAlternatives)
+                ?? ChooseLongEdgeCompletion(region, current, region.StoredOcrAlternatives)
                 ?? ChooseDominantConsensusCompletion(region, current, region.StoredOcrAlternatives);
             if (completion is null)
             {
@@ -92,6 +96,73 @@ public static class OcrReadingCompletion
                     candidate.Alignment,
                     currentTokens.Length,
                     candidate.Tokens.Length))
+            .OrderByDescending(candidate => candidate.Tokens.Length)
+            .ThenByDescending(candidate => candidate.Characters)
+            .ThenByDescending(candidate => candidate.Text.Length)
+            .Select(candidate => candidate.Text)
+            .FirstOrDefault();
+    }
+
+    private static string? ChooseLongEdgeCompletion(
+        ComicRegion region,
+        string original,
+        IEnumerable<string>? alternatives)
+    {
+        if (region.IsManual)
+        {
+            return null;
+        }
+
+        string type = region.Type?.Trim().ToLowerInvariant() ?? string.Empty;
+        bool sentenceContainer = type is "dialogue" or "thought" or "caption" or "narration";
+        if (!sentenceContainer)
+        {
+            return null;
+        }
+
+        // Un SFX mal clasificado no puede absorber una frase larga vecina. Para diálogo y
+        // pensamiento exigimos que el detector haya encontrado un contenedor convincente.
+        if (type is "dialogue" or "thought" && region.BubbleConfidence < 0.45)
+        {
+            return null;
+        }
+
+        string[] currentTokens = Tokenize(original);
+        int currentCharacters = currentTokens.Sum(token => token.Length);
+        if (currentTokens.Length < LongEdgeMinimumPrimaryWords
+            || currentCharacters < LongEdgeMinimumPrimaryCharacters)
+        {
+            return null;
+        }
+
+        return (alternatives ?? [])
+            .Select(Compact)
+            .Where(candidate => candidate.Length > original.Length)
+            .Where(candidate => candidate.Length <= MaximumReadingLength)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Select(candidate => new
+            {
+                Text = candidate,
+                Tokens = Tokenize(candidate)
+            })
+            .Where(candidate =>
+                candidate.Tokens.Length > currentTokens.Length
+                && candidate.Tokens.Length - currentTokens.Length > MaximumAddedWords
+                && candidate.Tokens.Length - currentTokens.Length <= MaximumLongEdgeAddedWords)
+            .Select(candidate => new
+            {
+                candidate.Text,
+                candidate.Tokens,
+                Alignment = FindBestAlignment(candidate.Tokens, currentTokens),
+                Characters = candidate.Tokens.Sum(token => token.Length)
+            })
+            .Where(candidate =>
+                candidate.Alignment.Found
+                && candidate.Alignment.Span == currentTokens.Length
+                && (candidate.Alignment.First == 0
+                    || candidate.Alignment.Last == candidate.Tokens.Length - 1)
+                && candidate.Characters > currentCharacters
+                && candidate.Characters <= currentCharacters * 12)
             .OrderByDescending(candidate => candidate.Tokens.Length)
             .ThenByDescending(candidate => candidate.Characters)
             .ThenByDescending(candidate => candidate.Text.Length)
