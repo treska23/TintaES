@@ -9,7 +9,7 @@ namespace TintaES.Wpf;
 /// </summary>
 public partial class MainWindow
 {
-    internal const string CurrentUiBuildStamp = "UI 2026.08.19-r67-locked-text-card";
+    internal const string CurrentUiBuildStamp = "UI 2026.08.19-r68-editable-ocr-source";
     private const int CurrentUiBootstrapMaxAttempts = 3;
     
     private static readonly bool CurrentUiBootstrapRegistered = RegisterCurrentUiBootstrap();
@@ -85,6 +85,7 @@ public partial class MainWindow
         RunCurrentUiInstaller(InstallPageSaveAndShortcuts, "guardado de página", failures);
         RunCurrentUiInstaller(InstallClassicMenu, "menú superior", failures);
         RunCurrentUiInstaller(InstallSaveDirtyTracking, "estado de guardado", failures);
+        RunCurrentUiInstaller(InstallEditableOriginalText, "edición del texto original OCR", failures);
         RunCurrentUiInstaller(InstallAddImagePagesCommand, "agregar páginas", failures);
         RunCurrentUiInstaller(InstallResponsiveInspector, "inspector rápido", failures);
         RunCurrentUiInstaller(TryInstallEditorMenuCommands, "menú de edición", failures);
