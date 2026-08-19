@@ -10,6 +10,7 @@ namespace TintaES.Wpf;
 /// Permite consultar una traducción directamente sobre la página principal. El texto
 /// detectado es una zona invisible: la página original nunca se modifica ni se tapa.
 /// Con ratón se muestra al pasar por encima; en pantalla táctil, mientras el dedo está apoyado.
+/// La tarjeta correspondiente del inspector queda seleccionada al entrar en una zona distinta.
 /// </summary>
 public partial class MainWindow
 {
@@ -92,6 +93,15 @@ public partial class MainWindow
         if (region is null)
         {
             return false;
+        }
+
+        // El hover también funciona como vínculo visual entre la página y el inspector.
+        // Solo cambiamos la selección al entrar en otra región para no refrescar el editor
+        // continuamente mientras el puntero se mueve dentro del mismo bocadillo.
+        if (!ReferenceEquals(_selectedRegion, region)
+            || !ReferenceEquals(RegionListBox.SelectedItem, region))
+        {
+            SelectRegionFromCanvas(region);
         }
 
         ShowMainTranslation(region);
