@@ -8,9 +8,9 @@ using System.Windows.Media;
 namespace TintaES.Wpf;
 
 /// <summary>
-/// Biblioteca exclusiva del ejecutable independiente. Forma parte estructural de la ventana del
-/// Reader: aparece al arrancar y busca proyectos .tinta en discos fijos y extraíbles sin bloquear
-/// la interfaz. Los resultados se publican en cuanto se encuentran, sin esperar al final del disco.
+/// Biblioteca exclusiva del ejecutable independiente. Busca proyectos .tinta en discos fijos y
+/// extraíbles sin bloquear la interfaz, pero no ocupa una columna permanente: se muestra solo
+/// como overlay cuando el usuario la pide.
 /// </summary>
 public sealed partial class ComicReaderWindow
 {
@@ -23,13 +23,9 @@ public sealed partial class ComicReaderWindow
     private TextBlock? _libraryStatus;
     private Button? _libraryToggleButton;
     private bool _libraryInstalled;
-    private bool _libraryVisible = true;
+    private bool _libraryVisible;
     private int _libraryFoundCount;
 
-    /// <summary>
-    /// Lo llama App directamente antes de mostrar la ventana. Si esta función faltase o no pudiera
-    /// instalarse, el proyecto Reader ni siquiera debe darse por arrancado silenciosamente.
-    /// </summary>
     internal void EnsureStandaloneLibraryInstalled()
     {
         InstallStandaloneLibrary();
@@ -54,27 +50,16 @@ public sealed partial class ComicReaderWindow
         }
 
         Grid root = _readerRoot;
-        if (root.ColumnDefinitions.Count == 0)
-        {
-            root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(270) });
-            root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        }
-        else if (root.ColumnDefinitions.Count == 1)
-        {
-            root.ColumnDefinitions[0].Width = new GridLength(270);
-            root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        }
-
-        foreach (UIElement child in root.Children.Cast<UIElement>().ToArray())
-        {
-            Grid.SetColumn(child, 1);
-        }
-
         _libraryPanel = BuildLibraryPanel();
+        _libraryPanel.Width = 320;
+        _libraryPanel.MaxWidth = 420;
+        _libraryPanel.HorizontalAlignment = HorizontalAlignment.Left;
+        _libraryPanel.VerticalAlignment = VerticalAlignment.Stretch;
+        _libraryPanel.Visibility = Visibility.Collapsed;
         Grid.SetColumn(_libraryPanel, 0);
         Grid.SetRow(_libraryPanel, 0);
         Grid.SetRowSpan(_libraryPanel, Math.Max(1, root.RowDefinitions.Count));
-        Panel.SetZIndex(_libraryPanel, 3000);
+        Panel.SetZIndex(_libraryPanel, 4000);
         root.Children.Add(_libraryPanel);
 
         if (_readerToolbar.Children.OfType<StackPanel>().FirstOrDefault() is { } toolbarItems)
@@ -88,6 +73,7 @@ public sealed partial class ComicReaderWindow
         }
 
         _libraryInstalled = true;
+        _libraryVisible = false;
         Closed += (_, _) =>
         {
             _libraryScanCancellation?.Cancel();
@@ -110,11 +96,24 @@ public sealed partial class ComicReaderWindow
         panelRoot.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
         var header = new DockPanel { Margin = new Thickness(12, 12, 10, 8) };
+        var close = new Button
+        {
+            Content = "×",
+            Width = 30,
+            Height = 28,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            ToolTip = "Cerrar biblioteca"
+        };
+        DockPanel.SetDock(close, Dock.Right);
+        close.Click += (_, _) => ToggleLibraryPanel();
+        header.Children.Add(close);
+
         var refresh = new Button
         {
             Content = "↻",
             Width = 30,
             Height = 28,
+            Margin = new Thickness(0, 0, 6, 0),
             HorizontalAlignment = HorizontalAlignment.Right,
             ToolTip = "Volver a buscar proyectos .tinta en los discos"
         };
@@ -171,6 +170,7 @@ public sealed partial class ComicReaderWindow
         return new Border
         {
             Child = panelRoot,
+            Background = new SolidColorBrush(Color.FromRgb(20, 23, 26)),
             BorderBrush = new SolidColorBrush(Color.FromRgb(48, 53, 58)),
             BorderThickness = new Thickness(0, 0, 1, 0)
         };
@@ -398,19 +398,17 @@ public sealed partial class ComicReaderWindow
 
     private void ToggleLibraryPanel()
     {
-        if (_libraryPanel is null || _readerRoot is null || _readerRoot.ColumnDefinitions.Count < 2)
+        if (_libraryPanel is null)
         {
             return;
         }
 
         _libraryVisible = !_libraryVisible;
         _libraryPanel.Visibility = _libraryVisible ? Visibility.Visible : Visibility.Collapsed;
-        _readerRoot.ColumnDefinitions[0].Width = _libraryVisible
-            ? new GridLength(270)
-            : new GridLength(0);
+        Panel.SetZIndex(_libraryPanel, 4000);
         if (_libraryToggleButton is not null)
         {
-            _libraryToggleButton.Content = _libraryVisible ? "Biblioteca" : "☰ Biblioteca";
+            _libraryToggleButton.Content = _libraryVisible ? "Cerrar biblioteca" : "Biblioteca";
         }
     }
 
