@@ -11,11 +11,13 @@ namespace TintaES.Wpf;
 /// detectado es una zona invisible: la página original nunca se modifica ni se tapa.
 /// Con ratón se muestra al pasar por encima; en pantalla táctil, mientras el dedo está apoyado.
 /// La tarjeta correspondiente del inspector queda seleccionada al entrar en una zona distinta.
+/// Ctrl+clic fija esa selección para poder editarla sin que el hover la cambie.
 /// </summary>
 public partial class MainWindow
 {
     private Grid? _mainTranslationOverlay;
     private TextBlock? _mainTranslationSpanish;
+    private ComicRegion? _mainTranslationSelectionLock;
 
     private void InstallMainTranslationInteraction()
     {
@@ -68,6 +70,26 @@ public partial class MainWindow
 
     private bool TryShowMainTranslationAt(Point imagePoint)
     {
+        ComicRegion? region = ResolveMainTranslationRegionAt(imagePoint);
+        if (region is null)
+        {
+            return false;
+        }
+
+        ComicRegion? lockedRegion = GetActiveMainTranslationSelectionLock();
+        if (lockedRegion is null
+            && (!ReferenceEquals(_selectedRegion, region)
+                || !ReferenceEquals(RegionListBox.SelectedItem, region)))
+        {
+            SelectRegionFromCanvas(region);
+        }
+
+        ShowMainTranslation(region);
+        return true;
+    }
+
+    private ComicRegion? ResolveMainTranslationRegionAt(Point imagePoint)
+    {
         if (_mainTranslationOverlay is null
             || _regions.Count == 0
             || ImageStage.ActualWidth <= 1
@@ -77,7 +99,7 @@ public partial class MainWindow
             || imagePoint.X > ImageStage.ActualWidth
             || imagePoint.Y > ImageStage.ActualHeight)
         {
-            return false;
+            return null;
         }
 
         NormalizedPoint normalized = NormalizeImagePoint(
@@ -85,26 +107,39 @@ public partial class MainWindow
             imagePoint.Y,
             ImageStage.ActualWidth,
             ImageStage.ActualHeight);
-        ComicRegion? region = ResolveMainTranslationRegion(
-            _regions,
-            normalized.X,
-            normalized.Y);
+        return ResolveMainTranslationRegion(_regions, normalized.X, normalized.Y);
+    }
 
+    private ComicRegion? GetActiveMainTranslationSelectionLock()
+    {
+        if (_mainTranslationSelectionLock is not null
+            && !_regions.Contains(_mainTranslationSelectionLock))
+        {
+            _mainTranslationSelectionLock = null;
+        }
+
+        return _mainTranslationSelectionLock;
+    }
+
+    private bool ToggleMainTranslationSelectionLockAt(Point imagePoint)
+    {
+        ComicRegion? region = ResolveMainTranslationRegionAt(imagePoint);
         if (region is null)
         {
             return false;
         }
 
-        // El hover también funciona como vínculo visual entre la página y el inspector.
-        // Solo cambiamos la selección al entrar en otra región para no refrescar el editor
-        // continuamente mientras el puntero se mueve dentro del mismo bocadillo.
-        if (!ReferenceEquals(_selectedRegion, region)
-            || !ReferenceEquals(RegionListBox.SelectedItem, region))
+        if (ReferenceEquals(GetActiveMainTranslationSelectionLock(), region))
         {
+            _mainTranslationSelectionLock = null;
             SelectRegionFromCanvas(region);
+            SetFooterStatus($"Zona {region.Order} liberada · el hover vuelve a seguir el puntero.", "#6C747A");
+            return true;
         }
 
-        ShowMainTranslation(region);
+        _mainTranslationSelectionLock = region;
+        SelectRegionFromCanvas(region);
+        SetFooterStatus($"Zona {region.Order} fijada · Ctrl+clic sobre ella para soltar.", "#4CB2BB");
         return true;
     }
 
