@@ -19,7 +19,7 @@ public sealed record OrganicAnalysisResult(
 public sealed class OrganicEngineService
 {
     // Cambiar esta versión invalida únicamente la caché del análisis orgánico.
-    private const string CacheVersion = "organic-reader-v17-multiscale-ocr";
+    private const string CacheVersion = "organic-reader-v18-hunyuan-spotting";
 
     private static readonly TimeSpan WorkerHeartbeatInterval = TimeSpan.FromSeconds(15);
 
@@ -31,6 +31,7 @@ public sealed class OrganicEngineService
     private static readonly SemaphoreSlim WorkerGate = new(1, 1);
     private static readonly object WorkerStateLock = new();
     private static readonly StringBuilder WorkerErrors = new();
+    private static readonly HunyuanOcrService HunyuanOcr = new();
     private static Process? _residentWorker;
     private static Task? _residentErrorReader;
     private static string? _residentWorkerPath;
@@ -122,8 +123,14 @@ public sealed class OrganicEngineService
         string manifestPath = Path.Combine(cacheRoot, "analysis.json");
         if (IsCompleteCache(manifestPath))
         {
-            progress?.Report(new AnalysisProgress(100, 100, "Cargando el análisis guardado…"));
-            return LoadResult(manifestPath, true);
+            progress?.Report(new AnalysisProgress(90, 100, "Cargando el análisis guardado…"));
+            OrganicAnalysisResult cached = LoadResult(manifestPath, true);
+            return await ApplyHunyuanOcrAsync(
+                sourcePath,
+                cached,
+                projectRoot,
+                progress,
+                cancellationToken);
         }
 
         Directory.CreateDirectory(cacheRoot);
@@ -146,8 +153,47 @@ public sealed class OrganicEngineService
             manifestPath,
             progress,
             cancellationToken);
-        progress?.Report(new AnalysisProgress(100, 100, "Bocadillos localizados. Preparando la traducción…"));
-        return LoadResult(resultManifest, false);
+        OrganicAnalysisResult result = LoadResult(resultManifest, false);
+        return await ApplyHunyuanOcrAsync(
+            sourcePath,
+            result,
+            projectRoot,
+            progress,
+            cancellationToken);
+    }
+
+    private static async Task<OrganicAnalysisResult> ApplyHunyuanOcrAsync(
+        string sourcePath,
+        OrganicAnalysisResult result,
+        string projectRoot,
+        IProgress<AnalysisProgress>? progress,
+        CancellationToken cancellationToken)
+    {
+        HunyuanOcrPassResult pass = await HunyuanOcr.TryImproveAsync(
+            sourcePath,
+            result.Analysis.Regions,
+            projectRoot,
+            progress,
+            cancellationToken);
+
+        if (pass.Available)
+        {
+            progress?.Report(new AnalysisProgress(
+                99,
+                100,
+                pass.Replacements > 0
+                    ? $"HunyuanOCR corrigió {pass.Replacements} zona(s). Preparando la traducción…"
+                    : $"HunyuanOCR: {pass.Detail}. Preparando la traducción…"));
+        }
+        else
+        {
+            progress?.Report(new AnalysisProgress(
+                99,
+                100,
+                "HunyuanOCR no está preparado; usando el reconocimiento clásico."));
+        }
+
+        return result;
     }
 
     private static async Task<string> RunResidentWorkerAsync(
