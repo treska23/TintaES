@@ -54,15 +54,15 @@ public sealed class HunyuanOcrService
         }
 
         string endpoint = ResolveEndpoint();
-        bool available = await EnsureAvailableAsync(endpoint, projectRoot, cancellationToken);
-        if (!available)
-        {
-            return new HunyuanOcrPassResult(false, 0, 0, "modelo local no preparado");
-        }
-
-        progress?.Report(new AnalysisProgress(93, 100, "HunyuanOCR está leyendo la página completa…"));
         try
         {
+            bool available = await EnsureAvailableAsync(endpoint, projectRoot, cancellationToken);
+            if (!available)
+            {
+                return new HunyuanOcrPassResult(false, 0, 0, "modelo local no preparado");
+            }
+
+            progress?.Report(new AnalysisProgress(93, 100, "HunyuanOCR está leyendo la página completa…"));
             (int width, int height) = ReadImageSize(sourcePath);
             string model = await ResolveModelAsync(endpoint, cancellationToken);
             string response = await RequestSpottingAsync(endpoint, model, sourcePath, cancellationToken);
@@ -92,7 +92,7 @@ public sealed class HunyuanOcrService
                 or InvalidOperationException
                 or TaskCanceledException)
         {
-            return new HunyuanOcrPassResult(true, 0, 0, $"falló HunyuanOCR: {exception.Message}");
+            return new HunyuanOcrPassResult(false, 0, 0, $"HunyuanOCR no disponible: {exception.Message}");
         }
     }
 
@@ -214,23 +214,15 @@ public sealed class HunyuanOcrService
 
     private static async Task<bool> WaitUntilReadyAsync(string endpoint, CancellationToken cancellationToken)
     {
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(StartTimeout);
-        while (!timeout.IsCancellationRequested)
+        DateTimeOffset deadline = DateTimeOffset.UtcNow + StartTimeout;
+        while (DateTimeOffset.UtcNow < deadline)
         {
-            if (await ProbeAsync(endpoint, timeout.Token))
+            cancellationToken.ThrowIfCancellationRequested();
+            if (await ProbeAsync(endpoint, cancellationToken))
             {
                 return true;
             }
-
-            try
-            {
-                await Task.Delay(500, timeout.Token);
-            }
-            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-            {
-                return false;
-            }
+            await Task.Delay(500, cancellationToken);
         }
         return false;
     }
