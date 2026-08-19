@@ -10,9 +10,17 @@ namespace TintaES.Wpf;
 /// <summary>
 /// Permite dedicar el ancho de la ventana al lienzo: los paneles de páginas y textos pueden
 /// estrecharse arrastrando sus bordes y el inspector derecho puede plegarse por completo.
+/// La lista superior de tarjetas también puede ganar o ceder altura frente al editor de zona.
 /// </summary>
 public partial class MainWindow
 {
+    private const double InspectorMinWidth = 315;
+    private const double InspectorMaxWidth = 780;
+    private const double InspectorDefaultWidth = 430;
+    private const double RegionListMinHeight = 120;
+    private const double RegionListMaxHeight = 520;
+    private const double RegionListDefaultHeight = 260;
+
     private static readonly bool ResizableSidePanelsRegistered = RegisterResizableSidePanels();
 
     private bool _resizableSidePanelsInstalled;
@@ -23,12 +31,15 @@ public partial class MainWindow
     private ColumnDefinition? _sidePanelsInspectorColumn;
     private GridSplitter? _pagePanelSplitter;
     private GridSplitter? _inspectorSplitter;
+    private GridSplitter? _regionListSplitter;
     private Button? _collapseInspectorButton;
     private Button? _restoreInspectorButton;
     private double _savedPagePanelWidth = 210;
-    private double _savedInspectorWidth = 330;
+    private double _savedInspectorWidth = InspectorDefaultWidth;
+    private double _savedRegionListHeight = RegionListDefaultHeight;
     private bool _pagePanelWidthChosen;
     private bool _inspectorWidthChosen;
+    private bool _regionListHeightChosen;
     private bool _inspectorPanelVisible = true;
 
     private static bool RegisterResizableSidePanels()
@@ -71,6 +82,7 @@ public partial class MainWindow
         if (_resizableSidePanelsInstalled)
         {
             RestoreChosenSidePanelWidths();
+            RestoreChosenRegionListHeight();
             return;
         }
 
@@ -79,7 +91,8 @@ public partial class MainWindow
             || RegionListBox.Parent is not Grid inspectorGrid
             || inspectorGrid.Parent is not Border inspectorBorder
             || inspectorBorder.Parent is not Grid contentGrid
-            || contentGrid.ColumnDefinitions.Count < 3)
+            || contentGrid.ColumnDefinitions.Count < 3
+            || inspectorGrid.RowDefinitions.Count < 3)
         {
             if (++_resizableSidePanelsAttempts < 12)
             {
@@ -96,12 +109,11 @@ public partial class MainWindow
         _pageSelectionColumn.MaxWidth = 440;
         _pageSelectionColumn.Width = new GridLength(_savedPagePanelWidth);
 
-        _sidePanelsInspectorColumn.MinWidth = 285;
-        _sidePanelsInspectorColumn.MaxWidth = 650;
+        _sidePanelsInspectorColumn.MinWidth = InspectorMinWidth;
+        _sidePanelsInspectorColumn.MaxWidth = InspectorMaxWidth;
         _sidePanelsInspectorColumn.Width = new GridLength(_savedInspectorWidth);
 
         int canvasColumn = contentGrid.ColumnDefinitions.Count - 2;
-        int inspectorColumn = contentGrid.ColumnDefinitions.Count - 1;
 
         _pagePanelSplitter = CreateSidePanelSplitter(
             HorizontalAlignment.Left,
@@ -122,18 +134,23 @@ public partial class MainWindow
         _inspectorSplitter = CreateSidePanelSplitter(
             HorizontalAlignment.Right,
             GridResizeBehavior.CurrentAndNext,
-            "Arrastra para cambiar el ancho del panel de textos");
+            "Arrastra para hacer más ancho o más estrecho el panel de textos");
         Grid.SetColumn(_inspectorSplitter, canvasColumn);
         _inspectorSplitter.DragCompleted += (_, _) =>
         {
-            if (_sidePanelsInspectorColumn.ActualWidth >= 285)
+            if (_sidePanelsInspectorColumn.ActualWidth >= InspectorMinWidth)
             {
-                _savedInspectorWidth = Math.Clamp(_sidePanelsInspectorColumn.ActualWidth, 285, 650);
+                _savedInspectorWidth = Math.Clamp(
+                    _sidePanelsInspectorColumn.ActualWidth,
+                    InspectorMinWidth,
+                    InspectorMaxWidth);
                 _inspectorWidthChosen = true;
                 _sidePanelsInspectorColumn.Width = new GridLength(_savedInspectorWidth);
             }
         };
         contentGrid.Children.Add(_inspectorSplitter);
+
+        InstallResizableRegionList(inspectorGrid);
 
         _collapseInspectorButton = new Button
         {
@@ -174,6 +191,56 @@ public partial class MainWindow
 
         _resizableSidePanelsInstalled = true;
         RestoreChosenSidePanelWidths();
+        RestoreChosenRegionListHeight();
+    }
+
+    private void InstallResizableRegionList(Grid inspectorGrid)
+    {
+        RowDefinition cardsRow = inspectorGrid.RowDefinitions[1];
+        RowDefinition editorRow = inspectorGrid.RowDefinitions[2];
+        cardsRow.MinHeight = RegionListMinHeight;
+        cardsRow.MaxHeight = RegionListMaxHeight;
+        cardsRow.Height = new GridLength(_savedRegionListHeight);
+        editorRow.MinHeight = 180;
+
+        _regionListSplitter = new GridSplitter
+        {
+            Height = 9,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Bottom,
+            ResizeDirection = GridResizeDirection.Rows,
+            ResizeBehavior = GridResizeBehavior.CurrentAndNext,
+            ShowsPreview = false,
+            Background = new SolidColorBrush(Color.FromArgb(110, 112, 121, 128)),
+            Cursor = Cursors.SizeNS,
+            ToolTip = "Arrastra para dar más o menos altura a las tarjetas de texto",
+            Focusable = false
+        };
+        Grid.SetRow(_regionListSplitter, 1);
+        Panel.SetZIndex(_regionListSplitter, 30_000);
+        _regionListSplitter.DragCompleted += (_, _) =>
+        {
+            double height = inspectorGrid.RowDefinitions[1].ActualHeight;
+            if (height >= RegionListMinHeight)
+            {
+                _savedRegionListHeight = Math.Clamp(
+                    height,
+                    RegionListMinHeight,
+                    RegionListMaxHeight);
+                _regionListHeightChosen = true;
+                inspectorGrid.RowDefinitions[1].Height = new GridLength(_savedRegionListHeight);
+            }
+        };
+        inspectorGrid.Children.Add(_regionListSplitter);
+
+        // Las tarjetas dejan de sentirse apretadas incluso antes de ensanchar el panel.
+        RegionListBox.FontSize = Math.Max(13d, RegionListBox.FontSize);
+        if (RegionListBox.ItemContainerStyle is { } existingStyle)
+        {
+            var roomierStyle = new Style(typeof(ListBoxItem), existingStyle);
+            roomierStyle.Setters.Add(new Setter(FrameworkElement.MinHeightProperty, 62d));
+            RegionListBox.ItemContainerStyle = roomierStyle;
+        }
     }
 
     private GridSplitter CreateSidePanelSplitter(
@@ -183,13 +250,13 @@ public partial class MainWindow
     {
         return new GridSplitter
         {
-            Width = 7,
+            Width = 9,
             HorizontalAlignment = alignment,
             VerticalAlignment = VerticalAlignment.Stretch,
             ResizeDirection = GridResizeDirection.Columns,
             ResizeBehavior = behavior,
-            ShowsPreview = true,
-            Background = new SolidColorBrush(Color.FromArgb(80, 112, 121, 128)),
+            ShowsPreview = false,
+            Background = new SolidColorBrush(Color.FromArgb(105, 112, 121, 128)),
             Cursor = Cursors.SizeWE,
             ToolTip = tooltip,
             Focusable = false
@@ -199,7 +266,11 @@ public partial class MainWindow
     private void QueueRestoreChosenSidePanelWidths()
     {
         Dispatcher.BeginInvoke(
-            RestoreChosenSidePanelWidths,
+            () =>
+            {
+                RestoreChosenSidePanelWidths();
+                RestoreChosenRegionListHeight();
+            },
             DispatcherPriority.ApplicationIdle);
     }
 
@@ -233,18 +304,39 @@ public partial class MainWindow
                 : Visibility.Collapsed;
         }
 
-        _sidePanelsInspectorColumn.MinWidth = _inspectorPanelVisible ? 285 : 0;
+        _sidePanelsInspectorColumn.MinWidth = _inspectorPanelVisible ? InspectorMinWidth : 0;
         if (_inspectorPanelVisible)
         {
             double width = _inspectorWidthChosen
                 ? _savedInspectorWidth
-                : Math.Min(330, Math.Max(285, _sidePanelsInspectorColumn.ActualWidth));
-            _sidePanelsInspectorColumn.Width = new GridLength(Math.Clamp(width, 285, 650));
+                : InspectorDefaultWidth;
+            _sidePanelsInspectorColumn.Width = new GridLength(Math.Clamp(
+                width,
+                InspectorMinWidth,
+                InspectorMaxWidth));
         }
         else
         {
             _sidePanelsInspectorColumn.Width = new GridLength(0);
         }
+    }
+
+    private void RestoreChosenRegionListHeight()
+    {
+        if (!_resizableSidePanelsInstalled
+            || RegionListBox.Parent is not Grid inspectorGrid
+            || inspectorGrid.RowDefinitions.Count < 3)
+        {
+            return;
+        }
+
+        double height = _regionListHeightChosen
+            ? _savedRegionListHeight
+            : RegionListDefaultHeight;
+        inspectorGrid.RowDefinitions[1].Height = new GridLength(Math.Clamp(
+            height,
+            RegionListMinHeight,
+            RegionListMaxHeight));
     }
 
     private void SetInspectorPanelVisible(bool visible)
@@ -254,14 +346,17 @@ public partial class MainWindow
             return;
         }
 
-        if (!visible && _sidePanelsInspectorColumn.ActualWidth >= 285)
+        if (!visible && _sidePanelsInspectorColumn.ActualWidth >= InspectorMinWidth)
         {
-            _savedInspectorWidth = Math.Clamp(_sidePanelsInspectorColumn.ActualWidth, 285, 650);
+            _savedInspectorWidth = Math.Clamp(
+                _sidePanelsInspectorColumn.ActualWidth,
+                InspectorMinWidth,
+                InspectorMaxWidth);
         }
 
         _inspectorPanelVisible = visible;
         _sidePanelsInspector.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
-        _sidePanelsInspectorColumn.MinWidth = visible ? 285 : 0;
+        _sidePanelsInspectorColumn.MinWidth = visible ? InspectorMinWidth : 0;
         _sidePanelsInspectorColumn.Width = visible
             ? new GridLength(_savedInspectorWidth)
             : new GridLength(0);
