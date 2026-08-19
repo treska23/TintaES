@@ -89,10 +89,23 @@ public partial class MainWindow
         return Convert.ToHexString(hash.GetHashAndReset());
     }
 
-    private static void WriteTintaProjectSnapshot(
+    /// <summary>
+    /// Intenta escribir una copia automática completa. Los SourcePath de un cómic abierto pueden
+    /// apuntar al workspace temporal; al cerrar/cambiar de documento ese workspace puede desaparecer
+    /// mientras el worker de autosave está escribiendo. En ese caso se descarta la copia entera en
+    /// lugar de lanzar una excepción o dejar un .tinta cuyo project.json referencia entradas ausentes.
+    /// </summary>
+    private static bool TryWriteTintaProjectSnapshot(
         string targetPath,
         TintaProjectWriteSnapshot snapshot)
     {
+        // Preflight barato: evita incluso intentar abrir el ZIP cuando el cierre ya ha retirado
+        // alguna página temporal. La comprobación se repite al abrir cada fichero para cubrir carreras.
+        if (snapshot.Files.Any(file => !File.Exists(file.SourcePath)))
+        {
+            return false;
+        }
+
         string? directory = Path.GetDirectoryName(targetPath);
         if (!string.IsNullOrWhiteSpace(directory))
         {
@@ -109,13 +122,10 @@ public partial class MainWindow
             {
                 foreach (TintaProjectFileSnapshot file in snapshot.Files)
                 {
-                    if (!File.Exists(file.SourcePath))
+                    if (!TryAddSnapshotFileToArchive(archive, file.SourcePath, file.EntryName))
                     {
-                        throw new FileNotFoundException(
-                            "Un archivo necesario para la copia de seguridad ya no está disponible.",
-                            file.SourcePath);
+                        return AbortProjectSnapshot(temporaryPath);
                     }
-                    AddFileToArchive(archive, file.SourcePath, file.EntryName);
                 }
 
                 ZipArchiveEntry manifestEntry = archive.CreateEntry(
@@ -126,12 +136,57 @@ public partial class MainWindow
             }
 
             File.Move(temporaryPath, targetPath, overwrite: true);
+            return true;
         }
-        catch
+        catch (IOException)
+        {
+            // Un archivo temporal puede desaparecer o quedar bloqueado durante el cierre.
+            // El autosave es recuperable: se descarta esta copia y no se propaga la excepción.
+            TryDeleteProjectSnapshotTemporary(temporaryPath);
+            return false;
+        }
+        catch (UnauthorizedAccessException)
         {
             TryDeleteProjectSnapshotTemporary(temporaryPath);
-            throw;
+            return false;
         }
+    }
+
+    private static bool TryAddSnapshotFileToArchive(
+        ZipArchive archive,
+        string filePath,
+        string entryName)
+    {
+        try
+        {
+            // FileShare.Delete permite terminar de leer un fichero que el workspace empieza a
+            // retirar en paralelo; si ya desapareció, se devuelve false sin excepción al caller.
+            using var input = new FileStream(
+                filePath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete);
+            ZipArchiveEntry entry = archive.CreateEntry(
+                entryName.Replace('\\', '/'),
+                CompressionLevel.Optimal);
+            using Stream output = entry.Open();
+            input.CopyTo(output);
+            return true;
+        }
+        catch (FileNotFoundException)
+        {
+            return false;
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return false;
+        }
+    }
+
+    private static bool AbortProjectSnapshot(string temporaryPath)
+    {
+        TryDeleteProjectSnapshotTemporary(temporaryPath);
+        return false;
     }
 
     private static void TryDeleteProjectSnapshotTemporary(string path)
