@@ -11,7 +11,7 @@ namespace TintaES.Wpf;
 /// detectado es una zona invisible: la página original nunca se modifica ni se tapa.
 /// Con ratón se muestra al pasar por encima; en pantalla táctil, mientras el dedo está apoyado.
 /// La tarjeta correspondiente del inspector queda seleccionada al entrar en una zona distinta.
-/// Ctrl+clic fija esa selección para poder editarla sin que el hover la cambie.
+/// Ctrl+clic fija esa selección para poder editarla sin que el hover la cambie; Escape la libera.
 /// </summary>
 public partial class MainWindow
 {
@@ -131,15 +131,25 @@ public partial class MainWindow
 
         if (ReferenceEquals(GetActiveMainTranslationSelectionLock(), region))
         {
-            _mainTranslationSelectionLock = null;
-            SelectRegionFromCanvas(region);
-            SetFooterStatus($"Zona {region.Order} liberada · el hover vuelve a seguir el puntero.", "#6C747A");
-            return true;
+            return ReleaseMainTranslationSelectionLock();
         }
 
         _mainTranslationSelectionLock = region;
         SelectRegionFromCanvas(region);
-        SetFooterStatus($"Zona {region.Order} fijada · Ctrl+clic sobre ella para soltar.", "#4CB2BB");
+        SetFooterStatus($"Zona {region.Order} fijada · Ctrl+clic sobre ella o Esc para soltar.", "#4CB2BB");
+        return true;
+    }
+
+    private bool ReleaseMainTranslationSelectionLock()
+    {
+        ComicRegion? region = GetActiveMainTranslationSelectionLock();
+        if (region is null)
+        {
+            return false;
+        }
+
+        _mainTranslationSelectionLock = null;
+        SetFooterStatus($"Zona {region.Order} liberada · el hover vuelve a seguir el puntero.", "#6C747A");
         return true;
     }
 
@@ -183,15 +193,11 @@ public partial class MainWindow
 
     private void MainImage_MouseMoveForTranslation(object? sender, MouseEventArgs e)
     {
-        // Los eventos táctiles pueden promocionarse a eventos de ratón. El toque tiene su ruta
-        // propia y no debe quedar inmediatamente oculto por un MouseMove sintetizado.
         if (e.StylusDevice is not null)
         {
             return;
         }
 
-        // Pulsar el botón izquierdo cambia al gesto de arrastre. Durante el arrastre no se
-        // enseña ninguna tarjeta aunque el puntero atraviese una zona de texto.
         if (e.LeftButton == MouseButtonState.Pressed || _isSpacePanning)
         {
             HideMainTranslation();
