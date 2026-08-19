@@ -9,7 +9,7 @@ namespace TintaES.Wpf;
 /// </summary>
 public partial class MainWindow
 {
-    internal const string CurrentUiBuildStamp = "UI 2026.08.19-r70-autosave-close-race";
+    internal const string CurrentUiBuildStamp = "UI 2026.08.19-r71-hunyuan-isolated-env";
     private const int CurrentUiBootstrapMaxAttempts = 3;
     
     private static readonly bool CurrentUiBootstrapRegistered = RegisterCurrentUiBootstrap();
