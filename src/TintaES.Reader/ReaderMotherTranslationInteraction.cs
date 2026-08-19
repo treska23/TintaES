@@ -93,6 +93,14 @@ public sealed partial class ComicReaderWindow
 
     private void MotherReader_PreviewTouchDown(object? sender, TouchEventArgs e)
     {
+        Point viewerPoint = e.GetTouchPoint(_viewerHost).Position;
+        if (TryHandleStandaloneImmersiveNavigation(viewerPoint))
+        {
+            EndMotherFingerInteraction();
+            e.Handled = true;
+            return;
+        }
+
         ShowMotherReaderTranslationAt(e.GetTouchPoint(_pageStage).Position);
         if (!_motherFingerActive)
         {
@@ -133,6 +141,14 @@ public sealed partial class ComicReaderWindow
     {
         if (!IsTouchStylus(e.StylusDevice))
         {
+            return;
+        }
+
+        Point viewerPoint = e.GetPosition(_viewerHost);
+        if (TryHandleStandaloneImmersiveNavigation(viewerPoint))
+        {
+            EndMotherFingerInteraction();
+            e.Handled = true;
             return;
         }
 
