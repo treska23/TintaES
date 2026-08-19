@@ -13,12 +13,13 @@ public partial class App : Application
 
         var reader = new ComicReaderWindow();
 
-        // El Reader independiente conserva la biblioteca, pero la lectura replica la experiencia
-        // del programa madre: hover con ratón y presión táctil muestran la traducción centrada.
+        // El Reader independiente conserva la biblioteca como herramienta opcional, mientras que
+        // la lectura replica la experiencia del programa madre y añade navegación táctil inmersiva.
         reader.EnsureStandaloneLibraryInstalled();
         reader.EnsureReaderHoverInstalled();
         reader.EnsureMotherTranslationInteractionInstalled();
         reader.EnsureStandaloneResponsiveLayoutInstalled();
+        reader.EnsureStandaloneImmersiveNavigationInstalled();
 
         MainWindow = reader;
         reader.Show();
