@@ -23,6 +23,7 @@ public partial class MainWindow
     private DateTime _autoBackupLastUserActivityUtc = DateTime.UtcNow;
     private bool _autoBackupInProgress;
     private bool _autoBackupInstalled;
+    private bool _autoBackupClosing;
 
     private static string AutoBackupRootPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -59,6 +60,7 @@ public partial class MainWindow
         PreviewMouseWheel += AutoBackup_MouseWheelActivity;
         PreviewKeyDown += AutoBackup_KeyActivity;
         PreviewTouchDown += AutoBackup_TouchActivity;
+        Closing += AutoBackup_WindowClosing;
         Closed += AutoBackup_WindowClosed;
 
         _autoBackupTimer = new DispatcherTimer(DispatcherPriority.Background)
@@ -90,7 +92,8 @@ public partial class MainWindow
 
     private async void AutoBackupTimer_Tick(object? sender, EventArgs e)
     {
-        if (_autoBackupInProgress
+        if (_autoBackupClosing
+            || _autoBackupInProgress
             || _switchingDocument
             || _documentOpenPending
             || HasDocumentOperationInProgress()
@@ -104,7 +107,7 @@ public partial class MainWindow
 
     private async Task CreateDueAutomaticBackupsAsync()
     {
-        if (_autoBackupInProgress)
+        if (_autoBackupClosing || _autoBackupInProgress)
         {
             return;
         }
@@ -118,6 +121,11 @@ public partial class MainWindow
 
             foreach (ComicDocumentSession session in _documentSessions.Where(session => session.Pages.Count > 0))
             {
+                if (_autoBackupClosing)
+                {
+                    break;
+                }
+
                 if (!_autoBackupLastCheckUtc.TryGetValue(session.Id, out DateTime lastCheck))
                 {
                     _autoBackupLastCheckUtc[session.Id] = now;
@@ -149,30 +157,47 @@ public partial class MainWindow
                 due.Add(new AutoBackupWorkItem(session.Id, token, path, snapshot));
             }
 
-            if (due.Count == 0)
+            if (due.Count == 0 || _autoBackupClosing)
             {
                 return;
             }
 
-            await Task.Run(() =>
+            IReadOnlyList<AutoBackupWorkItem> written = await Task.Run(() =>
             {
+                var successful = new List<AutoBackupWorkItem>();
                 foreach (AutoBackupWorkItem item in due)
                 {
-                    WriteTintaProjectSnapshot(item.Path, item.Snapshot);
+                    if (_autoBackupClosing)
+                    {
+                        break;
+                    }
+
+                    if (!TryWriteTintaProjectSnapshot(item.Path, item.Snapshot))
+                    {
+                        continue;
+                    }
+
                     RotateAutomaticBackups(item.SessionToken);
+                    successful.Add(item);
                 }
                 CleanupOldAutomaticBackupTemporaries();
+                return (IReadOnlyList<AutoBackupWorkItem>)successful;
             });
 
-            foreach (AutoBackupWorkItem item in due)
+            foreach (AutoBackupWorkItem item in written)
             {
                 _autoBackupLastFingerprint[item.SessionId] = item.Snapshot.Fingerprint;
             }
 
+            if (_autoBackupClosing || written.Count == 0)
+            {
+                return;
+            }
+
             SetFooterStatus(
-                due.Count == 1
+                written.Count == 1
                     ? $"Copia automática guardada · {DateTime.Now:HH:mm}"
-                    : $"{due.Count} copias automáticas guardadas · {DateTime.Now:HH:mm}",
+                    : $"{written.Count} copias automáticas guardadas · {DateTime.Now:HH:mm}",
                 "#58A77D");
         }
         catch (Exception exception) when (
@@ -180,11 +205,14 @@ public partial class MainWindow
                 or UnauthorizedAccessException
                 or InvalidOperationException)
         {
-            // No se interrumpe el trabajo del usuario por un fallo de autosave. Se informa de forma
-            // discreta y el siguiente ciclo volverá a intentarlo.
-            SetFooterStatus(
-                $"No se pudo crear la copia automática · {exception.Message}",
-                "#C99A35");
+            if (!_autoBackupClosing)
+            {
+                // No se interrumpe el trabajo del usuario por un fallo de autosave. Se informa de forma
+                // discreta y el siguiente ciclo volverá a intentarlo.
+                SetFooterStatus(
+                    $"No se pudo crear la copia automática · {exception.Message}",
+                    "#C99A35");
+            }
         }
         finally
         {
@@ -299,8 +327,15 @@ public partial class MainWindow
             "#C99A35");
     }
 
+    private void AutoBackup_WindowClosing(object? sender, CancelEventArgs e)
+    {
+        _autoBackupClosing = true;
+        _autoBackupTimer?.Stop();
+    }
+
     private void AutoBackup_WindowClosed(object? sender, EventArgs e)
     {
+        _autoBackupClosing = true;
         _autoBackupTimer?.Stop();
         _autoBackupTimer = null;
         TryDeleteAutomaticBackupFile(AutoBackupSessionMarkerPath);
