@@ -5,9 +5,9 @@ using System.Windows.Input;
 namespace TintaES.Wpf;
 
 /// <summary>
-/// Desplazamiento directo del lector: el botón izquierdo arrastra la página sin teclas
-/// modificadoras, también cuando se pulsa sobre una zona con traducción. La consulta con
-/// ratón se realiza exclusivamente al pasar el puntero por encima.
+/// Desplazamiento directo de la página: el botón izquierdo arrastra sin teclas modificadoras.
+/// Ctrl+clic sobre una zona fija o libera su tarjeta en el inspector para poder editarla sin
+/// que el hover cambie la selección. Escape libera cualquier selección fijada.
 /// </summary>
 public partial class MainWindow
 {
@@ -25,8 +25,17 @@ public partial class MainWindow
             return;
         }
 
-        // La tarjeta de hover desaparece en cuanto empieza el gesto. No se comprueba si hay
-        // texto debajo: el botón izquierdo siempre pertenece al desplazamiento de la página.
+        // Ctrl+clic pertenece exclusivamente al bloqueo de tarjeta. No inicia pan y por tanto
+        // no compite con el gesto normal de arrastrar la página.
+        if ((Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control)
+        {
+            if (ToggleMainTranslationSelectionLockAt(e.GetPosition(ImageStage)))
+            {
+                e.Handled = true;
+            }
+            return;
+        }
+
         HideMainTranslation();
         _isSpacePanning = true;
         _panStartPointer = e.GetPosition(ImageScrollViewer);
@@ -66,6 +75,16 @@ public partial class MainWindow
         EndSpacePan();
         ImageScrollViewer.Cursor = Cursors.Hand;
         e.Handled = true;
+    }
+
+    protected override void OnPreviewKeyDown(KeyEventArgs e)
+    {
+        base.OnPreviewKeyDown(e);
+
+        if (e.Key == Key.Escape && ReleaseMainTranslationSelectionLock())
+        {
+            e.Handled = true;
+        }
     }
 
     private void EndSpacePan()
