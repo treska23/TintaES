@@ -9,7 +9,7 @@ namespace TintaES.Wpf;
 /// </summary>
 public partial class MainWindow
 {
-    internal const string CurrentUiBuildStamp = "UI 2026.08.19-r64-long-caption-recovery";
+    internal const string CurrentUiBuildStamp = "UI 2026.08.19-r65-resizable-text-panel";
     private const int CurrentUiBootstrapMaxAttempts = 3;
     
     private static readonly bool CurrentUiBootstrapRegistered = RegisterCurrentUiBootstrap();
