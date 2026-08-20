@@ -21,9 +21,9 @@ public partial class App : Application
         reader.EnsureStandaloneImmersiveNavigationInstalled();
         reader.EnsureDirectTouchNavigationInstalled();
         reader.EnsureStandaloneDirectTranslationInputInstalled();
-        // La capa física de regiones se instala la última. Es la autoridad final para hover/toque
-        // porque usa el hit-test real de WPF sobre elementos que se escalan junto con la página.
         reader.EnsureStandaloneTranslationHitLayerInstalled();
+        // Última autoridad: cada zona física recibe directamente ratón/dedo y muestra su región.
+        reader.EnsureStandaloneTranslationTargetEventsInstalled();
 
         MainWindow = reader;
         reader.Show();
