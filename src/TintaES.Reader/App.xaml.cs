@@ -20,6 +20,7 @@ public partial class App : Application
         reader.EnsureMotherTranslationInteractionInstalled();
         reader.EnsureStandaloneResponsiveLayoutInstalled();
         reader.EnsureStandaloneImmersiveNavigationInstalled();
+        reader.EnsureDirectTouchNavigationInstalled();
 
         MainWindow = reader;
         reader.Show();
