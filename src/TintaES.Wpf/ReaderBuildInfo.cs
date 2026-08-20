@@ -6,5 +6,5 @@ namespace TintaES.Wpf;
 /// </summary>
 internal static class ReaderBuildInfo
 {
-    internal const string CurrentBuildStamp = "Reader 2026.08.20-r10-physical-translation-hit-layer";
+    internal const string CurrentBuildStamp = "Reader 2026.08.20-r11-direct-translation-target-events";
 }
