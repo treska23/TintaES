@@ -17,10 +17,12 @@ public partial class App : Application
         // la lectura replica la experiencia del programa madre y añade navegación táctil inmersiva.
         reader.EnsureStandaloneLibraryInstalled();
         reader.EnsureReaderHoverInstalled();
-        reader.EnsureMotherTranslationInteractionInstalled();
         reader.EnsureStandaloneResponsiveLayoutInstalled();
         reader.EnsureStandaloneImmersiveNavigationInstalled();
         reader.EnsureDirectTouchNavigationInstalled();
+        // Esta capa se instala la última: resuelve el bocadillo sobre la geometría realmente
+        // renderizada y evita que rutas táctiles antiguas compitan por la misma pulsación.
+        reader.EnsureStandaloneDirectTranslationInputInstalled();
 
         MainWindow = reader;
         reader.Show();
