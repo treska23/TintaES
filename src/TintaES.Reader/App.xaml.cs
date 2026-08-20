@@ -11,7 +11,7 @@ public partial class App : Application
     {
         base.OnStartup(e);
 
-        // El Reader ya no mantiene un visor paralelo. Es la MainWindow real de TintaES con
+        // r12: el Reader ya no mantiene un visor paralelo. Es la MainWindow real de TintaES con
         // herramientas de autoría retiradas por ReaderOnlyMode.
         var reader = new MainWindow(readerOnly: true);
         MainWindow = reader;
