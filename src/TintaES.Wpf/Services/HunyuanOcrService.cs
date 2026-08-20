@@ -454,7 +454,7 @@ public sealed class HunyuanOcrService
 
     private static string? FindServerExecutable(string projectRoot)
     {
-        string root = Path.Combine(projectRoot, "engine", "hunyuanocr");
+        string root = LocalEnginePaths.GetHunyuanRoot(projectRoot);
         string? configured = Environment.GetEnvironmentVariable("TINTAES_HUNYUAN_SERVER");
         if (!string.IsNullOrWhiteSpace(configured) && File.Exists(configured.Trim()))
         {
@@ -474,7 +474,7 @@ public sealed class HunyuanOcrService
 
     private static (string? Model, string? Mmproj) FindModels(string projectRoot)
     {
-        string root = Path.Combine(projectRoot, "engine", "hunyuanocr");
+        string root = LocalEnginePaths.GetHunyuanRoot(projectRoot);
         string[] folders =
         [
             Path.Combine(root, "model"),

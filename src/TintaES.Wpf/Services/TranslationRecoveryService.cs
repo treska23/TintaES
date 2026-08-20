@@ -119,7 +119,7 @@ public sealed class TranslationRecoveryService
         {
             model,
             stream = false,
-            keep_alive = "30m",
+            keep_alive = "1m",
             messages = new[] { new { role = "user", content = prompt } },
             options = new
             {

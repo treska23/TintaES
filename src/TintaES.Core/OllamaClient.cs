@@ -164,7 +164,7 @@ public sealed class OllamaClient : IDisposable
             model,
             stream = false,
             think = false,
-            keep_alive = "30m",
+            keep_alive = "1m",
             messages = new[] { new { role = "user", content = "Responde únicamente OK." } },
             options = new { temperature = 0, num_ctx = 512, num_predict = 2 }
         };
@@ -221,7 +221,7 @@ public sealed class OllamaClient : IDisposable
             model,
             stream = false,
             think = false,
-            keep_alive = "30m",
+            keep_alive = "1m",
             format = ResidualTextSchema,
             messages = new[]
             {
@@ -355,7 +355,7 @@ public sealed class OllamaClient : IDisposable
             model,
             stream = false,
             think = false,
-            keep_alive = "15m",
+            keep_alive = "1m",
             format = DetectionSchema,
             messages = new[]
             {
@@ -811,7 +811,7 @@ public sealed class OllamaClient : IDisposable
             {
                 model,
                 stream = false,
-                keep_alive = "30m",
+                keep_alive = "1m",
                 messages = new[] { new { role = "user", content = prompt } },
                 options = new
                 {
@@ -1033,7 +1033,7 @@ public sealed class OllamaClient : IDisposable
         {
             model,
             stream = false,
-            keep_alive = "30m",
+            keep_alive = "1m",
             messages = new[] { new { role = "user", content = prompt } },
             options = new
             {
@@ -1119,7 +1119,7 @@ public sealed class OllamaClient : IDisposable
         {
             model,
             stream = false,
-            keep_alive = "30m",
+            keep_alive = "1m",
             messages = new[] { new { role = "user", content = prompt } },
             options = new
             {
@@ -1270,7 +1270,7 @@ public sealed class OllamaClient : IDisposable
             model,
             stream = false,
             think = false,
-            keep_alive = "15m",
+            keep_alive = "1m",
             format = TranslationSchema,
             messages = new[] { new { role = "user", content = prompt } },
             options = new { temperature = 0.1, seed = 73, num_ctx = 4096, num_predict = 2048 }

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -1071,6 +1072,9 @@ async def analyze(args: argparse.Namespace) -> int:
         "models_ttl": 0,
         "batch_size": 1,
     }
+    model_dir = os.environ.get("TINTAES_MANGA_MODEL_DIR")
+    if model_dir:
+        params["model_dir"] = str(Path(model_dir).expanduser().resolve())
     translator = TintaTranslator(params, supplemental_regions, bright_candidates)
     with Image.open(input_path) as source:
         image = source.convert("RGB")

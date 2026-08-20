@@ -188,13 +188,7 @@ public sealed class ImageExportService
         int quality)
     {
         string projectRoot = FindProjectRoot();
-        string python = Path.Combine(
-            projectRoot,
-            "engine",
-            "manga-image-translator",
-            ".venv",
-            "Scripts",
-            "python.exe");
+        string python = LocalEnginePaths.GetMangaPython(projectRoot);
         string script = Path.Combine(projectRoot, "engine", "export_image.py");
         if (!File.Exists(python) || !File.Exists(script))
         {

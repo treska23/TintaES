@@ -88,13 +88,7 @@ public sealed class OrganicEngineService
     {
         string workerPath = Path.Combine(projectRoot, "engine", "tinta_worker_responsive.py");
         string originalWorkerPath = Path.Combine(projectRoot, "engine", "tinta_worker.py");
-        string pythonPath = Path.Combine(
-            projectRoot,
-            "engine",
-            "manga-image-translator",
-            ".venv",
-            "Scripts",
-            "python.exe");
+        string pythonPath = LocalEnginePaths.GetMangaPython(projectRoot);
         if (!File.Exists(workerPath) || !File.Exists(originalWorkerPath) || !File.Exists(pythonPath))
         {
             return;
@@ -135,13 +129,7 @@ public sealed class OrganicEngineService
         string originalWorkerPath = Path.Combine(projectRoot, "engine", "tinta_worker.py");
         string brightDetectorPath = Path.Combine(projectRoot, "engine", "bright_text_candidates.py");
         string configPath = Path.Combine(projectRoot, "engine", "organic-engine-config.json");
-        string pythonPath = Path.Combine(
-            projectRoot,
-            "engine",
-            "manga-image-translator",
-            ".venv",
-            "Scripts",
-            "python.exe");
+        string pythonPath = LocalEnginePaths.GetMangaPython(projectRoot);
         if (!File.Exists(pythonPath))
         {
             throw new InvalidOperationException(
