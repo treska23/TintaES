@@ -14,6 +14,7 @@ $ToolVenv = Join-Path $Here ".venv"
 $ToolPython = Join-Path $ToolVenv "Scripts\python.exe"
 $ModelFile = Join-Path $ModelDir "hyocr-f16.gguf"
 $MmprojFile = Join-Path $ModelDir "mmproj-hyocr-f16.gguf"
+$CudaInstaller = Join-Path $Here "install-cuda-runtime.ps1"
 
 function Require-Command([string]$Name) {
     $command = Get-Command $Name -ErrorAction SilentlyContinue
@@ -28,7 +29,6 @@ Write-Host "Carpeta: $Here"
 Write-Host "Hunyuan usa un entorno Python propio y NO modifica manga-image-translator." -ForegroundColor DarkGray
 
 $Git = Require-Command "git"
-$CMake = Require-Command "cmake"
 $SystemPython = Require-Command "python"
 
 if (-not (Test-Path $ToolPython)) {
@@ -48,23 +48,33 @@ if (-not (Test-Path $LlamaDir)) {
     & $Git -C $LlamaDir pull --ff-only
 }
 
-$UseCuda = $false
-if ($Backend -eq "cuda") {
-    $UseCuda = $true
-} elseif ($Backend -eq "auto") {
-    $UseCuda = $null -ne (Get-Command "nvcc" -ErrorAction SilentlyContinue)
+$HasNvcc = $null -ne (Get-Command "nvcc" -ErrorAction SilentlyContinue)
+$HasNvidiaGpu = $null -ne (Get-Command "nvidia-smi" -ErrorAction SilentlyContinue)
+$UseCudaBuild = $HasNvcc -and $Backend -ne "cpu"
+$UsePrebuiltCuda = -not $HasNvcc -and $HasNvidiaGpu -and $Backend -ne "cpu"
+if ($Backend -eq "cuda" -and -not $HasNvcc -and -not $HasNvidiaGpu) {
+    throw "Se solicitó CUDA, pero no se detecta ni nvcc ni una GPU NVIDIA compatible."
 }
 
 $BuildDir = Join-Path $LlamaDir "build"
-$CmakeArgs = @("-S", $LlamaDir, "-B", $BuildDir, "-DLLAMA_BUILD_EXAMPLES=ON")
-if ($UseCuda) {
-    $CmakeArgs += "-DGGML_CUDA=ON"
-    Write-Host "Compilando llama.cpp con CUDA..." -ForegroundColor Yellow
+if ($UsePrebuiltCuda) {
+    if (-not (Test-Path $CudaInstaller)) {
+        throw "Falta $CudaInstaller."
+    }
+    Write-Host "No hay CUDA Toolkit; instalando el runtime CUDA oficial precompilado..." -ForegroundColor Yellow
+    & $CudaInstaller
 } else {
-    Write-Host "Compilando llama.cpp para CPU..." -ForegroundColor Yellow
+    $CMake = Require-Command "cmake"
+    $CmakeArgs = @("-S", $LlamaDir, "-B", $BuildDir, "-DLLAMA_BUILD_EXAMPLES=ON")
+    if ($UseCudaBuild) {
+        $CmakeArgs += "-DGGML_CUDA=ON"
+        Write-Host "Compilando llama.cpp con CUDA..." -ForegroundColor Yellow
+    } else {
+        Write-Host "Compilando llama.cpp para CPU..." -ForegroundColor Yellow
+    }
+    & $CMake @CmakeArgs
+    & $CMake --build $BuildDir --config Release --parallel
 }
-& $CMake @CmakeArgs
-& $CMake --build $BuildDir --config Release --parallel
 
 New-Item -ItemType Directory -Path $ModelDir -Force | Out-Null
 New-Item -ItemType Directory -Path $HfDir -Force | Out-Null
@@ -108,6 +118,7 @@ if (-not (Test-Path $MmprojFile)) {
 }
 
 $ServerCandidates = @(
+    (Join-Path $Here "runtime\cuda\llama-server.exe"),
     (Join-Path $BuildDir "bin\Release\llama-server.exe"),
     (Join-Path $BuildDir "bin\llama-server.exe")
 )

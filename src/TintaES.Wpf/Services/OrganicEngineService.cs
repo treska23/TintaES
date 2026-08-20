@@ -41,6 +41,51 @@ public sealed class OrganicEngineService
     public async Task WarmUpAsync(CancellationToken cancellationToken = default)
     {
         string projectRoot = FindProjectRoot();
+        await WarmOrganicWorkerAsync(projectRoot, cancellationToken);
+    }
+
+    public async Task<bool> HasReusableAnalysisAsync(
+        string sourcePath,
+        CancellationToken cancellationToken = default)
+    {
+        if (!File.Exists(sourcePath))
+        {
+            return false;
+        }
+
+        string projectRoot = FindProjectRoot();
+        string workerPath = Path.Combine(projectRoot, "engine", "tinta_worker_responsive.py");
+        string originalWorkerPath = Path.Combine(projectRoot, "engine", "tinta_worker.py");
+        string brightDetectorPath = Path.Combine(projectRoot, "engine", "bright_text_candidates.py");
+        string configPath = Path.Combine(projectRoot, "engine", "organic-engine-config.json");
+        if (!new[] { workerPath, originalWorkerPath, brightDetectorPath, configPath }.All(File.Exists))
+        {
+            return false;
+        }
+        string cacheKey = CreateCacheKey(
+            sourcePath,
+            workerPath,
+            originalWorkerPath,
+            brightDetectorPath,
+            configPath);
+        string manifestPath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "TintaES",
+            "Cache",
+            "Organic",
+            cacheKey,
+            "analysis.json");
+        return IsCompleteCache(manifestPath)
+               && await HunyuanOcr.HasCachedResultAsync(
+                   sourcePath,
+                   projectRoot,
+                   cancellationToken);
+    }
+
+    private static async Task WarmOrganicWorkerAsync(
+        string projectRoot,
+        CancellationToken cancellationToken)
+    {
         string workerPath = Path.Combine(projectRoot, "engine", "tinta_worker_responsive.py");
         string originalWorkerPath = Path.Combine(projectRoot, "engine", "tinta_worker.py");
         string pythonPath = Path.Combine(
@@ -125,6 +170,13 @@ public sealed class OrganicEngineService
         {
             progress?.Report(new AnalysisProgress(90, 100, "Cargando el análisis guardado…"));
             OrganicAnalysisResult cached = LoadResult(manifestPath, true);
+            if (!await HunyuanOcr.HasCachedResultAsync(
+                    sourcePath,
+                    projectRoot,
+                    cancellationToken))
+            {
+                ResetResidentWorker();
+            }
             return await ApplyHunyuanOcrAsync(
                 sourcePath,
                 cached,
@@ -154,6 +206,9 @@ public sealed class OrganicEngineService
             progress,
             cancellationToken);
         OrganicAnalysisResult result = LoadResult(resultManifest, false);
+        // El worker PyTorch ya ha terminado. Liberarlo antes de cargar Hunyuan
+        // evita que los dos modelos compitan por los 8 GB de la RTX.
+        ResetResidentWorker();
         return await ApplyHunyuanOcrAsync(
             sourcePath,
             result,

@@ -266,6 +266,11 @@ public partial class MainWindow
             FooterStatusText.Text = value.Message;
         });
 
+        if (!await _organicEngine.HasReusableAnalysisAsync(page.SourcePath, cancellationToken))
+        {
+            await _ollama.UnloadModelAsync(model, cancellationToken);
+        }
+
         OrganicAnalysisResult organic = await AnalyzePageWithWatchdogAsync(
             page.SourcePath,
             progress,

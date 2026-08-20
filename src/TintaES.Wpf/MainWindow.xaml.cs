@@ -270,8 +270,17 @@ public partial class MainWindow : Window
                 FooterProgressBar.Value = value.Percentage;
                 FooterStatusText.Text = value.Message;
             });
+            string sourcePath = _sourcePath
+                                ?? throw new InvalidOperationException("No hay una página cargada.");
+            if (!await _organicEngine.HasReusableAnalysisAsync(
+                    sourcePath,
+                    _analysisCancellation.Token))
+            {
+                await _ollama.UnloadModelAsync(model, _analysisCancellation.Token);
+            }
+
             OrganicAnalysisResult organic = await _organicEngine.AnalyzeAsync(
-                _sourcePath ?? throw new InvalidOperationException("No hay una página cargada."),
+                sourcePath,
                 progress,
                 _analysisCancellation.Token);
             ComicAnalysis analysis = organic.Analysis;
