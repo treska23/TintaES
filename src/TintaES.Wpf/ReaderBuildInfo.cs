@@ -6,5 +6,5 @@ namespace TintaES.Wpf;
 /// </summary>
 internal static class ReaderBuildInfo
 {
-    internal const string CurrentBuildStamp = "Reader 2026.08.20-r8-direct-touch-navigation";
+    internal const string CurrentBuildStamp = "Reader 2026.08.20-r9-translation-hit-recovery";
 }
