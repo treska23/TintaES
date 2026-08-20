@@ -11,33 +11,38 @@ public partial class App : Application
     {
         base.OnStartup(e);
 
-        var reader = new ComicReaderWindow();
-
-        // El Reader independiente conserva la biblioteca como herramienta opcional, mientras que
-        // la lectura replica la experiencia del programa madre y añade navegación táctil inmersiva.
-        reader.EnsureStandaloneLibraryInstalled();
-        reader.EnsureReaderHoverInstalled();
-        reader.EnsureStandaloneResponsiveLayoutInstalled();
-        reader.EnsureStandaloneImmersiveNavigationInstalled();
-        reader.EnsureDirectTouchNavigationInstalled();
-        reader.EnsureStandaloneDirectTranslationInputInstalled();
-        reader.EnsureStandaloneTranslationHitLayerInstalled();
-        // Última autoridad: cada zona física recibe directamente ratón/dedo y muestra su región.
-        reader.EnsureStandaloneTranslationTargetEventsInstalled();
-
+        // r12: el Reader ya no mantiene un visor paralelo. Es la MainWindow real de TintaES con
+        // herramientas de autoría retiradas por ReaderOnlyMode.
+        var reader = new MainWindow(readerOnly: true);
         MainWindow = reader;
         reader.Show();
 
         string? startupPath = e.Args
             .Select(Path.GetFullPath)
-            .FirstOrDefault(File.Exists);
+            .FirstOrDefault(path => File.Exists(path)
+                && string.Equals(Path.GetExtension(path), ".tinta", StringComparison.OrdinalIgnoreCase));
         if (startupPath is null)
         {
             return;
         }
 
         reader.Dispatcher.BeginInvoke(
-            async () => await reader.OpenReaderPathAsync(startupPath),
-            DispatcherPriority.Loaded);
+            async () =>
+            {
+                try
+                {
+                    await reader.OpenReaderProjectAsync(startupPath);
+                }
+                catch (Exception exception)
+                {
+                    MessageBox.Show(
+                        reader,
+                        $"No se pudo abrir el proyecto.\n\n{exception.Message}",
+                        "Tinta ES Reader",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Error);
+                }
+            },
+            DispatcherPriority.ContextIdle);
     }
 }

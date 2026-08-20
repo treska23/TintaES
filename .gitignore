@@ -13,6 +13,7 @@ __pycache__/
 engine/manga-image-translator/.venv/
 engine/manga-image-translator/models/
 engine/manga-image-translator/result/
+engine/hunyuanocr/runtime/
 *.log
 .gh-auth-*.txt
 .DS_Store

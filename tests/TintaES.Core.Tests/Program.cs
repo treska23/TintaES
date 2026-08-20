@@ -18,6 +18,7 @@ var tests = new (string Name, Func<Task> Run)[]
     ("Separa detección y traducción", TestOllamaPipelineAsync),
     ("No desplaza traducciones si TranslateGemma omite una línea", TestTranslateGemmaStableMappingAsync),
     ("Recupera individualmente un lote completo sin etiquetas", TestTranslateGemmaWholeBatchRecoveryAsync),
+    ("Reintenta traducciones semánticamente incompletas", TestIncompleteTranslationRecoveryAsync),
     ("Nunca incrusta un marcador cuando la traducción falla", TestTranslationFailureNeverRendersMarkerAsync),
     ("Conserva el sentido y el registro español en la escena real", TestComicSceneSemanticGuardsAsync)
 };
@@ -526,6 +527,28 @@ static async Task TestTranslationFailureNeverRendersMarkerAsync()
         "El lienzo nunca debe dibujar un aviso técnico como si fuera rotulación.");
 }
 
+static async Task TestIncompleteTranslationRecoveryAsync()
+{
+    var handler = new FakeIncompleteTranslationHandler();
+    using var http = new HttpClient(handler) { BaseAddress = new Uri("http://127.0.0.1:11434/") };
+    using var client = new OllamaClient(httpClient: http);
+    ComicRegion[] regions =
+    [
+        new()
+        {
+            Original = "WOULDN'T YOU LIKE TO ASK KRAVEN ABOUT THIS PERSONALLY?",
+            Type = "dialogue"
+        }
+    ];
+
+    await client.TranslateRegionsAsync(regions, "translategemma:4b", CancellationToken.None);
+
+    Assert(handler.Calls == 3,
+        "Una respuesta demasiado corta y sin interrogación debe llegar al reintento individual.");
+    Assert(regions[0].Translation == "¿No te gustaría preguntárselo personalmente a Kraven?",
+        "El reintento debe conservar pregunta, negación, intención y nombre propio.");
+}
+
 static async Task TestComicSceneSemanticGuardsAsync()
 {
     var handler = new FakeTranslateGemmaSemanticHandler();
@@ -723,6 +746,41 @@ sealed class FakeTranslateGemmaWholeBatchHandler(bool failEveryRequest) : HttpMe
                     : "Tercera frase";
         }
 
+        return new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                JsonSerializer.Serialize(new { message = new { content } }),
+                Encoding.UTF8,
+                "application/json")
+        };
+    }
+}
+
+sealed class FakeIncompleteTranslationHandler : HttpMessageHandler
+{
+    public int Calls { get; private set; }
+
+    protected override async Task<HttpResponseMessage> SendAsync(
+        HttpRequestMessage request,
+        CancellationToken cancellationToken)
+    {
+        Calls++;
+        string body = await request.Content!.ReadAsStringAsync(cancellationToken);
+        using JsonDocument requestDocument = JsonDocument.Parse(body);
+        string prompt = requestDocument.RootElement
+            .GetProperty("messages")[0]
+            .GetProperty("content")
+            .GetString()!;
+        Match target = Regex.Match(
+            prompt,
+            @"\[\[(R[A-F0-9]+)\]\]\s*(.*?)\s*\[\[/\1\]\]",
+            RegexOptions.Singleline | RegexOptions.CultureInvariant);
+        string candidate = Calls < 3
+            ? "De acuerdo, equipo."
+            : "¿No te gustaría preguntárselo personalmente a Kraven?";
+        string content = target.Success
+            ? $"[[{target.Groups[1].Value}]] {candidate} [[/{target.Groups[1].Value}]]"
+            : candidate;
         return new HttpResponseMessage(HttpStatusCode.OK)
         {
             Content = new StringContent(

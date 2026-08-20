@@ -5,6 +5,7 @@ $Here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ModelFile = Join-Path $Here "model\hyocr-f16.gguf"
 $MmprojFile = Join-Path $Here "model\mmproj-hyocr-f16.gguf"
 $ServerCandidates = @(
+    (Join-Path $Here "runtime\cuda\llama-server.exe"),
     (Join-Path $Here "llama.cpp\build\bin\Release\llama-server.exe"),
     (Join-Path $Here "llama.cpp\build\bin\llama-server.exe"),
     (Join-Path $Here "llama-server.exe")
@@ -25,4 +26,6 @@ Write-Host "Cierra esta ventana para detener el servidor."
     --port 8080 `
     --alias HYVL `
     --ctx-size 10240 `
-    --n-predict 4096
+    --n-predict 4096 `
+    --parallel 1 `
+    --gpu-layers all

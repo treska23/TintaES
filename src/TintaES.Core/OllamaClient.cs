@@ -164,11 +164,30 @@ public sealed class OllamaClient : IDisposable
             model,
             stream = false,
             think = false,
-            keep_alive = "30m",
+            keep_alive = "1m",
             messages = new[] { new { role = "user", content = "Responde únicamente OK." } },
             options = new { temperature = 0, num_ctx = 512, num_predict = 2 }
         };
         _ = await SendChatAsync(payload, cancellationToken);
+    }
+
+    public async Task UnloadModelAsync(
+        string model,
+        CancellationToken cancellationToken = default)
+    {
+        // Ollama documenta keep_alive=0 como descarga inmediata. No se elimina el
+        // modelo: solo se libera su VRAM antes de que entren CTD y HunyuanOCR.
+        object payload = new
+        {
+            model,
+            stream = false,
+            keep_alive = 0
+        };
+        using HttpResponseMessage response = await _httpClient.PostAsJsonAsync(
+            "api/generate",
+            payload,
+            cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
     }
 
     public async Task<IReadOnlyDictionary<int, string>> RecognizeResidualTextAsync(
@@ -202,7 +221,7 @@ public sealed class OllamaClient : IDisposable
             model,
             stream = false,
             think = false,
-            keep_alive = "30m",
+            keep_alive = "1m",
             format = ResidualTextSchema,
             messages = new[]
             {
@@ -336,7 +355,7 @@ public sealed class OllamaClient : IDisposable
             model,
             stream = false,
             think = false,
-            keep_alive = "15m",
+            keep_alive = "1m",
             format = DetectionSchema,
             messages = new[]
             {
@@ -658,9 +677,28 @@ public sealed class OllamaClient : IDisposable
             return false;
         }
 
+        if (Regex.IsMatch(candidate, @"[\u0400-\u052F]", RegexOptions.CultureInvariant))
+        {
+            return false;
+        }
+
         string[] words = Regex.Matches(candidate.ToLowerInvariant(), @"[\p{L}']+")
             .Select(match => match.Value)
             .ToArray();
+        string[] sourceWords = Regex.Matches(source, @"[\p{L}\p{N}']+")
+            .Select(match => match.Value)
+            .ToArray();
+        if (sourceWords.Length >= 8
+            && words.Length < Math.Max(3, (int)Math.Ceiling(sourceWords.Length * 0.30)))
+        {
+            return false;
+        }
+
+        if (source.Contains('?') && !candidate.Contains('?'))
+        {
+            return false;
+        }
+
         if (words.Length >= 2)
         {
             string[] commonEnglish =
@@ -773,7 +811,7 @@ public sealed class OllamaClient : IDisposable
             {
                 model,
                 stream = false,
-                keep_alive = "30m",
+                keep_alive = "1m",
                 messages = new[] { new { role = "user", content = prompt } },
                 options = new
                 {
@@ -995,7 +1033,7 @@ public sealed class OllamaClient : IDisposable
         {
             model,
             stream = false,
-            keep_alive = "30m",
+            keep_alive = "1m",
             messages = new[] { new { role = "user", content = prompt } },
             options = new
             {
@@ -1081,7 +1119,7 @@ public sealed class OllamaClient : IDisposable
         {
             model,
             stream = false,
-            keep_alive = "30m",
+            keep_alive = "1m",
             messages = new[] { new { role = "user", content = prompt } },
             options = new
             {
@@ -1232,7 +1270,7 @@ public sealed class OllamaClient : IDisposable
             model,
             stream = false,
             think = false,
-            keep_alive = "15m",
+            keep_alive = "1m",
             format = TranslationSchema,
             messages = new[] { new { role = "user", content = prompt } },
             options = new { temperature = 0.1, seed = 73, num_ctx = 4096, num_predict = 2048 }

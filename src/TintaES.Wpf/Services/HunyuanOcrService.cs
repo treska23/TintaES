@@ -1,6 +1,9 @@
+using System.Collections.Concurrent;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Windows.Media.Imaging;
@@ -23,9 +26,12 @@ public sealed class HunyuanOcrService
 {
     private const string DefaultEndpoint = "http://127.0.0.1:8080";
     private const string DefaultAlias = "HYVL";
+    private const string SpotCacheVersion = "hunyuan-spots-v1";
     private static readonly TimeSpan StartTimeout = TimeSpan.FromSeconds(45);
     private static readonly SemaphoreSlim ServerGate = new(1, 1);
     private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromMinutes(4) };
+    private static readonly ConcurrentDictionary<string, string> ResolvedModels =
+        new(StringComparer.OrdinalIgnoreCase);
     private static Process? _serverProcess;
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
@@ -40,6 +46,67 @@ public sealed class HunyuanOcrService
 坐标使用整张图片归一化后的 0-1000 坐标。bbox 必须覆盖该完整文本块，而不是只覆盖最后一行。
 忽略没有可读文字的图形。保持页面阅读顺序。
 """;
+
+    public async Task<bool> WarmUpAsync(
+        string projectRoot,
+        CancellationToken cancellationToken = default)
+    {
+        if (IsDisabled())
+        {
+            return false;
+        }
+
+        string endpoint = ResolveEndpoint();
+        try
+        {
+            if (!await EnsureAvailableAsync(endpoint, projectRoot, cancellationToken))
+            {
+                return false;
+            }
+
+            _ = await ResolveModelAsync(endpoint, cancellationToken);
+            return true;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception) when (
+            exception is HttpRequestException
+                or IOException
+                or JsonException
+                or InvalidOperationException
+                or TaskCanceledException)
+        {
+            return false;
+        }
+    }
+
+    public async Task<bool> HasCachedResultAsync(
+        string sourcePath,
+        string projectRoot,
+        CancellationToken cancellationToken = default)
+    {
+        if (IsDisabled())
+        {
+            return true;
+        }
+
+        try
+        {
+            byte[] imageBytes = await File.ReadAllBytesAsync(sourcePath, cancellationToken);
+            (int width, int height) = ReadImageSize(imageBytes);
+            string cachePath = CreateSpotCachePath(
+                imageBytes,
+                ResolveEndpoint(),
+                projectRoot);
+            return TryLoadSpots(cachePath, width, height, out _);
+        }
+        catch (Exception exception) when (exception is IOException or JsonException)
+        {
+            return false;
+        }
+    }
 
     public async Task<HunyuanOcrPassResult> TryImproveAsync(
         string sourcePath,
@@ -56,6 +123,19 @@ public sealed class HunyuanOcrService
         string endpoint = ResolveEndpoint();
         try
         {
+            byte[] imageBytes = await File.ReadAllBytesAsync(sourcePath, cancellationToken);
+            (int width, int height) = ReadImageSize(imageBytes);
+            string cachePath = CreateSpotCachePath(imageBytes, endpoint, projectRoot);
+            if (TryLoadSpots(cachePath, width, height, out IReadOnlyList<HunyuanTextSpot> cachedSpots))
+            {
+                int cachedReplacements = HunyuanTextSpotting.ApplyToRegions(regions, cachedSpots);
+                return new HunyuanOcrPassResult(
+                    true,
+                    cachedSpots.Count,
+                    cachedReplacements,
+                    $"{cachedReplacements} zona(s) corregidas desde la caché visual");
+            }
+
             bool available = await EnsureAvailableAsync(endpoint, projectRoot, cancellationToken);
             if (!available)
             {
@@ -63,15 +143,20 @@ public sealed class HunyuanOcrService
             }
 
             progress?.Report(new AnalysisProgress(93, 100, "HunyuanOCR está leyendo la página completa…"));
-            (int width, int height) = ReadImageSize(sourcePath);
             string model = await ResolveModelAsync(endpoint, cancellationToken);
-            string response = await RequestSpottingAsync(endpoint, model, sourcePath, cancellationToken);
+            string response = await RequestSpottingAsync(
+                endpoint,
+                model,
+                sourcePath,
+                imageBytes,
+                cancellationToken);
             IReadOnlyList<HunyuanTextSpot> spots = HunyuanTextSpotting.Parse(response, width, height);
             if (spots.Count == 0)
             {
                 return new HunyuanOcrPassResult(true, 0, 0, "HunyuanOCR no devolvió bloques utilizables");
             }
 
+            SaveSpots(cachePath, width, height, spots);
             int replacements = HunyuanTextSpotting.ApplyToRegions(regions, spots);
             return new HunyuanOcrPassResult(
                 true,
@@ -93,6 +178,14 @@ public sealed class HunyuanOcrService
                 or TaskCanceledException)
         {
             return new HunyuanOcrPassResult(false, 0, 0, $"HunyuanOCR no disponible: {exception.Message}");
+        }
+        finally
+        {
+            // Con 8 GB, mantener Hunyuan, CTD y TranslateGemma a la vez llena la
+            // VRAM. El servidor CUDA tarda unos dos segundos en cargar y una página
+            // cacheada no lo arranca, así que liberarlo entre etapas mejora el flujo
+            // completo sin cambiar ninguna operación del modelo.
+            StopOwnedServer();
         }
     }
 
@@ -174,6 +267,12 @@ public sealed class HunyuanOcrService
             startInfo.ArgumentList.Add("10240");
             startInfo.ArgumentList.Add("--n-predict");
             startInfo.ArgumentList.Add("4096");
+            // TintaES envía una sola página cada vez. Un único slot evita reservar
+            // memoria para peticiones paralelas que la aplicación nunca realiza.
+            startInfo.ArgumentList.Add("--parallel");
+            startInfo.ArgumentList.Add("1");
+            startInfo.ArgumentList.Add("--gpu-layers");
+            startInfo.ArgumentList.Add("all");
 
             var process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
             if (!process.Start())
@@ -235,6 +334,11 @@ public sealed class HunyuanOcrService
             return configured.Trim();
         }
 
+        if (ResolvedModels.TryGetValue(endpoint, out string? cachedModel))
+        {
+            return cachedModel;
+        }
+
         using HttpResponseMessage response = await Http.GetAsync($"{endpoint}/v1/models", cancellationToken);
         response.EnsureSuccessStatusCode();
         using JsonDocument document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
@@ -244,8 +348,11 @@ public sealed class HunyuanOcrService
             && data[0].TryGetProperty("id", out JsonElement id)
             && !string.IsNullOrWhiteSpace(id.GetString()))
         {
-            return id.GetString()!;
+            string resolved = id.GetString()!;
+            ResolvedModels[endpoint] = resolved;
+            return resolved;
         }
+        ResolvedModels[endpoint] = DefaultAlias;
         return DefaultAlias;
     }
 
@@ -253,9 +360,9 @@ public sealed class HunyuanOcrService
         string endpoint,
         string model,
         string sourcePath,
+        byte[] bytes,
         CancellationToken cancellationToken)
     {
-        byte[] bytes = await File.ReadAllBytesAsync(sourcePath, cancellationToken);
         string mime = Path.GetExtension(sourcePath).ToLowerInvariant() switch
         {
             ".jpg" or ".jpeg" => "image/jpeg",
@@ -334,9 +441,9 @@ public sealed class HunyuanOcrService
         return answer.ToString();
     }
 
-    private static (int Width, int Height) ReadImageSize(string sourcePath)
+    private static (int Width, int Height) ReadImageSize(byte[] imageBytes)
     {
-        using FileStream stream = File.OpenRead(sourcePath);
+        using var stream = new MemoryStream(imageBytes, writable: false);
         BitmapDecoder decoder = BitmapDecoder.Create(
             stream,
             BitmapCreateOptions.PreservePixelFormat,
@@ -347,9 +454,17 @@ public sealed class HunyuanOcrService
 
     private static string? FindServerExecutable(string projectRoot)
     {
-        string root = Path.Combine(projectRoot, "engine", "hunyuanocr");
+        string root = LocalEnginePaths.GetHunyuanRoot(projectRoot);
+        string? configured = Environment.GetEnvironmentVariable("TINTAES_HUNYUAN_SERVER");
+        if (!string.IsNullOrWhiteSpace(configured) && File.Exists(configured.Trim()))
+        {
+            return Path.GetFullPath(configured.Trim());
+        }
+
         return new[]
             {
+                Path.Combine(root, "runtime", "cuda", "llama-server.exe"),
+                Path.Combine(root, "runtime", "cpu", "llama-server.exe"),
                 Path.Combine(root, "llama.cpp", "build", "bin", "Release", "llama-server.exe"),
                 Path.Combine(root, "llama.cpp", "build", "bin", "llama-server.exe"),
                 Path.Combine(root, "llama-server.exe")
@@ -359,7 +474,7 @@ public sealed class HunyuanOcrService
 
     private static (string? Model, string? Mmproj) FindModels(string projectRoot)
     {
-        string root = Path.Combine(projectRoot, "engine", "hunyuanocr");
+        string root = LocalEnginePaths.GetHunyuanRoot(projectRoot);
         string[] folders =
         [
             Path.Combine(root, "model"),
@@ -376,6 +491,125 @@ public sealed class HunyuanOcrService
             }
         }
         return (null, null);
+    }
+
+    private static string CreateSpotCachePath(
+        byte[] imageBytes,
+        string endpoint,
+        string projectRoot)
+    {
+        var identity = new StringBuilder();
+        identity.Append(SpotCacheVersion)
+            .Append('|').Append(endpoint)
+            .Append('|').Append(Environment.GetEnvironmentVariable("TINTAES_HUNYUAN_OCR_MODEL"))
+            .Append('|').Append(ComicSpottingPrompt)
+            .Append('|').Append(Convert.ToHexString(SHA256.HashData(imageBytes)));
+
+        (string? model, string? mmproj) = FindModels(projectRoot);
+        AppendFileIdentity(identity, model);
+        AppendFileIdentity(identity, mmproj);
+        AppendFileIdentity(identity, FindServerExecutable(projectRoot));
+
+        string key = Convert.ToHexString(
+            SHA256.HashData(Encoding.UTF8.GetBytes(identity.ToString())))[..32]
+            .ToLowerInvariant();
+        return Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "TintaES",
+            "Cache",
+            "Hunyuan",
+            $"{key}.json");
+    }
+
+    private static void AppendFileIdentity(StringBuilder identity, string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+        {
+            identity.Append("|missing");
+            return;
+        }
+
+        var file = new FileInfo(path);
+        identity.Append('|').Append(file.FullName)
+            .Append('|').Append(file.Length)
+            .Append('|').Append(file.LastWriteTimeUtc.Ticks);
+    }
+
+    private static bool TryLoadSpots(
+        string cachePath,
+        int width,
+        int height,
+        out IReadOnlyList<HunyuanTextSpot> spots)
+    {
+        spots = [];
+        if (!File.Exists(cachePath))
+        {
+            return false;
+        }
+
+        try
+        {
+            HunyuanSpotCache? cache = JsonSerializer.Deserialize<HunyuanSpotCache>(
+                File.ReadAllText(cachePath, Encoding.UTF8),
+                JsonOptions);
+            if (cache is null
+                || !string.Equals(cache.Version, SpotCacheVersion, StringComparison.Ordinal)
+                || cache.Width != width
+                || cache.Height != height
+                || cache.Spots.Count == 0)
+            {
+                return false;
+            }
+
+            spots = cache.Spots;
+            return true;
+        }
+        catch (Exception exception) when (exception is IOException or JsonException)
+        {
+            return false;
+        }
+    }
+
+    private static void SaveSpots(
+        string cachePath,
+        int width,
+        int height,
+        IReadOnlyList<HunyuanTextSpot> spots)
+    {
+        string? temporaryPath = null;
+        try
+        {
+            string directory = Path.GetDirectoryName(cachePath)
+                               ?? throw new InvalidOperationException("La caché de Hunyuan no tiene carpeta.");
+            Directory.CreateDirectory(directory);
+            temporaryPath = $"{cachePath}.{Guid.NewGuid():N}.tmp";
+            var cache = new HunyuanSpotCache(SpotCacheVersion, width, height, spots);
+            File.WriteAllText(
+                temporaryPath,
+                JsonSerializer.Serialize(cache, JsonOptions),
+                new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+            File.Move(temporaryPath, cachePath, overwrite: true);
+            temporaryPath = null;
+        }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException or JsonException)
+        {
+            // La caché acelera ejecuciones posteriores, pero nunca decide si el OCR funciona.
+        }
+        finally
+        {
+            if (temporaryPath is not null)
+            {
+                try
+                {
+                    File.Delete(temporaryPath);
+                }
+                catch (IOException)
+                {
+                    // Otro proceso puede estar terminando de mover el mismo archivo temporal.
+                }
+            }
+        }
     }
 
     private static async Task DrainAsync(StreamReader reader)
@@ -396,4 +630,37 @@ public sealed class HunyuanOcrService
             // El servidor terminó.
         }
     }
+
+    private static void StopOwnedServer()
+    {
+        Process? process = Interlocked.Exchange(ref _serverProcess, null);
+        if (process is null)
+        {
+            return;
+        }
+
+        try
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+                process.WaitForExit(2_000);
+            }
+        }
+        catch (Exception exception) when (
+            exception is InvalidOperationException or Win32Exception)
+        {
+            // El proceso ya terminó o Windows lo cerró al finalizar la petición.
+        }
+        finally
+        {
+            process.Dispose();
+        }
+    }
+
+    private sealed record HunyuanSpotCache(
+        string Version,
+        int Width,
+        int Height,
+        IReadOnlyList<HunyuanTextSpot> Spots);
 }

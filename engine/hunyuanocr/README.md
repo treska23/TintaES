@@ -12,12 +12,15 @@ Desde PowerShell, en esta carpeta:
 
 El script:
 
-1. clona y compila `llama.cpp`;
+1. instala el runtime CUDA oficial precompilado si detecta una GPU NVIDIA; si no,
+   compila `llama.cpp` para la plataforma disponible;
 2. descarga el checkpoint oficial `tencent/HunyuanOCR`;
 3. genera `model\hyocr-f16.gguf` y `model\mmproj-hyocr-f16.gguf`;
 4. deja `llama-server.exe` en la ubicación que TintaES detecta automáticamente.
 
-Por defecto usa CUDA si encuentra `nvcc`; en otro caso compila para CPU. Se puede forzar:
+Por defecto usa CUDA si detecta una GPU NVIDIA. No hace falta instalar CUDA Toolkit:
+si no encuentra `nvcc`, descarga el runtime CUDA oficial y deja la compilación CPU
+existente como respaldo. Se puede forzar:
 
 ```powershell
 .\setup-hunyuanocr.ps1 -Backend cuda
@@ -41,6 +44,12 @@ Variables opcionales:
 - `TINTAES_HUNYUAN_OCR=0` desactiva HunyuanOCR y fuerza el lector clásico.
 - `TINTAES_HUNYUAN_OCR_URL=http://127.0.0.1:8080` cambia el endpoint.
 - `TINTAES_HUNYUAN_OCR_MODEL=HYVL` fuerza el identificador de modelo de la API.
+- `TINTAES_HUNYUAN_SERVER=C:\ruta\llama-server.exe` fuerza un ejecutable concreto.
+
+Los bloques visuales reconocidos se guardan en una caché independiente, ligada al
+contenido de la imagen, al modelo, al prompt y al runtime. Volver a abrir una página
+ya reconocida no repite la inferencia y no reutiliza resultados si cambia cualquiera
+de esos elementos.
 
 Si HunyuanOCR no está disponible o falla una petición, el análisis no se cancela: TintaES conserva el OCR clásico y muestra el estado en la barra inferior.
 

@@ -98,7 +98,7 @@ public partial class MainWindow
         try
         {
             string projectRoot = FindPsdProjectRoot();
-            string pythonPath = Path.Combine(projectRoot, "engine", "manga-image-translator", ".venv", "Scripts", "python.exe");
+            string pythonPath = LocalEnginePaths.GetMangaPython(projectRoot);
             string exporterPath = Path.Combine(projectRoot, "engine", "export_psd.py");
             if (!File.Exists(pythonPath))
             {

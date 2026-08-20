@@ -86,7 +86,8 @@ internal static class ReaderTintaProjectLoader
                 List<ComicRegion> storedRegions = storedPage.Regions ?? [];
                 foreach (ComicRegion region in storedRegions)
                 {
-                    NormalizeReaderLoadedRegion(region);
+                    region.Style ??= new ComicTextStyle();
+                    RegionMerger.Sanitize(region);
                 }
 
                 IReadOnlyList<ComicRegion> regions = BalloonRegionGrouper.Group(storedRegions);
@@ -113,67 +114,6 @@ internal static class ReaderTintaProjectLoader
             DeleteWorkspace(workspace);
             throw;
         }
-    }
-
-    /// <summary>
-    /// El editor normaliza los datos persistidos antes de usarlos. El Reader debe hacer lo mismo:
-    /// de lo contrario TextBox/RenderBox pueden representar geometrías distintas aunque ambos
-    /// estén leyendo exactamente el mismo .tinta.
-    /// </summary>
-    private static void NormalizeReaderLoadedRegion(ComicRegion region)
-    {
-        region.Style ??= new ComicTextStyle();
-        RegionMerger.Sanitize(region);
-        region.SafePolygon ??= [];
-        region.RenderBox = ResolveReaderConservativeTextFrame(region);
-
-        if (!double.IsFinite(region.FontScale) || region.FontScale <= 0)
-        {
-            region.FontScale = 1;
-        }
-        if (!double.IsFinite(region.ManualFontScale) || region.ManualFontScale <= 0)
-        {
-            region.ManualFontScale = 1;
-        }
-        if (!double.IsFinite(region.ManualBaseFontSize) || region.ManualBaseFontSize < 0)
-        {
-            region.ManualBaseFontSize = 0;
-        }
-        if (!double.IsFinite(region.TextOffsetX))
-        {
-            region.TextOffsetX = 0;
-        }
-        if (!double.IsFinite(region.TextOffsetY))
-        {
-            region.TextOffsetY = 0;
-        }
-    }
-
-    private static NormalizedRect ResolveReaderConservativeTextFrame(ComicRegion region)
-    {
-        if (region.SafePolygon.Count >= 3)
-        {
-            double left = region.SafePolygon.Min(point => point.X);
-            double top = region.SafePolygon.Min(point => point.Y);
-            double right = region.SafePolygon.Max(point => point.X);
-            double bottom = region.SafePolygon.Max(point => point.Y);
-            if (double.IsFinite(left)
-                && double.IsFinite(top)
-                && double.IsFinite(right)
-                && double.IsFinite(bottom)
-                && right - left >= 5
-                && bottom - top >= 5)
-            {
-                return new NormalizedRect(left, top, right - left, bottom - top)
-                    .Expand(0.035, 0.045)
-                    .Clamp();
-            }
-        }
-
-        bool rectangular = region.Type is "narration" or "caption";
-        return region.TextBox
-            .Expand(rectangular ? 0.18 : 0.24, rectangular ? 0.30 : 0.40)
-            .Clamp();
     }
 
     private static string NormalizeArchiveEntryName(string? value)
