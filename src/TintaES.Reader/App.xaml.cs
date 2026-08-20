@@ -20,9 +20,10 @@ public partial class App : Application
         reader.EnsureStandaloneResponsiveLayoutInstalled();
         reader.EnsureStandaloneImmersiveNavigationInstalled();
         reader.EnsureDirectTouchNavigationInstalled();
-        // Esta capa se instala la última: resuelve el bocadillo sobre la geometría realmente
-        // renderizada y evita que rutas táctiles antiguas compitan por la misma pulsación.
         reader.EnsureStandaloneDirectTranslationInputInstalled();
+        // La capa física de regiones se instala la última. Es la autoridad final para hover/toque
+        // porque usa el hit-test real de WPF sobre elementos que se escalan junto con la página.
+        reader.EnsureStandaloneTranslationHitLayerInstalled();
 
         MainWindow = reader;
         reader.Show();
