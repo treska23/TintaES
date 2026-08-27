@@ -8,12 +8,13 @@
     <Nullable>enable</Nullable>
     <AssemblyName>TintaES</AssemblyName>
     <RootNamespace>TintaES.Wpf</RootNamespace>
-    <ApplicationIcon />
+    <ApplicationIcon>Resources\TintaES.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\TintaES.Core\TintaES.Core.csproj" />
     <PackageReference Include="SharpCompress" Version="0.49.1" />
+    <Resource Include="Resources\TintaES.ico" />
     <Resource Include="Resources\Fonts\klee_one_semibold_es.ttf"
               Condition="Exists('Resources\Fonts\klee_one_semibold_es.ttf')" />
     <Resource Include="..\..\engine\manga-image-translator\fonts\comic shanns 2.ttf"
