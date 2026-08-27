@@ -1,0 +1,76 @@
+name: Temporary invalid project open fix
+
+on:
+  push:
+    branches:
+      - codex/handle-invalid-project-file
+
+permissions:
+  contents: write
+
+jobs:
+  patch-test-commit:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: codex/handle-invalid-project-file
+          fetch-depth: 0
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Apply guarded fix
+        shell: pwsh
+        run: |
+          python scripts/apply-invalid-project-open-fix.py
+          git diff --check
+
+      - name: Build solution
+        shell: pwsh
+        run: dotnet build TintaES.sln --configuration Release
+
+      - name: Verify invalid file is handled without escaping exception
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bin = Resolve-Path 'src/TintaES.Wpf/bin/Release/net10.0-windows10.0.19041.0'
+          [System.Reflection.Assembly]::LoadFrom((Join-Path $bin 'TintaES.Core.dll')) | Out-Null
+          $assembly = [System.Reflection.Assembly]::LoadFrom((Join-Path $bin 'TintaES.dll'))
+          $type = $assembly.GetType('TintaES.Wpf.MainWindow', $true)
+          $flags = [System.Reflection.BindingFlags]::NonPublic -bor [System.Reflection.BindingFlags]::Static
+          $method = $type.GetMethod('ExtractTintaProject', $flags)
+          if ($null -eq $method) { throw 'No se encontró ExtractTintaProject.' }
+
+          $root = Join-Path $env:RUNNER_TEMP 'tinta-invalid-open-test'
+          $workspace = Join-Path $root 'workspace'
+          New-Item -ItemType Directory -Force -Path $workspace | Out-Null
+          $badFile = Join-Path $root 'not-a-project.tinta'
+          [System.IO.File]::WriteAllText($badFile, 'esto no es un zip ni un proyecto tinta')
+
+          try {
+              $result = $method.Invoke($null, @($badFile, $workspace))
+          }
+          catch {
+              throw "Un archivo inválido todavía deja escapar una excepción: $($_.Exception)"
+          }
+
+          if ($null -ne $result.Item1) { throw 'Un archivo inválido no puede producir un manifiesto.' }
+          if ([string]::IsNullOrWhiteSpace([string]$result.Item2)) { throw 'Debe devolver un mensaje legible para la aplicación.' }
+          Write-Host "OK: $($result.Item2)"
+
+      - name: Commit validated fix
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Remove-Item '.github/workflows/temp-invalid-project-open-fix.yml'
+          Remove-Item 'scripts/apply-invalid-project-open-fix.py'
+          git diff --check
+          git config user.name 'TintaES CI'
+          git config user.email 'actions@users.noreply.github.com'
+          git add src/TintaES.Wpf/MainWindow.ProjectPersistence.cs src/TintaES.Wpf/MainWindow.ClassicMenu.cs .github/workflows/temp-invalid-project-open-fix.yml scripts/apply-invalid-project-open-fix.py
+          git commit -m 'Handle invalid Tinta project files without breaking the app'
+          git push origin HEAD:codex/handle-invalid-project-file
