@@ -11,16 +11,12 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\TintaES.Core\TintaES.Core.csproj" />
+    <!-- El Reader es la aplicación madre en modo de solo lectura. No vuelve a compilar un visor
+         paralelo: referencia TintaES.Wpf y arranca su MainWindow real. -->
+    <ProjectReference Include="..\TintaES.Wpf\TintaES.Wpf.csproj" />
 
-    <!-- El lector comparte únicamente el visor. No referencia TintaES.Wpf, por lo que no arrastra
-         Ollama, OCR, SharpCompress, el motor Python ni las herramientas de edición. -->
-    <Compile Include="..\TintaES.Wpf\ComicReaderWindow.cs" Link="Shared\ComicReaderWindow.cs" />
-    <Compile Include="..\TintaES.Wpf\ComicReaderWindow.Translations.cs" Link="Shared\ComicReaderWindow.Translations.cs" />
-    <Compile Include="..\TintaES.Wpf\ComicReaderWindow.ScreenBounds.cs" Link="Shared\ComicReaderWindow.ScreenBounds.cs" />
-    <Compile Include="..\TintaES.Wpf\ComicReaderWindow.TintaOpening.cs" Link="Shared\ComicReaderWindow.TintaOpening.cs" />
-    <Compile Include="..\TintaES.Wpf\ReaderComicDocument.cs" Link="Shared\ReaderComicDocument.cs" />
-    <Compile Include="..\TintaES.Wpf\ReaderTintaProjectLoader.cs" Link="Shared\ReaderTintaProjectLoader.cs" />
-    <Compile Include="..\TintaES.Wpf\ReaderBuildInfo.cs" Link="Shared\ReaderBuildInfo.cs" />
+    <!-- Implementación histórica del visor independiente. Se conserva en Git únicamente como
+         referencia mientras se valida la transición, pero no forma parte del ejecutable. -->
+    <Compile Remove="Reader*.cs" />
   </ItemGroup>
 </Project>

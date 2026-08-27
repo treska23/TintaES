@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - agent/preserve-original-lettering
+      - agent/reader-mother-shell
   pull_request:
     branches:
       - main
