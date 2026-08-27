@@ -26,85 +26,7 @@ jobs:
       - name: Apply exact guarded changes
         shell: pwsh
         run: |
-          $ErrorActionPreference = 'Stop'
-          $utf8 = New-Object System.Text.UTF8Encoding($false)
-
-          $clientPath = 'src/TintaES.Core/OllamaClient.cs'
-          $client = [System.IO.File]::ReadAllText($clientPath)
-          $methodMarker = '    private async Task TranslateGemmaBatchAsync('
-          if ([regex]::Matches($client, [regex]::Escape($methodMarker)).Count -ne 1) {
-              throw 'TranslateGemmaBatchAsync marker changed; refusing to patch.'
-          }
-          $helper = @'
-    private static int GetTranslateGemmaChunkSize(
-        string model,
-        IReadOnlyList<ComicRegion> regions)
-    {
-        const int conservativeChunkSize = 6;
-        if (!model.StartsWith("translategemma:12b", StringComparison.OrdinalIgnoreCase))
-        {
-            return conservativeChunkSize;
-        }
-
-        // TranslateGemma 12B soporta lotes mayores, pero mantenemos el tamaño histórico
-        // cuando una página es especialmente densa. Así reducimos llamadas y contexto
-        // repetido en páginas normales sin recortar contexto ni relajar validaciones.
-        int contextCharacters = regions.Sum(region => FormatSourceForModel(region).Length + 24);
-        return contextCharacters <= 6000 ? 12 : conservativeChunkSize;
-    }
-
-'@
-          $client = $client.Replace($methodMarker, $helper + $methodMarker)
-
-          $oldChunk = '        const int chunkSize = 6;'
-          if ([regex]::Matches($client, [regex]::Escape($oldChunk)).Count -ne 1) {
-              throw 'TranslateGemma chunk-size line changed; refusing to patch.'
-          }
-          $client = $client.Replace(
-              $oldChunk,
-              '        int chunkSize = GetTranslateGemmaChunkSize(model, regions);')
-          [System.IO.File]::WriteAllText($clientPath, $client, $utf8)
-
-          $testPath = 'tests/TintaES.Core.Tests/Program.cs'
-          $tests = [System.IO.File]::ReadAllText($testPath)
-          $listMarker = '    ("No desplaza traducciones si TranslateGemma omite una línea", TestTranslateGemmaStableMappingAsync),'
-          if ([regex]::Matches($tests, [regex]::Escape($listMarker)).Count -ne 1) {
-              throw 'TranslateGemma test-list marker changed; refusing to patch.'
-          }
-          $tests = $tests.Replace(
-              $listMarker,
-              $listMarker + "`n    (`"Reduce llamadas de TranslateGemma 12B sin perder recuperación`", TestTranslateGemma12BThroughputAsync),")
-
-          $functionMarker = 'static async Task TestTranslateGemmaWholeBatchRecoveryAsync()'
-          if ([regex]::Matches($tests, [regex]::Escape($functionMarker)).Count -ne 1) {
-              throw 'TranslateGemma test-function marker changed; refusing to patch.'
-          }
-          $newTest = @'
-static async Task TestTranslateGemma12BThroughputAsync()
-{
-    var handler = new FakeTranslateGemmaHandler();
-    using var http = new HttpClient(handler) { BaseAddress = new Uri("http://127.0.0.1:11434/") };
-    using var client = new OllamaClient(httpClient: http);
-    ComicRegion[] regions = Enumerable.Range(1, 12)
-        .Select(index => new ComicRegion
-        {
-            Original = $"COMIC LINE {index}",
-            Type = "dialogue"
-        })
-        .ToArray();
-
-    await client.TranslateRegionsAsync(regions, "translategemma:12b", CancellationToken.None);
-
-    Assert(regions.All(region => region.HasRenderableTranslation),
-        "El lote rápido de 12B debe conservar todas las traducciones válidas.");
-    Assert(handler.Calls == 2,
-        "Doce bocadillos con una omisión deben resolverse en un lote inicial y un reintento, no en dos lotes completos.");
-}
-
-'@
-          $tests = $tests.Replace($functionMarker, $newTest + $functionMarker)
-          [System.IO.File]::WriteAllText($testPath, $tests, $utf8)
-
+          python scripts/apply-translategemma-speedup.py
           git diff --check
 
       - name: Run translation regression tests
@@ -120,9 +42,10 @@ static async Task TestTranslateGemma12BThroughputAsync()
         run: |
           $ErrorActionPreference = 'Stop'
           Remove-Item '.github/workflows/temp-translate-speedup.yml'
+          Remove-Item 'scripts/apply-translategemma-speedup.py'
           git diff --check
           git config user.name 'TintaES CI'
           git config user.email 'actions@users.noreply.github.com'
-          git add src/TintaES.Core/OllamaClient.cs tests/TintaES.Core.Tests/Program.cs .github/workflows/temp-translate-speedup.yml
+          git add src/TintaES.Core/OllamaClient.cs tests/TintaES.Core.Tests/Program.cs .github/workflows/temp-translate-speedup.yml scripts/apply-translategemma-speedup.py
           git commit -m 'Speed up TranslateGemma 12B batching without quality loss'
           git push origin HEAD:codex/speed-up-translategemma-12b
