@@ -52,7 +52,8 @@ jobs:
           [System.IO.File]::WriteAllText($badFile, 'esto no es un zip ni un proyecto tinta')
 
           try {
-              $result = $method.Invoke($null, @($badFile, $workspace))
+              [object[]]$arguments = @($badFile.ToString(), $workspace.ToString())
+              $result = $method.Invoke($null, $arguments)
           }
           catch {
               throw "Un archivo inválido todavía deja escapar una excepción: $($_.Exception)"
