@@ -21,3 +21,4 @@ jobs:
         run: |
           if (-not (Test-Path 'src/TintaES.Wpf/Resources/TintaES.ico')) { throw 'Falta TintaES.ico' }
           if (-not (Select-String -Path 'src/TintaES.Wpf/TintaES.Wpf.csproj' -Pattern '<ApplicationIcon>Resources\\TintaES.ico</ApplicationIcon>' -Quiet)) { throw 'ApplicationIcon no configurado' }
+          Write-Host 'Icono configurado y compilable.'
