@@ -1,0 +1,18 @@
+name: Temporary app icon build
+
+on:
+  push:
+    branches:
+      - codex/add-app-icon
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Build
+        shell: pwsh
+        run: dotnet build TintaES.sln --configuration Release
