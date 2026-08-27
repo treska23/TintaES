@@ -55,9 +55,14 @@ public partial class MainWindow
 
     private async void SaveProjectButton_Click(object sender, RoutedEventArgs e)
     {
+        await SaveActiveProjectAsync();
+    }
+
+    private async Task<bool> SaveActiveProjectAsync()
+    {
         if (_comicPages.Count == 0)
         {
-            return;
+            return true;
         }
 
         PersistVisibleComicPageRegions();
@@ -73,7 +78,7 @@ public partial class MainWindow
             };
             if (dialog.ShowDialog(this) != true)
             {
-                return;
+                return false;
             }
             targetPath = dialog.FileName;
         }
@@ -93,12 +98,14 @@ public partial class MainWindow
             _currentProjectPath = finalPath;
             MarkActiveDocumentSaved();
             SetFooterStatus($"Proyecto guardado · {Path.GetFileName(finalPath)}", "#58A77D");
+            return true;
         }
         catch (Exception exception)
         {
             MessageBox.Show(this, $"No se pudo guardar el proyecto.\n\n{exception.Message}", "Tinta ES",
                 MessageBoxButton.OK, MessageBoxImage.Error);
             SetFooterStatus("No se pudo guardar el proyecto.", "#EE594B");
+            return false;
         }
         finally
         {

@@ -1,23 +1,4 @@
-from pathlib import Path
-
-project_path = Path('src/TintaES.Wpf/MainWindow.ProjectPersistence.cs')
-text = project_path.read_text(encoding='utf-8')
-
-old = '''    private async void SaveProjectButton_Click(object sender, RoutedEventArgs e)\n    {\n        if (_comicPages.Count == 0)\n        {\n            return;\n        }\n\n        PersistVisibleComicPageRegions();\n        string? targetPath = _currentProjectPath;\n        if (string.IsNullOrWhiteSpace(targetPath))\n        {\n            var dialog = new SaveFileDialog\n            {\n                Title = "Guardar proyecto de TintaES",\n                FileName = MakeSafeFileName(_comicTitle ?? "comic") + ".tinta",\n                DefaultExt = ".tinta",\n                Filter = "Proyecto TintaES|*.tinta"\n            };\n            if (dialog.ShowDialog(this) != true)\n            {\n                return;\n            }\n            targetPath = dialog.FileName;\n        }\n\n        BusyOverlay.Visibility = Visibility.Visible;\n        BusyTitleText.Text = "Guardando proyecto…";\n        BusyProgressBar.IsIndeterminate = true;\n        FooterProgressBar.Visibility = Visibility.Visible;\n        FooterProgressBar.IsIndeterminate = true;\n        UpdateProjectCommandAvailability();\n        await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Render);\n\n        try\n        {\n            string finalPath = targetPath;\n            await Task.Run(() => WriteTintaProject(finalPath));\n            _currentProjectPath = finalPath;\n            MarkActiveDocumentSaved();\n            SetFooterStatus($"Proyecto guardado · {Path.GetFileName(finalPath)}", "#58A77D");\n        }\n        catch (Exception exception)\n        {\n            MessageBox.Show(this, $"No se pudo guardar el proyecto.\\n\\n{exception.Message}", "Tinta ES",\n                MessageBoxButton.OK, MessageBoxImage.Error);\n            SetFooterStatus("No se pudo guardar el proyecto.", "#EE594B");\n        }\n        finally\n        {\n            BusyOverlay.Visibility = Visibility.Collapsed;\n            BusyProgressBar.IsIndeterminate = false;\n            FooterProgressBar.Visibility = Visibility.Collapsed;\n            FooterProgressBar.IsIndeterminate = false;\n            UpdateProjectCommandAvailability();\n        }\n    }\n'''
-
-new = '''    private async void SaveProjectButton_Click(object sender, RoutedEventArgs e)\n    {\n        await SaveActiveProjectAsync();\n    }\n\n    private async Task<bool> SaveActiveProjectAsync()\n    {\n        if (_comicPages.Count == 0)\n        {\n            return true;\n        }\n\n        PersistVisibleComicPageRegions();\n        string? targetPath = _currentProjectPath;\n        if (string.IsNullOrWhiteSpace(targetPath))\n        {\n            var dialog = new SaveFileDialog\n            {\n                Title = "Guardar proyecto de TintaES",\n                FileName = MakeSafeFileName(_comicTitle ?? "comic") + ".tinta",\n                DefaultExt = ".tinta",\n                Filter = "Proyecto TintaES|*.tinta"\n            };\n            if (dialog.ShowDialog(this) != true)\n            {\n                return false;\n            }\n            targetPath = dialog.FileName;\n        }\n\n        BusyOverlay.Visibility = Visibility.Visible;\n        BusyTitleText.Text = "Guardando proyecto…";\n        BusyProgressBar.IsIndeterminate = true;\n        FooterProgressBar.Visibility = Visibility.Visible;\n        FooterProgressBar.IsIndeterminate = true;\n        UpdateProjectCommandAvailability();\n        await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Render);\n\n        try\n        {\n            string finalPath = targetPath;\n            await Task.Run(() => WriteTintaProject(finalPath));\n            _currentProjectPath = finalPath;\n            MarkActiveDocumentSaved();\n            SetFooterStatus($"Proyecto guardado · {Path.GetFileName(finalPath)}", "#58A77D");\n            return true;\n        }\n        catch (Exception exception)\n        {\n            MessageBox.Show(this, $"No se pudo guardar el proyecto.\\n\\n{exception.Message}", "Tinta ES",\n                MessageBoxButton.OK, MessageBoxImage.Error);\n            SetFooterStatus("No se pudo guardar el proyecto.", "#EE594B");\n            return false;\n        }\n        finally\n        {\n            BusyOverlay.Visibility = Visibility.Collapsed;\n            BusyProgressBar.IsIndeterminate = false;\n            FooterProgressBar.Visibility = Visibility.Collapsed;\n            FooterProgressBar.IsIndeterminate = false;\n            UpdateProjectCommandAvailability();\n        }\n    }\n'''
-
-if text.count(old) != 1:
-    raise SystemExit('No se encontró exactamente una versión esperada de SaveProjectButton_Click.')
-if 'SaveActiveProjectAsync' in text:
-    raise SystemExit('SaveActiveProjectAsync ya existe; se aborta para no duplicar lógica.')
-project_path.write_text(text.replace(old, new), encoding='utf-8')
-
-close_guard = Path('src/TintaES.Wpf/MainWindow.CloseGuard.cs')
-if close_guard.exists():
-    raise SystemExit('MainWindow.CloseGuard.cs ya existe; se aborta para no sobrescribirlo.')
-
-close_guard.write_text(r'''using System.ComponentModel;
+using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Threading;
@@ -256,4 +237,3 @@ public partial class MainWindow
         Cancel
     }
 }
-''', encoding='utf-8')
