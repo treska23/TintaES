@@ -16,3 +16,8 @@ jobs:
       - name: Build
         shell: pwsh
         run: dotnet build TintaES.sln --configuration Release
+      - name: Verify icon file exists
+        shell: pwsh
+        run: |
+          if (-not (Test-Path 'src/TintaES.Wpf/Resources/TintaES.ico')) { throw 'Falta TintaES.ico' }
+          if (-not (Select-String -Path 'src/TintaES.Wpf/TintaES.Wpf.csproj' -Pattern '<ApplicationIcon>Resources\\TintaES.ico</ApplicationIcon>' -Quiet)) { throw 'ApplicationIcon no configurado' }
