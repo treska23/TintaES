@@ -1,5 +1,7 @@
 from pathlib import Path
 
+# Temporary guarded patch: the workflow removes this file after validation.
+
 
 def read_exact(path: Path) -> tuple[str, str]:
     with path.open("r", encoding="utf-8", newline="") as handle:
