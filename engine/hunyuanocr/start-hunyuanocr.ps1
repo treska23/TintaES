@@ -1,3 +1,5 @@
+throw "HunyuanOCR-1.5 se ha retirado de TintaES porque su licencia excluye la Unión Europea. Usa PaddleOCR-VL 1.6."
+
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 

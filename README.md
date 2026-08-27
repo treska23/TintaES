@@ -6,8 +6,8 @@ No usa servicios de pago, suscripciones ni claves de API. Las imágenes permanec
 
 ## Cómo funciona
 
-- **Detección y OCR:** Comic Text Detector y OCR 48 px de Manga Image Translator.
-- **Traducción:** `translategemma:4b` se ejecuta en Ollama y traduce todos los textos detectados de la página con contexto compartido.
+- **Detección y OCR:** Comic Text Detector aporta geometría y máscaras; PaddleOCR-VL 1.6 mejora localmente la lectura del OCR 48 px de Manga Image Translator.
+- **Traducción:** `translategemma:12b` se ejecuta en Ollama y traduce todos los textos detectados de la página con contexto compartido. TintaES conserva compatibilidad con `translategemma:4b` en equipos con menos memoria.
 - **Lectura intacta:** las zonas de pulsación son invisibles y nunca borran, tapan ni sustituyen píxeles del cómic.
 - **Interacción directa:** rueda para ampliar, clic y arrastre para moverse, pellizco táctil para zoom y barrido horizontal seguro para cambiar de página.
 - **Revisión:** cada traducción se puede corregir desde el lector o desde el panel de textos y queda guardada en el proyecto `.tinta`.
@@ -40,8 +40,9 @@ dotnet run --project src\TintaES.Wpf\TintaES.Wpf.csproj --configuration Release
 - .NET 10 SDK y Visual Studio con la carga de trabajo de escritorio .NET.
 - Python 3.11 en `engine/manga-image-translator/.venv`.
 - Una GPU NVIDIA compatible con CUDA es muy recomendable.
-- Ollama con `translategemma:4b` instalado.
+- Ollama con `translategemma:12b` instalado (modelo de calidad recomendado). `translategemma:4b` sigue siendo una alternativa más rápida.
 - El submódulo `engine/manga-image-translator` y sus modelos CTD y OCR.
+- El entorno aislado de PaddleOCR-VL 1.6 preparado con `engine\paddleocr\setup-paddleocr.ps1`.
 
 Los modelos, el entorno virtual, las cachés y las páginas procesadas no se guardan en GitHub por su tamaño y privacidad.
 

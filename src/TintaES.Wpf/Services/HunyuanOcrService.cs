@@ -191,11 +191,9 @@ public sealed class HunyuanOcrService
 
     private static bool IsDisabled()
     {
-        string? value = Environment.GetEnvironmentVariable("TINTAES_HUNYUAN_OCR");
-        return value is not null
-               && (value.Equals("0", StringComparison.OrdinalIgnoreCase)
-                   || value.Equals("false", StringComparison.OrdinalIgnoreCase)
-                   || value.Equals("off", StringComparison.OrdinalIgnoreCase));
+        // Retirado: la licencia de HunyuanOCR-1.5 excluye expresamente la Unión Europea.
+        // TintaES usa PaddleOCR-VL 1.6 (Apache 2.0) y no permite reactivar este cargador.
+        return true;
     }
 
     private static string ResolveEndpoint()

@@ -14,6 +14,9 @@ engine/manga-image-translator/.venv/
 engine/manga-image-translator/models/
 engine/manga-image-translator/result/
 engine/hunyuanocr/runtime/
+engine/paddleocr/.venv/
+engine/paddleocr/models/
+engine/local-engine-paths.json
 *.log
 .gh-auth-*.txt
 .DS_Store

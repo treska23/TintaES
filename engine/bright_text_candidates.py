@@ -9,6 +9,23 @@ import cv2
 import numpy as np
 
 
+def read_image(path: Path) -> np.ndarray | None:
+    """OpenCV imread no admite de forma fiable rutas Unicode en Windows."""
+    try:
+        encoded = np.fromfile(path, dtype=np.uint8)
+    except OSError:
+        return None
+    return cv2.imdecode(encoded, cv2.IMREAD_COLOR) if encoded.size else None
+
+
+def write_image(path: Path, image: np.ndarray) -> None:
+    extension = path.suffix or ".png"
+    success, encoded = cv2.imencode(extension, image)
+    if not success:
+        raise RuntimeError(f"No se pudo codificar {path}.")
+    encoded.tofile(path)
+
+
 def find_candidates(image: np.ndarray) -> tuple[np.ndarray, list[dict]]:
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     local = cv2.GaussianBlur(gray, (0, 0), 13)
@@ -302,7 +319,7 @@ def main() -> int:
     input_path = Path(args.input).resolve()
     output_dir = Path(args.output).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
-    image = cv2.imread(str(input_path))
+    image = read_image(input_path)
     if image is None:
         raise RuntimeError(f"No se pudo abrir {input_path}.")
 
@@ -311,8 +328,8 @@ def main() -> int:
     sheet_path = output_dir / "bright-candidates.png"
     mask_path = output_dir / "text-candidate-strokes.png"
     manifest_path = output_dir / "bright-candidates.json"
-    cv2.imwrite(str(sheet_path), sheet)
-    cv2.imwrite(str(mask_path), stroke_mask)
+    write_image(sheet_path, sheet)
+    write_image(mask_path, stroke_mask)
     manifest_path.write_text(
         json.dumps({
             "width": int(image.shape[1]),

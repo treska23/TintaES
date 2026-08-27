@@ -3,6 +3,10 @@ param(
     [string]$Backend = "auto"
 )
 
+# Integración retirada por licencia; el bloqueo ejecutable está tras param.
+
+throw "HunyuanOCR-1.5 se ha retirado de TintaES porque su licencia excluye la Unión Europea. Usa ..\paddleocr\setup-paddleocr.ps1."
+
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 

@@ -110,7 +110,9 @@ public partial class MainWindow : Window
             ModelComboBox.ItemsSource = models;
             ModelComboBox.DisplayMemberPath = nameof(OllamaModel.Name);
             ModelComboBox.SelectedValuePath = nameof(OllamaModel.Name);
-            OllamaModel? preferred = models.FirstOrDefault(model => model.Name.Equals("translategemma:4b", StringComparison.OrdinalIgnoreCase))
+            OllamaModel? preferred = models.FirstOrDefault(model => model.Name.Equals("translategemma:12b", StringComparison.OrdinalIgnoreCase))
+                ?? models.FirstOrDefault(model => model.Name.Equals("translategemma:12b-it-q4_K_M", StringComparison.OrdinalIgnoreCase))
+                ?? models.FirstOrDefault(model => model.Name.Equals("translategemma:4b", StringComparison.OrdinalIgnoreCase))
                 ?? models.FirstOrDefault(model => model.Name.StartsWith("translategemma", StringComparison.OrdinalIgnoreCase))
                 ?? models.FirstOrDefault(model => model.Name.Equals("qwen3.5:9b", StringComparison.OrdinalIgnoreCase))
                 ?? models.FirstOrDefault(model => model.Name.Contains("qwen3.5", StringComparison.OrdinalIgnoreCase))

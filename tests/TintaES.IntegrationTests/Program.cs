@@ -26,6 +26,10 @@ try
     {
         return await RunWindowsOcrImageAsync(ocrImage);
     }
+    if (args is ["--organic-ocr-image", var organicOcrImage])
+    {
+        return await RunOrganicOcrImageAsync(organicOcrImage);
+    }
     if (args is ["--windows-ocr-crop", var cropImage, var cropX, var cropY, var cropWidth, var cropHeight])
     {
         return await RunWindowsOcrCropAsync(
@@ -49,6 +53,29 @@ catch (Exception exception)
 {
     Console.Error.WriteLine($"ERROR_INTEGRACION={exception.GetType().Name}: {exception.Message}");
     return 1;
+}
+
+static async Task<int> RunOrganicOcrImageAsync(string imagePath)
+{
+    if (!File.Exists(imagePath))
+    {
+        Console.Error.WriteLine($"No existe la imagen: {imagePath}");
+        return 2;
+    }
+
+    var progress = new Progress<AnalysisProgress>(value =>
+        Console.WriteLine($"OCR={value.Percentage:F0}% {value.Message}"));
+    OrganicAnalysisResult result = await new OrganicEngineService().AnalyzeAsync(
+        Path.GetFullPath(imagePath),
+        progress);
+    foreach (ComicRegion region in result.Analysis.Regions)
+    {
+        Console.WriteLine(
+            $"[{region.Order:000}] {region.Type} {region.TextBox.X:F0},{region.TextBox.Y:F0} " +
+            $"{region.TextBox.Width:F0}x{region.TextBox.Height:F0}: {region.Original}");
+    }
+    Console.WriteLine($"OCR_ZONAS={result.Analysis.Regions.Count}");
+    return result.Analysis.Regions.Count > 0 ? 0 : 1;
 }
 
 static int RunReaderHitTestSelfTest()
@@ -859,7 +886,7 @@ static bool ContainsPoint(
 static async Task<int> RunAsync(string[] args)
 {
 string imagePath = args.ElementAtOrDefault(0) ?? string.Empty;
-string requestedModel = args.ElementAtOrDefault(1) ?? "translategemma:4b";
+string requestedModel = args.ElementAtOrDefault(1) ?? "translategemma:12b";
 if (args.Length is < 1 or > 2 || !File.Exists(imagePath))
 {
     Console.Error.WriteLine("Uso: TintaES.IntegrationTests <imagen> [modelo]");

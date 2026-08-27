@@ -3,6 +3,8 @@ param(
     [string]$CudaVersion = "12.4"
 )
 
+throw "El runtime HunyuanOCR está retirado. TintaES usa PaddleOCR-VL 1.6 bajo Apache 2.0."
+
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 

@@ -7,9 +7,9 @@ namespace TintaES.Core;
 public sealed record HunyuanTextSpot(string Text, NormalizedRect Box);
 
 /// <summary>
-/// Convierte la salida de HunyuanOCR en zonas normalizadas y la cruza con las regiones
-/// geométricas de TintaES. Hunyuan es responsable del texto; CTD sigue siendo responsable
-/// de la máscara, el fondo y la geometría de edición.
+/// Convierte la salida JSON de un OCR visual en zonas normalizadas y la cruza con las
+/// regiones geométricas de TintaES. El nombre se conserva por compatibilidad binaria;
+/// PaddleOCR-VL aporta ahora el texto y CTD la máscara y la geometría de edición.
 /// </summary>
 public static partial class HunyuanTextSpotting
 {
@@ -377,7 +377,7 @@ public static partial class HunyuanTextSpotting
             return true;
         }
 
-        // Hunyuan es la fuente primaria, pero nunca degradamos una lectura larga a un fragmento.
+        // El OCR visual es una fuente adicional, pero nunca degradamos una lectura larga a un fragmento.
         return candidateWords >= currentWords
                && candidate.Length >= current.Length * 0.82;
     }

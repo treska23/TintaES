@@ -19,7 +19,7 @@ public sealed record OrganicAnalysisResult(
 public sealed class OrganicEngineService
 {
     // Cambiar esta versión invalida únicamente la caché del análisis orgánico.
-    private const string CacheVersion = "organic-reader-v18-hunyuan-spotting";
+    private const string CacheVersion = "organic-reader-v19-paddleocr-vl-1.6";
 
     private static readonly TimeSpan WorkerHeartbeatInterval = TimeSpan.FromSeconds(15);
 
@@ -31,7 +31,7 @@ public sealed class OrganicEngineService
     private static readonly SemaphoreSlim WorkerGate = new(1, 1);
     private static readonly object WorkerStateLock = new();
     private static readonly StringBuilder WorkerErrors = new();
-    private static readonly HunyuanOcrService HunyuanOcr = new();
+    private static readonly PaddleOcrService PaddleOcr = new();
     private static Process? _residentWorker;
     private static Task? _residentErrorReader;
     private static string? _residentWorkerPath;
@@ -76,7 +76,7 @@ public sealed class OrganicEngineService
             cacheKey,
             "analysis.json");
         return IsCompleteCache(manifestPath)
-               && await HunyuanOcr.HasCachedResultAsync(
+               && await PaddleOcr.HasCachedResultAsync(
                    sourcePath,
                    projectRoot,
                    cancellationToken);
@@ -158,14 +158,14 @@ public sealed class OrganicEngineService
         {
             progress?.Report(new AnalysisProgress(90, 100, "Cargando el análisis guardado…"));
             OrganicAnalysisResult cached = LoadResult(manifestPath, true);
-            if (!await HunyuanOcr.HasCachedResultAsync(
+            if (!await PaddleOcr.HasCachedResultAsync(
                     sourcePath,
                     projectRoot,
                     cancellationToken))
             {
                 ResetResidentWorker();
             }
-            return await ApplyHunyuanOcrAsync(
+            return await ApplyPaddleOcrAsync(
                 sourcePath,
                 cached,
                 projectRoot,
@@ -194,10 +194,10 @@ public sealed class OrganicEngineService
             progress,
             cancellationToken);
         OrganicAnalysisResult result = LoadResult(resultManifest, false);
-        // El worker PyTorch ya ha terminado. Liberarlo antes de cargar Hunyuan
-        // evita que los dos modelos compitan por los 8 GB de la RTX.
+        // El worker PyTorch clásico ya ha terminado. Liberarlo antes de cargar
+        // PaddleOCR-VL evita que los dos modelos compitan por los 8 GB de la RTX.
         ResetResidentWorker();
-        return await ApplyHunyuanOcrAsync(
+        return await ApplyPaddleOcrAsync(
             sourcePath,
             result,
             projectRoot,
@@ -205,14 +205,14 @@ public sealed class OrganicEngineService
             cancellationToken);
     }
 
-    private static async Task<OrganicAnalysisResult> ApplyHunyuanOcrAsync(
+    private static async Task<OrganicAnalysisResult> ApplyPaddleOcrAsync(
         string sourcePath,
         OrganicAnalysisResult result,
         string projectRoot,
         IProgress<AnalysisProgress>? progress,
         CancellationToken cancellationToken)
     {
-        HunyuanOcrPassResult pass = await HunyuanOcr.TryImproveAsync(
+        PaddleOcrPassResult pass = await PaddleOcr.TryImproveAsync(
             sourcePath,
             result.Analysis.Regions,
             projectRoot,
@@ -225,15 +225,15 @@ public sealed class OrganicEngineService
                 99,
                 100,
                 pass.Replacements > 0
-                    ? $"HunyuanOCR corrigió {pass.Replacements} zona(s). Preparando la traducción…"
-                    : $"HunyuanOCR: {pass.Detail}. Preparando la traducción…"));
+                    ? $"PaddleOCR-VL corrigió {pass.Replacements} zona(s). Preparando la traducción…"
+                    : $"PaddleOCR-VL: {pass.Detail}. Preparando la traducción…"));
         }
         else
         {
             progress?.Report(new AnalysisProgress(
                 99,
                 100,
-                "HunyuanOCR no está preparado; usando el reconocimiento clásico."));
+                "PaddleOCR-VL no está preparado; usando el reconocimiento clásico."));
         }
 
         return result;
@@ -388,6 +388,11 @@ public sealed class OrganicEngineService
         startInfo.ArgumentList.Add("serve");
         startInfo.Environment["PYTHONUTF8"] = "1";
         startInfo.Environment["PYTHONIOENCODING"] = "utf-8";
+        string? modelDirectory = LocalEnginePaths.GetMangaModelDirectory(projectRoot);
+        if (modelDirectory is not null)
+        {
+            startInfo.Environment["TINTAES_MANGA_MODEL_DIR"] = modelDirectory;
+        }
 
         var worker = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
         if (!worker.Start())
