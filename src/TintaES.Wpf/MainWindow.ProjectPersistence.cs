@@ -192,7 +192,20 @@ public partial class MainWindow
         {
             PrepareNewComicWorkspace();
             string workspace = _comicWorkspace ?? throw new InvalidOperationException("No se pudo preparar el espacio del proyecto.");
-            TintaProjectManifest manifest = await Task.Run(() => ExtractTintaProject(projectPath, workspace));
+            (TintaProjectManifest? manifest, string? openError) = await Task.Run(
+                () => ExtractTintaProject(projectPath, workspace));
+            if (manifest is null)
+            {
+                AbandonEmptyDocumentAfterOpenFailure();
+                MessageBox.Show(
+                    this,
+                    openError ?? "El archivo seleccionado no es un proyecto de TintaES válido.",
+                    "Tinta ES",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+                SetFooterStatus("No se pudo abrir el proyecto.", "#EE594B");
+                return;
+            }
 
             _comicPages.Clear();
             foreach (TintaProjectPage storedPage in manifest.Pages)
@@ -264,42 +277,73 @@ public partial class MainWindow
         }
     }
 
-    private static TintaProjectManifest ExtractTintaProject(string projectPath, string workspace)
+    private static (TintaProjectManifest? Manifest, string? Error) ExtractTintaProject(
+        string projectPath,
+        string workspace)
     {
-        using FileStream input = File.OpenRead(projectPath);
-        using var archive = new ZipArchive(input, ZipArchiveMode.Read, leaveOpen: false);
-        ZipArchiveEntry manifestEntry = archive.GetEntry("project.json")
-            ?? throw new InvalidOperationException("El archivo no contiene un manifiesto de proyecto válido.");
-
-        TintaProjectManifest manifest;
-        using (Stream manifestStream = manifestEntry.Open())
+        try
         {
-            manifest = JsonSerializer.Deserialize<TintaProjectManifest>(manifestStream, ProjectJsonOptions)
-                ?? throw new InvalidOperationException("No se pudo leer el manifiesto del proyecto.");
-        }
-
-        string workspaceRoot = Path.GetFullPath(workspace) + Path.DirectorySeparatorChar;
-        foreach (ZipArchiveEntry entry in archive.Entries)
-        {
-            if (string.IsNullOrEmpty(entry.Name) || string.Equals(entry.FullName, "project.json", StringComparison.OrdinalIgnoreCase))
+            using FileStream input = File.OpenRead(projectPath);
+            using var archive = new ZipArchive(input, ZipArchiveMode.Read, leaveOpen: false);
+            ZipArchiveEntry? manifestEntry = archive.GetEntry("project.json");
+            if (manifestEntry is null)
             {
-                continue;
+                return (null, "El archivo seleccionado no es un proyecto de TintaES válido.");
             }
 
-            string target = Path.GetFullPath(Path.Combine(workspace, entry.FullName.Replace('/', Path.DirectorySeparatorChar)));
-            if (!target.StartsWith(workspaceRoot, StringComparison.OrdinalIgnoreCase))
+            TintaProjectManifest? manifest;
+            using (Stream manifestStream = manifestEntry.Open())
             {
-                throw new InvalidOperationException("El proyecto contiene una ruta no válida.");
+                manifest = JsonSerializer.Deserialize<TintaProjectManifest>(manifestStream, ProjectJsonOptions);
             }
 
-            Directory.CreateDirectory(Path.GetDirectoryName(target)!);
-            using Stream entryStream = entry.Open();
-            using FileStream output = File.Create(target);
-            entryStream.CopyTo(output);
-        }
+            if (manifest is null)
+            {
+                return (null, "El proyecto seleccionado tiene un manifiesto vacío o dañado.");
+            }
 
-        return manifest;
+            string workspaceRoot = Path.GetFullPath(workspace) + Path.DirectorySeparatorChar;
+            foreach (ZipArchiveEntry entry in archive.Entries)
+            {
+                if (string.IsNullOrEmpty(entry.Name)
+                    || string.Equals(entry.FullName, "project.json", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                string target = Path.GetFullPath(
+                    Path.Combine(workspace, entry.FullName.Replace('/', Path.DirectorySeparatorChar)));
+                if (!target.StartsWith(workspaceRoot, StringComparison.OrdinalIgnoreCase))
+                {
+                    return (null, "El proyecto contiene una ruta no válida.");
+                }
+
+                Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+                using Stream entryStream = entry.Open();
+                using FileStream output = File.Create(target);
+                entryStream.CopyTo(output);
+            }
+
+            return (manifest, null);
+        }
+        catch (InvalidDataException)
+        {
+            return (null, "El archivo seleccionado no es un proyecto de TintaES válido o está dañado.");
+        }
+        catch (JsonException)
+        {
+            return (null, "El proyecto seleccionado está dañado y no se puede leer.");
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return (null, "No hay permisos para leer el archivo seleccionado.");
+        }
+        catch (IOException)
+        {
+            return (null, "No se pudo leer el archivo seleccionado. Puede estar dañado, bloqueado o incompleto.");
+        }
     }
+
 
     private sealed class TintaProjectManifest
     {

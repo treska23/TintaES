@@ -132,7 +132,7 @@ public partial class MainWindow
         var dialog = new OpenFileDialog
         {
             Title = "Abrir proyecto de TintaES",
-            Filter = "Proyecto TintaES|*.tinta|Todos los archivos|*.*",
+            Filter = "Proyecto TintaES|*.tinta",
             FilterIndex = 1,
             Multiselect = false,
             CheckFileExists = true
