@@ -718,6 +718,23 @@ public sealed class OllamaClient : IDisposable
         return true;
     }
 
+    private static int GetTranslateGemmaChunkSize(
+        string model,
+        IReadOnlyList<ComicRegion> regions)
+    {
+        const int conservativeChunkSize = 6;
+        if (!model.StartsWith("translategemma:12b", StringComparison.OrdinalIgnoreCase))
+        {
+            return conservativeChunkSize;
+        }
+
+        // TranslateGemma 12B soporta lotes mayores, pero mantenemos el tamaño histórico
+        // cuando una página es especialmente densa. Así reducimos llamadas y contexto
+        // repetido en páginas normales sin recortar contexto ni relajar validaciones.
+        int contextCharacters = regions.Sum(region => FormatSourceForModel(region).Length + 24);
+        return contextCharacters <= 6000 ? 12 : conservativeChunkSize;
+    }
+
     private async Task TranslateGemmaBatchAsync(
         IReadOnlyList<ComicRegion> regions,
         string model,
@@ -727,7 +744,7 @@ public sealed class OllamaClient : IDisposable
         ComicRegion[] translatable = regions
             .Where(region => !IsAcceptableTranslation(region, region.Translation))
             .ToArray();
-        const int chunkSize = 6;
+        int chunkSize = GetTranslateGemmaChunkSize(model, regions);
         for (int start = 0; start < translatable.Length; start += chunkSize)
         {
             IReadOnlyList<ComicRegion> targets = translatable.Skip(start).Take(chunkSize).ToArray();

@@ -17,6 +17,7 @@ var tests = new (string Name, Func<Task> Run)[]
     ("Nunca vuelve a dibujar el OCR inglés como texto de resultado", TestDisplayTextNeverUsesOriginalAsync),
     ("Separa detección y traducción", TestOllamaPipelineAsync),
     ("No desplaza traducciones si TranslateGemma omite una línea", TestTranslateGemmaStableMappingAsync),
+    ("Reduce llamadas de TranslateGemma 12B sin perder recuperación", TestTranslateGemma12BThroughputAsync),
     ("Recupera individualmente un lote completo sin etiquetas", TestTranslateGemmaWholeBatchRecoveryAsync),
     ("Reintenta traducciones semánticamente incompletas", TestIncompleteTranslationRecoveryAsync),
     ("Nunca incrusta un marcador cuando la traducción falla", TestTranslationFailureNeverRendersMarkerAsync),
@@ -474,6 +475,27 @@ static async Task TestTranslateGemmaStableMappingAsync()
     Assert(regions[1].Translation == "Segunda frase", "La línea omitida debe repetirse de forma aislada.");
     Assert(regions[2].Translation == "Tercera frase", "La tercera traducción no puede desplazarse a la segunda región.");
     Assert(handler.Calls == 2, "Debe hacer un lote y un único reintento para la línea omitida.");
+}
+
+static async Task TestTranslateGemma12BThroughputAsync()
+{
+    var handler = new FakeTranslateGemmaHandler();
+    using var http = new HttpClient(handler) { BaseAddress = new Uri("http://127.0.0.1:11434/") };
+    using var client = new OllamaClient(httpClient: http);
+    ComicRegion[] regions = Enumerable.Range(1, 12)
+        .Select(index => new ComicRegion
+        {
+            Original = $"COMIC LINE {index}",
+            Type = "dialogue"
+        })
+        .ToArray();
+
+    await client.TranslateRegionsAsync(regions, "translategemma:12b", CancellationToken.None);
+
+    Assert(regions.All(region => region.HasRenderableTranslation),
+        "El lote rápido de 12B debe conservar todas las traducciones válidas.");
+    Assert(handler.Calls == 2,
+        "Doce bocadillos con una omisión deben resolverse en un lote inicial y un reintento, no en dos lotes completos.");
 }
 
 static async Task TestTranslateGemmaWholeBatchRecoveryAsync()
