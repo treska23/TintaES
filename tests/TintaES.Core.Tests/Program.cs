@@ -18,6 +18,7 @@ var tests = new (string Name, Func<Task> Run)[]
     ("Separa detección y traducción", TestOllamaPipelineAsync),
     ("No desplaza traducciones si TranslateGemma omite una línea", TestTranslateGemmaStableMappingAsync),
     ("Reduce llamadas de TranslateGemma 12B sin perder recuperación", TestTranslateGemma12BThroughputAsync),
+    ("Estructura una página completa de TranslateGemma 12B en una llamada", TestTranslateGemma12BStructuredPageAsync),
     ("Recupera individualmente un lote completo sin etiquetas", TestTranslateGemmaWholeBatchRecoveryAsync),
     ("Reintenta traducciones semánticamente incompletas", TestIncompleteTranslationRecoveryAsync),
     ("Nunca incrusta un marcador cuando la traducción falla", TestTranslationFailureNeverRendersMarkerAsync),
@@ -498,6 +499,31 @@ static async Task TestTranslateGemma12BThroughputAsync()
         "Doce bocadillos con una omisión deben resolverse en un lote inicial y un reintento, no en dos lotes completos.");
 }
 
+static async Task TestTranslateGemma12BStructuredPageAsync()
+{
+    var handler = new FakeStructuredTranslateGemmaHandler();
+    using var http = new HttpClient(handler) { BaseAddress = new Uri("http://127.0.0.1:11434/") };
+    using var client = new OllamaClient(httpClient: http);
+    ComicRegion[] regions = Enumerable.Range(1, 20)
+        .Select(index => new ComicRegion
+        {
+            Original = $"COMIC DIALOGUE LINE {index}",
+            Type = "dialogue"
+        })
+        .ToArray();
+
+    await client.TranslateRegionsAsync(regions, "translategemma:12b", CancellationToken.None);
+
+    Assert(handler.Calls == 1,
+        "Una página normal de veinte bocadillos debe traducirse en una sola inferencia estructurada.");
+    Assert(handler.ReceivedStrictFormat,
+        "Ollama debe recibir un esquema que exija una clave distinta para cada bocadillo.");
+    Assert(handler.PredictionBudget < 20 * 110,
+        "El presupuesto de salida debe depender del texto real y no del máximo antiguo por bocadillo.");
+    Assert(regions.All(region => region.HasRenderableTranslation),
+        "La salida estructurada debe conservar una traducción válida y estable por región.");
+}
+
 static async Task TestTranslateGemmaWholeBatchRecoveryAsync()
 {
     var handler = new FakeTranslateGemmaWholeBatchHandler(failEveryRequest: false);
@@ -539,7 +565,8 @@ static async Task TestTranslationFailureNeverRendersMarkerAsync()
     }
     catch (InvalidOperationException exception)
     {
-        failed = exception.Message.Contains("no devolvió", StringComparison.OrdinalIgnoreCase);
+        failed = exception is IncompleteTranslationException
+                 && exception.Message.Contains("no devolvió", StringComparison.OrdinalIgnoreCase);
     }
 
     Assert(failed, "Una traducción incompleta debe fallar y dejar la página reintentable.");
@@ -681,6 +708,68 @@ sealed class FakeOllamaHandler : HttpMessageHandler
         return new HttpResponseMessage(HttpStatusCode.OK)
         {
             Content = new StringContent(JsonSerializer.Serialize(value), Encoding.UTF8, "application/json")
+        };
+    }
+}
+
+sealed class FakeStructuredTranslateGemmaHandler : HttpMessageHandler
+{
+    public int Calls { get; private set; }
+    public bool ReceivedStrictFormat { get; private set; }
+    public int PredictionBudget { get; private set; }
+
+    protected override async Task<HttpResponseMessage> SendAsync(
+        HttpRequestMessage request,
+        CancellationToken cancellationToken)
+    {
+        Calls++;
+        string body = await request.Content!.ReadAsStringAsync(cancellationToken);
+        using JsonDocument requestDocument = JsonDocument.Parse(body);
+        JsonElement root = requestDocument.RootElement;
+        PredictionBudget = root.GetProperty("options").GetProperty("num_predict").GetInt32();
+        string prompt = root
+            .GetProperty("messages")[0]
+            .GetProperty("content")
+            .GetString()!;
+        Match[] targets = Regex.Matches(
+                prompt,
+                @"\[\[(R[A-F0-9]+)\]\]\s*(.*?)\s*\[\[/\1\]\]",
+                RegexOptions.Singleline | RegexOptions.CultureInvariant)
+            .Cast<Match>()
+            .ToArray();
+
+        JsonElement translationsSchema = root
+            .GetProperty("format")
+            .GetProperty("properties")
+            .GetProperty("translations");
+        string[] required = translationsSchema
+            .GetProperty("required")
+            .EnumerateArray()
+            .Select(value => value.GetString() ?? string.Empty)
+            .ToArray();
+        string[] properties = translationsSchema
+            .GetProperty("properties")
+            .EnumerateObject()
+            .Select(property => property.Name)
+            .ToArray();
+        string[] tokens = targets.Select(target => target.Groups[1].Value).ToArray();
+        ReceivedStrictFormat = translationsSchema.GetProperty("additionalProperties").ValueKind
+                                   == JsonValueKind.False
+                               && required.Order().SequenceEqual(tokens.Order())
+                               && properties.Order().SequenceEqual(tokens.Order());
+
+        var translations = new Dictionary<string, string>();
+        for (int index = 0; index < tokens.Length; index++)
+        {
+            translations[tokens[index]] = $"Diálogo traducido {index + 1}";
+        }
+        string content = JsonSerializer.Serialize(new { translations });
+        return new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                JsonSerializer.Serialize(new { message = new { content } }),
+                Encoding.UTF8,
+                "application/json")
         };
     }
 }

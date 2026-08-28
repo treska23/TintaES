@@ -7,6 +7,14 @@ using System.Text.RegularExpressions;
 
 namespace TintaES.Core;
 
+public sealed class IncompleteTranslationException : InvalidOperationException
+{
+    public IncompleteTranslationException(string message)
+        : base(message)
+    {
+    }
+}
+
 public sealed class OllamaClient : IDisposable
 {
     private static readonly JsonNode DetectionSchema = JsonNode.Parse(
@@ -448,7 +456,7 @@ public sealed class OllamaClient : IDisposable
             string examples = string.Join(
                 "; ",
                 unresolved.Take(3).Select(region => $"«{NormalizeSourceText(region.Original)}»"));
-            throw new InvalidOperationException(
+            throw new IncompleteTranslationException(
                 $"Ollama no devolvió una traducción española válida para {unresolved.Length} de " +
                 $"{regions.Count} zonas ({examples}). La página queda pendiente para poder reintentarlo; " +
                 "no se incrustará ningún aviso ni un resultado incompleto.");
@@ -728,11 +736,94 @@ public sealed class OllamaClient : IDisposable
             return conservativeChunkSize;
         }
 
-        // TranslateGemma 12B soporta lotes mayores, pero mantenemos el tamaño histórico
-        // cuando una página es especialmente densa. Así reducimos llamadas y contexto
-        // repetido en páginas normales sin recortar contexto ni relajar validaciones.
+        // Con salida estructurada el modelo ya no puede omitir ni desplazar etiquetas, por lo
+        // que una página normal cabe en una sola llamada. Las páginas densas conservan lotes
+        // menores para dejar siempre margen de contexto a la respuesta completa.
         int contextCharacters = regions.Sum(region => FormatSourceForModel(region).Length + 24);
+        if (contextCharacters <= 3000)
+        {
+            return 24;
+        }
         return contextCharacters <= 6000 ? 12 : conservativeChunkSize;
+    }
+
+    private static JsonNode CreateTranslateGemmaFormat(
+        IReadOnlyDictionary<ComicRegion, string> tokens)
+    {
+        var properties = new JsonObject();
+        var required = new JsonArray();
+        foreach ((ComicRegion region, string token) in tokens)
+        {
+            int maxLength = Math.Max(
+                70,
+                (int)Math.Ceiling(NormalizeSourceText(region.Original).Length * 2.35));
+            properties[token] = new JsonObject
+            {
+                ["type"] = "string",
+                ["minLength"] = 1,
+                ["maxLength"] = maxLength
+            };
+            required.Add(token);
+        }
+
+        return new JsonObject
+        {
+            ["type"] = "object",
+            ["additionalProperties"] = false,
+            ["properties"] = new JsonObject
+            {
+                ["translations"] = new JsonObject
+                {
+                    ["type"] = "object",
+                    ["additionalProperties"] = false,
+                    ["properties"] = properties,
+                    ["required"] = required
+                }
+            },
+            ["required"] = new JsonArray("translations")
+        };
+    }
+
+    private static IReadOnlyDictionary<string, string> ParseStructuredTranslations(string content)
+    {
+        var translations = new Dictionary<string, string>(StringComparer.Ordinal);
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(ExtractJson(content));
+            if (!document.RootElement.TryGetProperty("translations", out JsonElement values)
+                || values.ValueKind != JsonValueKind.Object)
+            {
+                return translations;
+            }
+
+            foreach (JsonProperty property in values.EnumerateObject())
+            {
+                if (property.Value.ValueKind == JsonValueKind.String)
+                {
+                    translations[property.Name] = property.Value.GetString() ?? string.Empty;
+                }
+            }
+        }
+        catch (JsonException)
+        {
+            // Compatibilidad con servidores o dobles de prueba antiguos que aún contesten
+            // usando las etiquetas de texto históricas.
+        }
+        return translations;
+    }
+
+    private static int GetTranslateGemmaPredictionBudget(IReadOnlyList<ComicRegion> targets)
+    {
+        int maximumTranslationCharacters = targets.Sum(region => Math.Max(
+            70,
+            (int)Math.Ceiling(NormalizeSourceText(region.Original).Length * 2.35)));
+
+        // Incluye las claves JSON y deja un margen generoso para puntuación y tokenización
+        // española, pero evita el antiguo máximo fijo de 110 tokens por bocadillo corto.
+        return Math.Clamp(
+            64 + targets.Count * 12 + maximumTranslationCharacters / 2,
+            180,
+            1600);
     }
 
     private async Task TranslateGemmaBatchAsync(
@@ -1125,9 +1216,9 @@ public sealed class OllamaClient : IDisposable
             reply. For example MAYBE / YOU'LL / SEE! should be QUIZÁ / YA LO / VERÁS!, not three independent
             reactions.
 
-            For every target, copy its exact random tag at both ends. Return exactly this shape:
-            [[RANDOMTAG]] traducción española [[/RANDOMTAG]]
-            Never number, reorder, merge or omit targets. Output no explanations and no English source text.
+            Return one JSON object whose "translations" object contains every exact RANDOMTAG from TARGETS as
+            a key and only its final Spanish translation as the value. Never omit, rename or add keys. Output no
+            explanations and no English source text. The required JSON shape is enforced separately.
 
             COMPLETE PAGE CONTEXT:
             """ + "\n" + context + "\n\nTARGETS:\n" + targetText;
@@ -1136,28 +1227,39 @@ public sealed class OllamaClient : IDisposable
         {
             model,
             stream = false,
+            think = false,
             keep_alive = "1m",
+            format = CreateTranslateGemmaFormat(tokens),
             messages = new[] { new { role = "user", content = prompt } },
             options = new
             {
                 temperature = 0,
                 seed = 73,
                 num_ctx = 4096,
-                num_predict = Math.Max(180, targets.Count * 110)
+                num_predict = GetTranslateGemmaPredictionBudget(targets)
             }
         };
 
         string content = await SendChatAsync(payload, cancellationToken);
+        IReadOnlyDictionary<string, string> structured = ParseStructuredTranslations(content);
         foreach (ComicRegion region in targets)
         {
             string token = tokens[region];
-            Match match = Regex.Match(
-                content,
-                $@"\[\[{Regex.Escape(token)}\]\]\s*(.*?)\s*\[\[/{Regex.Escape(token)}\]\]",
-                RegexOptions.Singleline | RegexOptions.CultureInvariant);
-            string candidate = match.Success
-                ? CleanTranslationCandidate(match.Groups[1].Value)
-                : string.Empty;
+            string candidate;
+            if (structured.TryGetValue(token, out string? structuredValue))
+            {
+                candidate = CleanTranslationCandidate(structuredValue);
+            }
+            else
+            {
+                Match match = Regex.Match(
+                    content,
+                    $@"\[\[{Regex.Escape(token)}\]\]\s*(.*?)\s*\[\[/{Regex.Escape(token)}\]\]",
+                    RegexOptions.Singleline | RegexOptions.CultureInvariant);
+                candidate = match.Success
+                    ? CleanTranslationCandidate(match.Groups[1].Value)
+                    : string.Empty;
+            }
 
             // En el reintento individual aceptamos también una respuesta limpia sin etiquetas.
             // No se hace en lotes porque podría volver a desplazar las frases.

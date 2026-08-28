@@ -328,6 +328,14 @@ public partial class MainWindow
                 {
                     throw;
                 }
+                catch (IncompleteTranslationException exception)
+                {
+                    // OllamaClient ya repitió las zonas dudosas por lote y de una en una.
+                    // Repetir aquí el mismo prompt determinista no aporta calidad; pasamos
+                    // directamente al rescate individual especializado de la etapa siguiente.
+                    lastTranslationError = exception;
+                    break;
+                }
                 catch (Exception exception)
                 {
                     lastTranslationError = exception;
