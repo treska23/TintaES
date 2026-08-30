@@ -56,9 +56,9 @@ function = r'''static Task TestTranslationExchangeAsync()
     };
 
     string exported = TranslationExchange.Serialize(document);
-    Assert(exported.Contains("\\\"regionId\\\"", StringComparison.Ordinal),
+    Assert(exported.Contains("\"regionId\"", StringComparison.Ordinal),
         "El guion debe conservar identificadores estables de zona.");
-    Assert(exported.Contains("\\\"bubbleId\\\"", StringComparison.Ordinal),
+    Assert(exported.Contains("\"bubbleId\"", StringComparison.Ordinal),
         "El guion debe explicar a qué bocadillo pertenece cada texto.");
 
     string reviewed = exported.Replace("¿Cómo estás?", "¿Qué tal estás?", StringComparison.Ordinal);
@@ -71,7 +71,7 @@ function = r'''static Task TestTranslationExchangeAsync()
     bool rejected = false;
     try
     {
-        TranslationExchange.ReadTranslations("{\\\"translation\\\":\\\"Texto sin identificador\\\"}");
+        TranslationExchange.ReadTranslations("{\"translation\":\"Texto sin identificador\"}");
     }
     catch (InvalidDataException)
     {
