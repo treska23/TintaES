@@ -16,6 +16,8 @@ public partial class MainWindow
     private Menu? _classicMenu;
     private MenuItem? _menuSaveProject;
     private MenuItem? _menuSaveProjectAs;
+    private MenuItem? _menuExportTranslationScript;
+    private MenuItem? _menuImportTranslationScript;
     private MenuItem? _menuExportCbz;
     private MenuItem? _menuExportPsd;
     private MenuItem? _menuExportPng;
@@ -56,6 +58,18 @@ public partial class MainWindow
         _menuSaveProjectAs = CreateMenuItem("Guardar proyecto _como…", "Ctrl+Shift+S", SaveProjectAsMenu_Click);
         file.Items.Add(_menuSaveProject);
         file.Items.Add(_menuSaveProjectAs);
+        file.Items.Add(new Separator());
+
+        _menuExportTranslationScript = CreateMenuItem(
+            "Exportar _guion de traducción…",
+            null,
+            ExportTranslationScriptMenu_Click);
+        _menuImportTranslationScript = CreateMenuItem(
+            "_Importar guion de traducción…",
+            null,
+            ImportTranslationScriptMenu_Click);
+        file.Items.Add(_menuExportTranslationScript);
+        file.Items.Add(_menuImportTranslationScript);
         file.Items.Add(new Separator());
 
         _menuExportCbz = CreateMenuItem("Exportar páginas seleccionadas a _CBZ…", null, ExportComicButton_Click_Robust);
@@ -115,6 +129,8 @@ public partial class MainWindow
         bool available = hasComic && !_comicBatchBusy && !_pageNavigationBusy;
         if (_menuSaveProject is not null) _menuSaveProject.IsEnabled = available;
         if (_menuSaveProjectAs is not null) _menuSaveProjectAs.IsEnabled = available;
+        if (_menuExportTranslationScript is not null) _menuExportTranslationScript.IsEnabled = available;
+        if (_menuImportTranslationScript is not null) _menuImportTranslationScript.IsEnabled = available;
         if (_menuExportCbz is not null) _menuExportCbz.IsEnabled = available;
         if (_menuExportPng is not null) _menuExportPng.IsEnabled = available && _originalBitmap is not null;
         if (_menuExportPsd is not null)
