@@ -1,3 +1,4 @@
+using System.Text.Encodings.Web;
 using System.Text.Json;
 
 namespace TintaES.Core;
@@ -14,7 +15,8 @@ public static class TranslationExchange
 
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
     {
-        WriteIndented = true
+        WriteIndented = true,
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
     };
 
     public static string Serialize(TranslationExchangeDocument document)
@@ -81,7 +83,14 @@ public static class TranslationExchange
                     && element.TryGetProperty("translation", out JsonElement translationElement)
                     && translationElement.ValueKind == JsonValueKind.String)
                 {
-                    translations[id] = translationElement.GetString() ?? string.Empty;
+                    string value = translationElement.GetString() ?? string.Empty;
+                    if (translations.TryGetValue(id, out string? existing)
+                        && !string.Equals(existing, value, StringComparison.Ordinal))
+                    {
+                        throw new InvalidDataException(
+                            $"El regionId {id} aparece varias veces con traducciones distintas.");
+                    }
+                    translations[id] = value;
                 }
 
                 foreach (JsonProperty property in element.EnumerateObject())
