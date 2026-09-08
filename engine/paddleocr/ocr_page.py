@@ -109,7 +109,7 @@ def _crop_inputs(
     with Image.open(image_path) as source:
         source = source.convert("RGB")
         width, height = source.size
-        for index, item in enumerate(manifest):
+        for item in manifest:
             if not isinstance(item, dict):
                 continue
             value = item.get("bbox")
@@ -128,11 +128,29 @@ def _crop_inputs(
                     (max(1, round(crop.width * scale)), max(1, round(crop.height * scale))),
                     Image.Resampling.LANCZOS,
                 )
-            crop_path = temp_dir / f"region-{index:04d}.png"
-            crop.save(crop_path, format="PNG")
+            # El nombre debe usar el mismo índice compacto que boxes: las entradas
+            # omitidas del manifiesto no pueden desplazar la asociación del OCR.
+            crop_path = temp_dir / f"region-{len(paths):04d}.png"
+            # Los recortes son temporales; una compresión menor ahorra CPU y
+            # conserva exactamente los píxeles que recibe el modelo.
+            crop.save(crop_path, format="PNG", compress_level=1)
             paths.append(str(crop_path))
             boxes.append(box)
     return paths, boxes
+
+
+def _create_pipeline():
+    from paddleocr import PaddleOCRVL
+
+    return PaddleOCRVL(
+        pipeline_version="v1.6",
+        engine=os.environ.get("TINTAES_PADDLE_ENGINE", "transformers"),
+        device=os.environ.get("TINTAES_PADDLE_DEVICE", "gpu:0"),
+        use_doc_orientation_classify=False,
+        use_doc_unwarping=False,
+        use_layout_detection=True,
+        use_queues=False,
+    )
 
 
 def main() -> int:
@@ -154,28 +172,19 @@ def main() -> int:
     os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
 
     from PIL import Image
-    from paddleocr import PaddleOCRVL
 
     with Image.open(image_path) as image:
         width, height = image.size
-
-    device = os.environ.get("TINTAES_PADDLE_DEVICE", "gpu:0")
-    engine = os.environ.get("TINTAES_PADDLE_ENGINE", "transformers")
-    pipeline = PaddleOCRVL(
-        pipeline_version="v1.6",
-        engine=engine,
-        device=device,
-        use_doc_orientation_classify=False,
-        use_doc_unwarping=False,
-        use_layout_detection=True,
-        use_queues=False,
-    )
 
     spots: list[dict[str, object]] = []
     if len(sys.argv) == 3:
         manifest_path = Path(sys.argv[2]).resolve()
         with tempfile.TemporaryDirectory(prefix="tintaes-paddle-") as temp_name:
             inputs, boxes = _crop_inputs(image_path, manifest_path, Path(temp_name))
+            if not inputs:
+                print("TINTAES_RESULT=[]")
+                return 0
+            pipeline = _create_pipeline()
             for fallback_index, result in enumerate(pipeline.predict(inputs)):
                 payload = result.json
                 input_path = _find_input_path(payload) or ""
@@ -187,6 +196,7 @@ def main() -> int:
                 if text:
                     spots.append({"text": text, "bbox": boxes[index]})
     else:
+        pipeline = _create_pipeline()
         for result in pipeline.predict(str(image_path)):
             for block in _find_parsing_blocks(result.json):
                 text = _normalise_text(block.get("block_content"))

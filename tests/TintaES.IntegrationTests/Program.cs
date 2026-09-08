@@ -10,6 +10,18 @@ using TintaES.Wpf.Services;
 
 try
 {
+    if (args.Length >= 1 && args[0] == "--windows-ocr-performance-self-test")
+    {
+        return await RunOnStaThreadAsync(() => WindowsOcrPerformanceRegression.RunAsync(args[1..]));
+    }
+    if (args is ["--paddle-cancellation-self-test"])
+    {
+        return await PaddleOcrCacheRegression.RunCancellationAsync();
+    }
+    if (args is ["--paddle-cache-self-test"])
+    {
+        return PaddleOcrCacheRegression.Run();
+    }
     if (args is ["--cleanup-polygon-self-test"])
     {
         return RunCleanupPolygonSelfTest();
