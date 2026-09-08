@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Net.Http;
 using System.Net.Http.Json;
@@ -24,7 +25,7 @@ public sealed record PaddleOcrPassResult(
 /// </summary>
 public sealed class PaddleOcrService
 {
-    private const string CacheVersion = "paddleocr-vl-1.6-ctd-crops-v3";
+    private const string CacheVersion = "paddleocr-vl-1.6-ctd-crops-v4-owned-raw";
     private const string ResultPrefix = "TINTAES_RESULT=";
     private static readonly SemaphoreSlim Gate = new(1, 1);
     private static readonly HttpClient Ollama = new()
@@ -40,9 +41,19 @@ public sealed class PaddleOcrService
     public async Task<bool> HasCachedResultAsync(
         string sourcePath,
         string projectRoot,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IReadOnlyList<ComicRegion>? regions = null)
     {
         if (IsDisabled() || !IsPrepared(projectRoot))
+        {
+            return true;
+        }
+        // La imagen por sí sola no identifica los recortes que se han reconocido.
+        if (regions is null)
+        {
+            return false;
+        }
+        if (!regions.Any(region => region.IsEnabled))
         {
             return true;
         }
@@ -52,7 +63,7 @@ public sealed class PaddleOcrService
             byte[] imageBytes = await File.ReadAllBytesAsync(sourcePath, cancellationToken);
             (int width, int height) = ReadImageSize(imageBytes);
             return TryLoadSpots(
-                CreateCachePath(imageBytes, projectRoot),
+                CreateCachePath(imageBytes, projectRoot, regions),
                 width,
                 height,
                 out _);
@@ -78,17 +89,22 @@ public sealed class PaddleOcrService
         {
             return new PaddleOcrPassResult(false, 0, 0, "entorno local no preparado");
         }
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!regions.Any(region => region.IsEnabled))
+        {
+            return new PaddleOcrPassResult(true, 0, 0, "sin bocadillos habilitados para releer");
+        }
 
         await Gate.WaitAsync(cancellationToken);
         try
         {
             byte[] imageBytes = await File.ReadAllBytesAsync(sourcePath, cancellationToken);
             (int width, int height) = ReadImageSize(imageBytes);
-            string cachePath = CreateCachePath(imageBytes, projectRoot);
+            string cachePath = CreateCachePath(imageBytes, projectRoot, regions);
             if (TryLoadSpots(cachePath, width, height, out IReadOnlyList<HunyuanTextSpot> cached))
             {
                 IReadOnlyList<HunyuanTextSpot> cleanedCached = CleanVisualSpots(regions, cached);
-                int cachedReplacements = HunyuanTextSpotting.ApplyToRegions(regions, cleanedCached);
+                int cachedReplacements = PaddleCropAssociation.ApplyToRegions(regions, cleanedCached);
                 return new PaddleOcrPassResult(
                     true,
                     cleanedCached.Count,
@@ -110,14 +126,16 @@ public sealed class PaddleOcrService
                 response,
                 width,
                 height);
-            spots = CleanVisualSpots(regions, spots);
             if (spots.Count == 0)
             {
                 return new PaddleOcrPassResult(true, 0, 0, "no devolvió bloques utilizables");
             }
 
             SaveSpots(cachePath, width, height, spots);
-            int replacements = HunyuanTextSpotting.ApplyToRegions(regions, spots);
+            // Guardar la lectura cruda permite aplicar la limpieza una sola vez,
+            // también al recuperar la caché con textos corregidos por el usuario.
+            spots = CleanVisualSpots(regions, spots);
+            int replacements = PaddleCropAssociation.ApplyToRegions(regions, spots);
             return new PaddleOcrPassResult(
                 true,
                 spots.Count,
@@ -178,7 +196,7 @@ public sealed class PaddleOcrService
             .Where(region => region.IsEnabled)
             .Select(region =>
             {
-                NormalizedRect box = GetAssociationBox(region);
+                NormalizedRect box = PaddleCropAssociation.GetCropBox(region);
                 return new
                 {
                     id = region.Id,
@@ -218,18 +236,16 @@ public sealed class PaddleOcrService
                 throw new InvalidOperationException("No se pudo iniciar PaddleOCR-VL.");
             }
 
-            Task<string> outputTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
-            Task<string> errorTask = process.StandardError.ReadToEndAsync(cancellationToken);
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeout.CancelAfter(TimeSpan.FromMinutes(15));
+            Task<string> outputTask = process.StandardOutput.ReadToEndAsync();
+            Task<string> errorTask = process.StandardError.ReadToEndAsync();
             try
             {
-                await process.WaitForExitAsync(timeout.Token);
+                await WaitForWorkerExitAsync(process, TimeSpan.FromMinutes(15), cancellationToken);
             }
-            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            catch (OperationCanceledException)
             {
-                TryKill(process);
-                throw new TaskCanceledException("PaddleOCR-VL superó el límite de 15 minutos.");
+                await Task.WhenAll(outputTask, errorTask);
+                throw;
             }
 
             string output = await outputTask;
@@ -266,28 +282,18 @@ public sealed class PaddleOcrService
         }
     }
 
-    private static NormalizedRect GetAssociationBox(ComicRegion region)
-    {
-        // La caja del bocadillo sirve para el inpainting y la rotulación, pero puede
-        // rozar otro bocadillo. Para transcribir usamos la geometría exacta de las letras
-        // que ya detectó CTD y solo dejamos un margen tipográfico pequeño.
-        NormalizedRect text = region.TextBox.Clamp();
-        double horizontalMargin = text.Width < 45 ? 0.24 : 0.10;
-        double verticalMargin = text.Height < 24 ? 0.28 : 0.14;
-        return text.Expand(horizontalMargin, verticalMargin);
-    }
-
-    private static IReadOnlyList<HunyuanTextSpot> CleanVisualSpots(
+    internal static IReadOnlyList<HunyuanTextSpot> CleanVisualSpots(
         IReadOnlyList<ComicRegion> regions,
         IReadOnlyList<HunyuanTextSpot> spots)
     {
         var cleaned = new List<HunyuanTextSpot>(spots.Count);
         foreach (HunyuanTextSpot spot in spots)
         {
-            ComicRegion? owner = regions
-                .Where(region => region.IsEnabled)
-                .OrderBy(region => CenterDistanceSquared(region.TextBox, spot.Box))
-                .FirstOrDefault();
+            ComicRegion? owner = PaddleCropAssociation.FindOwner(regions, spot.Box);
+            if (owner is null)
+            {
+                continue;
+            }
             string text = Regex.Replace(
                 spot.Text,
                 @"\b\d{1,3}:\d+(?:\.\d+)?/\d+/\d+(?:\.\d+)?\b",
@@ -330,13 +336,6 @@ public sealed class PaddleOcrService
         return cleaned;
     }
 
-    private static double CenterDistanceSquared(NormalizedRect left, NormalizedRect right)
-    {
-        double dx = left.X + left.Width / 2 - (right.X + right.Width / 2);
-        double dy = left.Y + left.Height / 2 - (right.Y + right.Height / 2);
-        return dx * dx + dy * dy;
-    }
-
     private static string ComparableLetters(string value) =>
         new(value.Where(char.IsLetterOrDigit).Select(char.ToUpperInvariant).ToArray());
 
@@ -361,6 +360,27 @@ public sealed class PaddleOcrService
             (previous, current) = (current, previous);
         }
         return previous[right.Length];
+    }
+
+    internal static async Task WaitForWorkerExitAsync(
+        Process process,
+        TimeSpan timeLimit,
+        CancellationToken cancellationToken)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(timeLimit);
+        try
+        {
+            await process.WaitForExitAsync(timeout.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            TryKill(process);
+            // No dejar otro modelo ocupando GPU ni liberar el semáforo hasta que salga.
+            await process.WaitForExitAsync();
+            cancellationToken.ThrowIfCancellationRequested();
+            throw new TaskCanceledException("PaddleOCR-VL superó el límite de tiempo.");
+        }
     }
 
     private static void TryKill(Process process)
@@ -431,7 +451,10 @@ public sealed class PaddleOcrService
         return (frame.PixelWidth, frame.PixelHeight);
     }
 
-    private static string CreateCachePath(byte[] imageBytes, string projectRoot)
+    internal static string CreateCachePath(
+        byte[] imageBytes,
+        string projectRoot,
+        IReadOnlyList<ComicRegion> regions)
     {
         var identity = new StringBuilder(CacheVersion)
             .Append('|').Append(Environment.GetEnvironmentVariable("TINTAES_PADDLE_DEVICE"))
@@ -439,6 +462,15 @@ public sealed class PaddleOcrService
             .Append('|').Append(Convert.ToHexString(SHA256.HashData(imageBytes)));
         AppendFileIdentity(identity, GetWorkerPath(projectRoot));
         AppendFileIdentity(identity, LocalEnginePaths.GetPaddlePython(projectRoot));
+        foreach (ComicRegion region in regions.Where(region => region.IsEnabled))
+        {
+            NormalizedRect box = PaddleCropAssociation.GetCropBox(region);
+            // No incluir IDs efímeros: el manifiesto orgánico los regenera al abrir.
+            foreach (double coordinate in new[] { box.X, box.Y, box.Right, box.Bottom })
+            {
+                identity.Append('|').Append(coordinate.ToString("R", CultureInfo.InvariantCulture));
+            }
+        }
         string key = Convert.ToHexString(
             SHA256.HashData(Encoding.UTF8.GetBytes(identity.ToString())))[..32]
             .ToLowerInvariant();
@@ -463,7 +495,7 @@ public sealed class PaddleOcrService
             .Append('|').Append(file.LastWriteTimeUtc.Ticks);
     }
 
-    private static bool TryLoadSpots(
+    internal static bool TryLoadSpots(
         string cachePath,
         int width,
         int height,
@@ -483,6 +515,7 @@ public sealed class PaddleOcrService
                 || !string.Equals(cache.Version, CacheVersion, StringComparison.Ordinal)
                 || cache.Width != width
                 || cache.Height != height
+                || cache.Spots is null
                 || cache.Spots.Count == 0)
             {
                 return false;
@@ -496,7 +529,7 @@ public sealed class PaddleOcrService
         }
     }
 
-    private static void SaveSpots(
+    internal static void SaveSpots(
         string cachePath,
         int width,
         int height,

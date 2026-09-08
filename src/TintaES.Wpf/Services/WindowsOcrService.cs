@@ -1,10 +1,12 @@
 using System.IO;
 using System.Windows;
+using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using TintaES.Core;
 using Windows.Globalization;
 using Windows.Graphics.Imaging;
 using Windows.Media.Ocr;
+using Windows.Security.Cryptography;
 using Windows.Storage.Streams;
 
 namespace TintaES.Wpf.Services;
@@ -27,6 +29,9 @@ public sealed class WindowsOcrService
         IReadOnlyList<int> xOrigins = CreateTileOrigins(source.PixelWidth, tileWidth, 180);
         IReadOnlyList<int> yOrigins = CreateTileOrigins(source.PixelHeight, tileHeight, 180);
         var detected = new List<ComicRegion>();
+        // Una instancia por recorrido; la lectura de la página completa puede
+        // ejecutarse a la vez y conserva su propio motor independiente.
+        OcrEngine engine = CreateEngine();
 
         foreach (int y in yOrigins)
         {
@@ -38,7 +43,7 @@ public sealed class WindowsOcrService
                 var crop = new CroppedBitmap(source, new Int32Rect(x, y, width, height));
                 crop.Freeze();
 
-                ComicAnalysis tile = await RecognizeAsync(crop, cancellationToken);
+                ComicAnalysis tile = await RecognizeAsync(crop, engine, cancellationToken);
                 detected.AddRange(tile.Regions.Select(region =>
                     MapRegionToPage(
                         region,
@@ -61,23 +66,17 @@ public sealed class WindowsOcrService
         ArgumentNullException.ThrowIfNull(source);
         cancellationToken.ThrowIfCancellationRequested();
 
-        byte[] png = EncodePng(source);
-        using var stream = new InMemoryRandomAccessStream();
-        using (var writer = new DataWriter(stream))
-        {
-            writer.WriteBytes(png);
-            await writer.StoreAsync();
-            writer.DetachStream();
-        }
+        return await RecognizeAsync(source, CreateEngine(), cancellationToken);
+    }
 
-        stream.Seek(0);
-        Windows.Graphics.Imaging.BitmapDecoder decoder =
-            await Windows.Graphics.Imaging.BitmapDecoder.CreateAsync(stream);
-        using SoftwareBitmap bitmap = await decoder.GetSoftwareBitmapAsync(
-            BitmapPixelFormat.Bgra8,
-            BitmapAlphaMode.Premultiplied);
-
-        OcrEngine engine = CreateEngine();
+    private static async Task<ComicAnalysis> RecognizeAsync(
+        BitmapSource source,
+        OcrEngine engine,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        using SoftwareBitmap bitmap = await CreateSoftwareBitmapAsync(source);
+        cancellationToken.ThrowIfCancellationRequested();
         OcrResult result = await engine.RecognizeAsync(bitmap);
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -91,6 +90,45 @@ public sealed class WindowsOcrService
         IReadOnlyList<ComicRegion> regions = GroupLines(lines, source.PixelWidth, source.PixelHeight);
         string language = engine.RecognizerLanguage?.LanguageTag ?? "desconocido";
         return new ComicAnalysis(language, regions);
+    }
+
+    private static async Task<SoftwareBitmap> CreateSoftwareBitmapAsync(BitmapSource source)
+    {
+        if (source.Format == PixelFormats.Bgr24 || source.Format == PixelFormats.Bgr32)
+        {
+            // Los formatos opacos no necesitan el viaje de compresión PNG y
+            // decodificación WIC. Pbgra32 mantiene BGRA premultiplicado y alfa 255.
+            var converted = new FormatConvertedBitmap(source, PixelFormats.Pbgra32, null, 0);
+            int stride = checked(source.PixelWidth * 4);
+            byte[] pixels = new byte[checked(stride * source.PixelHeight)];
+            converted.CopyPixels(pixels, stride, 0);
+            SoftwareBitmap bitmap = SoftwareBitmap.CreateCopyFromBuffer(
+                CryptographicBuffer.CreateFromByteArray(pixels),
+                BitmapPixelFormat.Bgra8,
+                source.PixelWidth,
+                source.PixelHeight,
+                BitmapAlphaMode.Premultiplied);
+            bitmap.DpiX = source.DpiX;
+            bitmap.DpiY = source.DpiY;
+            return bitmap;
+        }
+
+        // Conservar la ruta anterior para alfa, paletas y otros espacios de color.
+        byte[] png = EncodePng(source);
+        using var stream = new InMemoryRandomAccessStream();
+        using (var writer = new DataWriter(stream))
+        {
+            writer.WriteBytes(png);
+            await writer.StoreAsync();
+            writer.DetachStream();
+        }
+
+        stream.Seek(0);
+        Windows.Graphics.Imaging.BitmapDecoder decoder =
+            await Windows.Graphics.Imaging.BitmapDecoder.CreateAsync(stream);
+        return await decoder.GetSoftwareBitmapAsync(
+            BitmapPixelFormat.Bgra8,
+            BitmapAlphaMode.Premultiplied);
     }
 
     private static OcrEngine CreateEngine()

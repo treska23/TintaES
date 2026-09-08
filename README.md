@@ -72,6 +72,29 @@ cortos, los pellizcos o los arrastres sin llegar al borde nunca cambien de pági
 dotnet run --project tests\TintaES.IntegrationTests\TintaES.IntegrationTests.csproj --configuration Debug -- --reader-hit-test-self-test
 ```
 
+Las comprobaciones de OCR incluyen bocadillos dobles y contiguos: cada recorte de
+Paddle conserva la región que lo originó. Su caché distingue la geometría y las
+regiones habilitadas y conserva la lectura sin limpiar para evitar pérdidas al
+reutilizarla. No cambian los modelos, la resolución ni los umbrales de detección.
+
+Para verificar la caché, la cancelación del proceso y la equivalencia de píxeles,
+textos y coordenadas del OCR de Windows frente a la conversión anterior:
+
+```powershell
+dotnet run --project tests\TintaES.IntegrationTests --configuration Release -- --paddle-cache-self-test
+dotnet run --project tests\TintaES.IntegrationTests --configuration Release -- --paddle-cancellation-self-test
+dotnet run --project tests\TintaES.IntegrationTests --configuration Release -- --windows-ocr-performance-self-test
+```
+
+La última prueba acepta rutas de imágenes adicionales y mide la preparación de
+imágenes y el OCR por mosaicos. Necesita un idioma OCR de Windows instalado.
+Las regresiones de los recortes Python no cargan modelos; necesitan Pillow en el
+Python del motor:
+
+```powershell
+python -m unittest discover -s tests -p test_paddle_crop_inputs.py -v
+```
+
 ## Privacidad
 
 El programa solo se comunica con Ollama en `127.0.0.1`. No contiene analítica, telemetría ni llamadas a servicios externos durante el procesamiento de una página.

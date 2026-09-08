@@ -57,8 +57,9 @@ public sealed class OrganicEngineService
         string workerPath = Path.Combine(projectRoot, "engine", "tinta_worker_responsive.py");
         string originalWorkerPath = Path.Combine(projectRoot, "engine", "tinta_worker.py");
         string brightDetectorPath = Path.Combine(projectRoot, "engine", "bright_text_candidates.py");
+        string qualityGuardPath = Path.Combine(projectRoot, "engine", "tinta_quality_guard.py");
         string configPath = Path.Combine(projectRoot, "engine", "organic-engine-config.json");
-        if (!new[] { workerPath, originalWorkerPath, brightDetectorPath, configPath }.All(File.Exists))
+        if (!new[] { workerPath, originalWorkerPath, brightDetectorPath, qualityGuardPath, configPath }.All(File.Exists))
         {
             return false;
         }
@@ -67,6 +68,7 @@ public sealed class OrganicEngineService
             workerPath,
             originalWorkerPath,
             brightDetectorPath,
+            qualityGuardPath,
             configPath);
         string manifestPath = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -79,7 +81,8 @@ public sealed class OrganicEngineService
                && await PaddleOcr.HasCachedResultAsync(
                    sourcePath,
                    projectRoot,
-                   cancellationToken);
+                   cancellationToken,
+                   LoadRegions(manifestPath));
     }
 
     private static async Task WarmOrganicWorkerAsync(
@@ -128,6 +131,7 @@ public sealed class OrganicEngineService
         string workerPath = Path.Combine(projectRoot, "engine", "tinta_worker_responsive.py");
         string originalWorkerPath = Path.Combine(projectRoot, "engine", "tinta_worker.py");
         string brightDetectorPath = Path.Combine(projectRoot, "engine", "bright_text_candidates.py");
+        string qualityGuardPath = Path.Combine(projectRoot, "engine", "tinta_quality_guard.py");
         string configPath = Path.Combine(projectRoot, "engine", "organic-engine-config.json");
         string pythonPath = LocalEnginePaths.GetMangaPython(projectRoot);
         if (!File.Exists(pythonPath))
@@ -146,6 +150,7 @@ public sealed class OrganicEngineService
             workerPath,
             originalWorkerPath,
             brightDetectorPath,
+            qualityGuardPath,
             configPath);
         string cacheRoot = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -161,7 +166,8 @@ public sealed class OrganicEngineService
             if (!await PaddleOcr.HasCachedResultAsync(
                     sourcePath,
                     projectRoot,
-                    cancellationToken))
+                    cancellationToken,
+                    cached.Analysis.Regions))
             {
                 ResetResidentWorker();
             }
@@ -523,11 +529,7 @@ public sealed class OrganicEngineService
             throw new InvalidOperationException("El análisis está incompleto: faltan la máscara o el fondo limpio.");
         }
 
-        IReadOnlyList<ComicRegion> regions = BalloonRegionGrouper.Group(
-            RegionMerger.Merge(
-                manifest.Regions
-                    .Where(region => !string.IsNullOrWhiteSpace(region.Original))
-                    .Select((region, index) => CreateRegion(region, index, manifest.Width, manifest.Height))));
+        IReadOnlyList<ComicRegion> regions = CreateRegions(manifest);
         return new OrganicAnalysisResult(
             new ComicAnalysis(manifest.SourceLanguage, regions),
             LoadBitmap(manifest.CleanImage),
@@ -535,6 +537,21 @@ public sealed class OrganicEngineService
             manifest.ElapsedSeconds,
             fromCache);
     }
+
+    private static IReadOnlyList<ComicRegion> LoadRegions(string manifestPath)
+    {
+        EngineManifest manifest = JsonSerializer.Deserialize<EngineManifest>(
+            File.ReadAllText(manifestPath, Encoding.UTF8), JsonOptions)
+            ?? throw new InvalidOperationException("El manifiesto del análisis está vacío.");
+        return CreateRegions(manifest);
+    }
+
+    private static IReadOnlyList<ComicRegion> CreateRegions(EngineManifest manifest) =>
+        BalloonRegionGrouper.Group(
+            RegionMerger.Merge(
+                manifest.Regions
+                    .Where(region => !string.IsNullOrWhiteSpace(region.Original))
+                    .Select((region, index) => CreateRegion(region, index, manifest.Width, manifest.Height))));
 
     private static ComicRegion CreateRegion(EngineRegion source, int index, int pageWidth, int pageHeight)
     {
