@@ -80,3 +80,12 @@ jobs:
 
       - name: Run core tests
         run: dotnet run --project tests/TintaES.Core.Tests/TintaES.Core.Tests.csproj --configuration Release
+
+      - name: Build integration regressions
+        run: dotnet build tests/TintaES.IntegrationTests/TintaES.IntegrationTests.csproj --configuration Release
+
+      - name: Verify Paddle OCR cache regression
+        run: dotnet run --project tests/TintaES.IntegrationTests/TintaES.IntegrationTests.csproj --configuration Release -- --paddle-cache-self-test
+
+      - name: Verify Paddle OCR cancellation regression
+        run: dotnet run --project tests/TintaES.IntegrationTests/TintaES.IntegrationTests.csproj --configuration Release -- --paddle-cancellation-self-test
