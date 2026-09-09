@@ -149,7 +149,7 @@ public sealed class TranslationReviewService
             model,
             stream = false,
             think = false,
-            keep_alive = "1m",
+            keep_alive = OllamaClient.TranslationKeepAlive,
             messages = new[] { new { role = "user", content = prompt } },
             options = new
             {

@@ -10,6 +10,10 @@ using TintaES.Wpf.Services;
 
 try
 {
+    if (args is ["--windows-ocr-pixels-self-test"])
+    {
+        return await RunOnStaThreadAsync(WindowsOcrPerformanceRegression.RunPixelChecksAsync);
+    }
     if (args.Length >= 1 && args[0] == "--windows-ocr-performance-self-test")
     {
         return await RunOnStaThreadAsync(() => WindowsOcrPerformanceRegression.RunAsync(args[1..]));

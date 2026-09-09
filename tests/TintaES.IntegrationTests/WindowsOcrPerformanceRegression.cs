@@ -19,8 +19,8 @@ internal static class WindowsOcrPerformanceRegression
         "CreateSoftwareBitmapAsync", BindingFlags.NonPublic | BindingFlags.Static)
         ?? throw new InvalidOperationException("Falta el conversor OCR que se está verificando.");
 
-    // Ejecutar en el dispatcher STA del arnés. No carga modelos Python ni utiliza CUDA.
-    internal static async Task<int> RunAsync(string[] imagePaths)
+    // No necesita idiomas OCR instalados; también se ejecuta en CI.
+    internal static async Task<int> RunPixelChecksAsync()
     {
         foreach (PixelFormat format in new[]
                  {
@@ -30,12 +30,23 @@ internal static class WindowsOcrPerformanceRegression
         {
             await VerifyPixelsAsync(CreatePixelFixture(format), $"píxeles {format}");
         }
+        await VerifyPixelsAsync(CreateAllAlphaFixture(), "todos los valores alfa Pbgra32");
+        await VerifyPixelsAsync(ConvertFormat(CreatePixelFixture(PixelFormats.Bgr32), PixelFormats.Pbgra32), "Pbgra32 opaco");
+        Console.WriteLine("WINDOWS_OCR_PIXEL_REGRESSION=OK");
+        return 0;
+    }
+
+    // Ejecutar en el dispatcher STA del arnés. No carga modelos Python ni utiliza CUDA.
+    internal static async Task<int> RunAsync(string[] imagePaths)
+    {
+        await RunPixelChecksAsync();
 
         BitmapSource synthetic = CreateTextFixture();
         var fixtures = new List<(string Name, BitmapSource Image)>
         {
             ("bocadillos adyacentes y dobles Bgr24", ConvertFormat(synthetic, PixelFormats.Bgr24)),
-            ("bocadillos adyacentes y dobles Bgr32", ConvertFormat(synthetic, PixelFormats.Bgr32))
+            ("bocadillos adyacentes y dobles Bgr32", ConvertFormat(synthetic, PixelFormats.Bgr32)),
+            ("bocadillos adyacentes y dobles Pbgra32", synthetic)
         };
         fixtures.AddRange(imagePaths.Select(path => (Path.GetFileName(path), LoadBitmap(path))));
 
@@ -43,11 +54,13 @@ internal static class WindowsOcrPerformanceRegression
         {
             await VerifyPixelsAsync(image, name);
             await VerifyRawOcrAsync(image, name);
+            BitmapSource legacySource = ConvertFormat(image, PixelFormats.Bgra32);
+            await VerifyEquivalentSourcesAsync(image, legacySource);
             var actualTimer = Stopwatch.StartNew();
             ComicAnalysis actual = await new WindowsOcrService().RecognizeWithTilingAsync(image);
             actualTimer.Stop();
             var legacyTimer = Stopwatch.StartNew();
-            ComicAnalysis expected = await RecognizeWithLegacyTilingAsync(image);
+            ComicAnalysis expected = await RecognizeWithLegacyTilingAsync(legacySource);
             legacyTimer.Stop();
             AssertSameRegions(expected, actual, name);
             if (name.StartsWith("bocadillos", StringComparison.Ordinal) && actual.Regions.Count == 0)
@@ -62,6 +75,7 @@ internal static class WindowsOcrPerformanceRegression
 
         await BenchmarkConversionAsync(ConvertFormat(synthetic, PixelFormats.Bgr24), "Bgr24");
         await BenchmarkConversionAsync(ConvertFormat(synthetic, PixelFormats.Bgr32), "Bgr32");
+        await BenchmarkConversionAsync(synthetic, "Pbgra32 renderizado");
         Console.WriteLine("WINDOWS_OCR_PERFORMANCE_REGRESSION=OK");
         return 0;
     }
@@ -111,17 +125,15 @@ internal static class WindowsOcrPerformanceRegression
 
     private static async Task<ComicAnalysis> RecognizeWithLegacyTilingAsync(BitmapSource source)
     {
-        // Referencia anterior: motor nuevo por mosaico y conversión PNG. Bgra32
-        // fuerza la ruta conservada; se verifica primero su igualdad de píxeles.
-        BitmapSource legacySource = ConvertFormat(source, PixelFormats.Bgra32);
-        await VerifyEquivalentSourcesAsync(source, legacySource);
+        // Referencia anterior: motor nuevo por mosaico y conversión PNG. La fuente
+        // Bgra32 y su igualdad se preparan fuera del intervalo cronometrado.
         int tileWidth = Math.Min(source.PixelWidth, 640);
         int tileHeight = Math.Min(source.PixelHeight, 640);
         var regions = new List<ComicRegion>();
         foreach (int y in LegacyOrigins(source.PixelHeight, tileHeight))
         foreach (int x in LegacyOrigins(source.PixelWidth, tileWidth))
         {
-            var crop = new CroppedBitmap(legacySource, new Int32Rect(x, y, tileWidth, tileHeight));
+            var crop = new CroppedBitmap(source, new Int32Rect(x, y, tileWidth, tileHeight));
             crop.Freeze();
             ComicAnalysis tile = await new WindowsOcrService().RecognizeAsync(crop);
             foreach (ComicRegion region in tile.Regions)
@@ -309,6 +321,25 @@ internal static class WindowsOcrPerformanceRegression
             width, height, 144, 120, format,
             format == PixelFormats.Indexed8 ? BitmapPalettes.Halftone256 : null,
             pixels, stride);
+        source.Freeze();
+        return source;
+    }
+
+    private static BitmapSource CreateAllAlphaFixture()
+    {
+        const int size = 256;
+        var pixels = new byte[size * size * 4];
+        for (int alpha = 0; alpha < size; alpha++)
+        for (int value = 0; value < size; value++)
+        {
+            int offset = (alpha * size + value) * 4;
+            pixels[offset] = (byte)Math.Min(value, alpha);
+            pixels[offset + 1] = (byte)(alpha - Math.Min(value, alpha));
+            pixels[offset + 2] = (byte)(value * alpha / 255);
+            pixels[offset + 3] = (byte)alpha;
+        }
+        BitmapSource source = BitmapSource.Create(size, size, 96, 96,
+            PixelFormats.Pbgra32, null, pixels, size * 4);
         source.Freeze();
         return source;
     }
