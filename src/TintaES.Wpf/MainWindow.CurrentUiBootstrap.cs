@@ -8,7 +8,7 @@ namespace TintaES.Wpf;
 /// </summary>
 public partial class MainWindow
 {
-    internal const string CurrentUiBuildStamp = "UI 2026.09.10-r76-grounded-ocr";
+    internal const string CurrentUiBuildStamp = "UI 2026.09.10-r77-strict-grounding";
     private const int CurrentUiBootstrapMaxAttempts = 3;
 
     private static readonly bool CurrentUiBootstrapRegistered = RegisterCurrentUiBootstrap();
