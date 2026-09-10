@@ -1,5 +1,6 @@
 using System.Windows;
 using System.Windows.Controls;
+using TintaES.Core;
 
 namespace TintaES.Wpf;
 
@@ -30,7 +31,7 @@ public partial class MainWindow
         _comicReaderButton.IsEnabled = _comicPages.Count > 0 && !_comicBatchBusy;
     }
 
-    private async void OpenComicReaderButton_Click(object sender, RoutedEventArgs e)
+    private void OpenComicReaderButton_Click(object sender, RoutedEventArgs e)
     {
         if (_comicPages.Count == 0 || _comicBatchBusy || _pageNavigationBusy)
         {
@@ -38,33 +39,37 @@ public partial class MainWindow
         }
 
         PersistVisibleComicPageRegions();
+        var document = new ReaderComicDocument(
+            _comicTitle ?? "Cómic",
+            _comicPages
+                .Select(page => new ReaderComicPage(
+                    page.SourcePath,
+                    page.DisplayName,
+                    page.Regions))
+                .ToArray(),
+            Math.Clamp(_comicPageIndex, 0, _comicPages.Count - 1),
+            ReaderTranslationEdited);
 
-        // El ejecutable TintaES.Reader y el botón «Leer cómic» usan exactamente la misma ventana:
-        // MainWindow en modo de solo lectura. El antiguo ComicReaderWindow duplicaba navegación,
-        // hit-testing, tarjeta y gestos, y era la causa de que ambos lectores se comportasen distinto.
-        var reader = new MainWindow(readerOnly: true)
+        var reader = new ComicReaderWindow(document)
         {
-            Owner = this,
-            ShowInTaskbar = false
+            Owner = this
         };
+        reader.Show();
+    }
 
-        try
+    private void ReaderTranslationEdited(int pageIndex, ComicRegion region)
+    {
+        MarkActiveDocumentDirty(pageIndex);
+        if (pageIndex != _visibleComicPageIndex)
         {
-            reader.Show();
-            await reader.OpenReaderSnapshotAsync(this);
+            return;
         }
-        catch (Exception exception)
+
+        RegionListBox.Items.Refresh();
+        if (ReferenceEquals(_selectedRegion, region))
         {
-            if (reader.IsVisible)
-            {
-                reader.Close();
-            }
-            MessageBox.Show(
-                this,
-                $"No se pudo abrir el lector.\n\n{exception.Message}",
-                "Tinta ES Reader",
-                MessageBoxButton.OK,
-                MessageBoxImage.Error);
+            ShowRegionEditor(region);
         }
+        SetFooterStatus($"Traducción corregida en la página {pageIndex + 1}.", "#58A77D");
     }
 }
