@@ -36,7 +36,7 @@ public partial class MainWindow
 
     private static void MainWindow_FloatingEditorPaletteLoaded(object sender, RoutedEventArgs e)
     {
-        if (sender is MainWindow window && !window._readerOnlyMode)
+        if (sender is MainWindow window)
         {
             window.Dispatcher.BeginInvoke(
                 window.TryInstallFloatingEditorPalette,
@@ -46,11 +46,6 @@ public partial class MainWindow
 
     private void TryInstallFloatingEditorPalette()
     {
-        if (_readerOnlyMode)
-        {
-            return;
-        }
-
         if (_floatingEditorPaletteInstalled)
         {
             MoveHistoryAndSaveOutsideCanvas();
@@ -85,8 +80,6 @@ public partial class MainWindow
             ConfigureCompactToolButton(button);
         }
 
-        // El panel derecho conserva únicamente la opción contextual de tamaño. Los botones de
-        // herramienta viven en la paleta, donde resultan accesibles sin ocupar el inspector.
         if (_maskPaintButton.Parent is StackPanel oldButtons)
         {
             oldButtons.Visibility = Visibility.Collapsed;
