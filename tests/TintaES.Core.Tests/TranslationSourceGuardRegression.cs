@@ -7,7 +7,9 @@ internal static class TranslationSourceGuardRegression
     internal static void Run()
     {
         RejectsHalftoneAndRepeatedLetterNoise();
+        RejectsBrokenVocalisationNoiseFromRealPage();
         AcceptsActualComicDialogueAndSfx();
+        AcceptsRealVocalisations();
         AcceptsARealStoredOcrAlternative();
         IgnoresDocumentResearchAsOcrEvidence();
         Console.WriteLine("OK  La barrera OCR impide traducir ruido como si fuera diálogo");
@@ -34,6 +36,29 @@ internal static class TranslationSourceGuardRegression
             };
             Require(!TranslationSourceGuard.IsReliable(region),
                 $"El ruido OCR «{source}» no puede convertirse en objetivo de traducción.");
+        }
+    }
+
+    private static void RejectsBrokenVocalisationNoiseFromRealPage()
+    {
+        string[] noise =
+        [
+            "nooo «jooo ooo",
+            "NOOO JOOO OOO",
+            "ooo jooo ooo",
+            "cooo oooo cooo"
+        ];
+
+        foreach (string source in noise)
+        {
+            var region = new ComicRegion
+            {
+                Original = source,
+                Type = "dialogue",
+                Confidence = 0.95
+            };
+            Require(!TranslationSourceGuard.IsReliable(region),
+                $"Una secuencia rota de pseudo-vocalizaciones no puede traducirse por contexto: «{source}».");
         }
     }
 
@@ -68,6 +93,29 @@ internal static class TranslationSourceGuardRegression
         };
         Require(TranslationSourceGuard.IsReliable(sfx),
             "Un SFX repetitivo legítimo no debe confundirse con ruido de diálogo.");
+    }
+
+    private static void AcceptsRealVocalisations()
+    {
+        string[] vocalisations =
+        [
+            "NOOO!",
+            "NOOO! NOOO!",
+            "OOOH!",
+            "HA HA HA!"
+        ];
+
+        foreach (string source in vocalisations)
+        {
+            var region = new ComicRegion
+            {
+                Original = source,
+                Type = "dialogue",
+                Confidence = 0.65
+            };
+            Require(TranslationSourceGuard.IsReliable(region),
+                $"Una vocalización real no debe descartarse solo por repetir letras: «{source}».");
+        }
     }
 
     private static void AcceptsARealStoredOcrAlternative()
