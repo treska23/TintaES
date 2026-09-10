@@ -6,6 +6,7 @@ namespace TintaES.Wpf;
 
 /// <summary>
 /// Desplazamiento directo de la página: el botón izquierdo arrastra sin teclas modificadoras.
+/// En el Reader, pulsar dentro de una zona traducida tiene prioridad y mantiene visible su tarjeta.
 /// Ctrl+clic sobre una zona fija o libera su tarjeta en el inspector para poder editarla sin
 /// que el hover cambie la selección. Escape libera cualquier selección fijada.
 /// </summary>
@@ -33,6 +34,14 @@ public partial class MainWindow
             {
                 e.Handled = true;
             }
+            return;
+        }
+
+        // En el Reader, un clic dentro de un bocadillo es una consulta de traducción. Solo un
+        // clic en espacio libre empieza a desplazar la página.
+        if (BeginMainTranslationMouseHold(e.GetPosition(ImageStage)))
+        {
+            e.Handled = true;
             return;
         }
 
@@ -66,6 +75,13 @@ public partial class MainWindow
     protected override void OnPreviewMouseLeftButtonUp(MouseButtonEventArgs e)
     {
         base.OnPreviewMouseLeftButtonUp(e);
+
+        if (_mainTranslationMouseHeld)
+        {
+            EndMainTranslationMouseHold();
+            e.Handled = true;
+            return;
+        }
 
         if (!_isSpacePanning)
         {
