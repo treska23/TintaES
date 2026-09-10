@@ -3,17 +3,26 @@ using System.Windows;
 namespace TintaES.Wpf;
 
 /// <summary>
-/// La imagen ya no es un lienzo de sustitución. El área principal sirve para revisar la
-/// detección y corregir traducciones; la lectura se realiza sobre la página original.
+/// El resultado normal de Tinta ES sustituye la rotulación original: fondo limpio más español.
+/// El antiguo modo lector, que conservaba el inglés en la página y enseñaba la traducción aparte,
+/// queda desactivado.
 /// </summary>
 public partial class MainWindow
 {
-    private const bool ReaderFirstModeEnabled = true;
+    private const bool ReaderFirstModeEnabled = false;
 
     private void InstallReaderFirstMode()
     {
-        Title = $"Tinta ES · Lector y traductor local de cómics · {CurrentUiBuildStamp}";
+        Title = $"Tinta ES · Traductor local de cómics · {CurrentUiBuildStamp}";
         AnalyzeButton.Content = "✦  Detectar y traducir";
+
+        if (!ReaderFirstModeEnabled)
+        {
+            AnalyzeButton.ToolTip =
+                "Detectar el texto original, borrarlo y colocar únicamente la traducción española";
+            return;
+        }
+
         AnalyzeButton.ToolTip = "Detectar y traducir todos los textos sin modificar la página";
         InstallDirectReaderInput();
         InstallMainTranslationInteraction();
