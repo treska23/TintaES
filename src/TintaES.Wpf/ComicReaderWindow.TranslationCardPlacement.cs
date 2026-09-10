@@ -1,4 +1,5 @@
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
@@ -69,9 +70,6 @@ public sealed partial class ComicReaderWindow
         }
 
         window._translationPlacementRegion = region;
-        // La instancia normal volverá a llamar ShowTranslationCard unas líneas después. Hacerlo
-        // aquí permite medir y colocar la tarjeta antes del siguiente render, evitando un destello
-        // en el centro de la pantalla.
         window.ShowTranslationCard(region);
         window.PositionTranslationCard(region, e.GetPosition(window._viewerHost), isTouch: false);
     }
@@ -184,8 +182,6 @@ public sealed partial class ComicReaderWindow
         _translationCard.Measure(new Size(maxCardWidth, double.PositiveInfinity));
         Size cardSize = _translationCard.DesiredSize;
 
-        // Una traducción excepcionalmente larga debe seguir cabiendo completa en la página.
-        // Se reduce solo hasta 15 px, todavía perfectamente legible, antes de aceptar recorte.
         double availableHeight = Math.Max(80d, visiblePage.Height - 24d);
         if (cardSize.Height > availableHeight && baseFontSize > 15d)
         {
@@ -242,12 +238,6 @@ public sealed partial class ComicReaderWindow
             Math.Abs(second.Y - first.Y));
     }
 
-    /// <summary>
-    /// Geometría pura para poder probar el comportamiento sin abrir una ventana. La primera
-    /// opción siempre es la izquierda. Si el margen izquierdo la bloquea, se prueba la diagonal
-    /// superior derecha; si el borde superior la bloquea, se baja por la derecha. Los últimos
-    /// candidatos cubren páginas estrechas o bocadillos pegados a varias esquinas.
-    /// </summary>
     internal static Point ResolveReaderTranslationCardPlacement(
         Rect pageBounds,
         Rect bubbleBounds,
@@ -288,7 +278,6 @@ public sealed partial class ComicReaderWindow
         double maxX = safe.Right - width;
         double maxY = safe.Bottom - height;
 
-        // Uso normal: a la izquierda del bocadillo y del dedo/puntero.
         double leftX = obstacle.Left - width;
         if (leftX >= safe.Left)
         {
@@ -297,7 +286,6 @@ public sealed partial class ComicReaderWindow
                 Clamp(pointer.Y - height / 2d, safe.Top, maxY));
         }
 
-        // Bocadillo muy a la izquierda: diagonal hacia arriba y a la derecha.
         double rightX = Math.Max(obstacle.Right, pointer.X + pointerRadius + gap * 0.35d);
         if (rightX + width <= safe.Right)
         {
@@ -307,20 +295,17 @@ public sealed partial class ComicReaderWindow
                 return new Point(rightX, upperY);
             }
 
-            // Si arriba es el borde que bloquea la tarjeta, cae hacia abajo por la derecha.
             double lowerY = Math.Max(obstacle.Bottom, pointer.Y + pointerRadius + gap * 0.35d);
             if (lowerY + height <= safe.Bottom)
             {
                 return new Point(rightX, lowerY);
             }
 
-            // En una franja vertical estrecha se mantiene a la derecha y se desliza con el dedo.
             return new Point(
                 rightX,
                 Clamp(pointer.Y - height / 2d, safe.Top, maxY));
         }
 
-        // Si tampoco hay anchura a la derecha, se busca primero encima y luego debajo.
         double aboveY = obstacle.Top - height;
         if (aboveY >= safe.Top)
         {
@@ -337,9 +322,6 @@ public sealed partial class ComicReaderWindow
                 belowY);
         }
 
-        // Caso límite: no existe un hueco completo fuera del bocadillo. Escogemos entre cuatro
-        // posiciones visibles la que menos tape el área pulsada, penalizando especialmente cubrir
-        // el dedo/puntero. Esto garantiza que la tarjeta nunca desaparezca fuera de la página.
         Point[] candidates =
         [
             new Point(safe.Left, Clamp(pointer.Y - height / 2d, safe.Top, maxY)),
