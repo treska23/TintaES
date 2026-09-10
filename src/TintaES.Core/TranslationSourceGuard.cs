@@ -28,16 +28,15 @@ public static class TranslationSourceGuard
 
         string type = region.Type?.Trim().ToLowerInvariant() ?? string.Empty;
         string primary = Compact(region.Original);
-        if (IsReliableText(primary, type))
+        if (IsReliableRegionReading(region, primary, type))
         {
             reading = primary;
             return true;
         }
 
         reading = region.StoredOcrAlternatives
-            .Where(value => IsReliableText(value, type))
             .Select(Compact)
-            .Where(value => value.Length > 0)
+            .Where(value => IsReliableRegionReading(region, value, type))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .OrderByDescending(ReadingEvidenceScore)
             .FirstOrDefault() ?? string.Empty;
@@ -46,8 +45,7 @@ public static class TranslationSourceGuard
 
     /// <summary>
     /// Prepara la evidencia que verá el traductor. Elimina alternativas que también sean ruido y,
-    /// cuando sea necesario, asciende una lectura OCR secundaria fiable a Original. De esta forma
-    /// TARGET nunca contiene OOOOO mientras CONTEXT contiene la frase que el modelo debería adivinar.
+    /// cuando sea necesario, asciende una lectura OCR secundaria fiable a Original.
     /// </summary>
     public static bool NormalizeEvidence(ComicRegion region)
     {
@@ -62,7 +60,7 @@ public static class TranslationSourceGuard
         string[] reliable = new[] { previousPrimary }
             .Concat(region.StoredOcrAlternatives)
             .Select(Compact)
-            .Where(value => IsReliableText(value, type))
+            .Where(value => IsReliableRegionReading(region, value, type))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .OrderByDescending(ReadingEvidenceScore)
             .ToArray();
@@ -79,6 +77,10 @@ public static class TranslationSourceGuard
         return true;
     }
 
+    /// <summary>
+    /// Comprueba solo la forma lingüística. La validación completa de una región se hace en
+    /// IsReliableRegionReading, que además usa la evidencia geométrica del bocadillo.
+    /// </summary>
     public static bool IsReliableText(string? value, string? type = null)
     {
         if (string.IsNullOrWhiteSpace(value))
@@ -96,29 +98,21 @@ public static class TranslationSourceGuard
             return false;
         }
 
-        bool sfx = string.Equals(type, "sfx", StringComparison.OrdinalIgnoreCase)
-                   || string.Equals(type, "sound_effect", StringComparison.OrdinalIgnoreCase)
-                   || string.Equals(type, "sound-effect", StringComparison.OrdinalIgnoreCase)
-                   || string.Equals(type, "onomatopoeia", StringComparison.OrdinalIgnoreCase);
-
-        // Un efecto sonoro puede ser deliberadamente repetitivo (AAAA, BZZZZ, HAHAHA). Para
-        // diálogo normal, en cambio, una cadena formada casi solo por O/C/A es el patrón típico
-        // que producen tramas, puntos de semitono y bordes confundidos con letras.
+        bool sfx = IsSfx(type);
         if (sfx)
         {
             return letters.Length <= 80;
         }
 
-        string[] words = Regex.Matches(compact, @"[\p{L}]+(?:['’\-][\p{L}]+)*")
-            .Select(match => match.Value)
-            .ToArray();
+        string[] words = ExtractWords(compact);
         if (words.Length == 0)
         {
             return false;
         }
 
-        // Gritos reales como NOOO!, OOOH! o HA HA HA son válidos. Se reconocen antes de las
-        // reglas de repetición para no confundir una vocalización deliberada con ruido OCR.
+        // Gritos reales como NOOO!, OOOH!, YEEES! o HA HA HA son válidos. Se reconocen antes
+        // de las reglas de repetición, pero solo cuando la raíz resultante es una vocalización
+        // conocida. "OOOC" no tiene una raíz lingüística y no entra aquí.
         if (LooksLikeLaughterOrVocalisation(compact)
             || LooksLikeKnownVocalisationSequence(words))
         {
@@ -142,10 +136,18 @@ public static class TranslationSourceGuard
             .Max(group => group.Count());
         double dominantRatio = dominantCount / (double)letters.Length;
 
-        // Caso real que provocó la regresión: "nooo jooo ooo". No contiene una frase inglesa;
-        // son varios pseudo-tokens dominados por la misma vocal. El modelo lo convertía en una
-        // reacción plausible aprovechando el contexto de la página. Dos o más tokens de diálogo
-        // con tan poca diversidad no pueden llegar jamás a TranslateGemma.
+        // Ruido corto típico de tramas y contornos: OOOC, OOOCC, CCCO, AAAB, etc. Antes se
+        // aceptaba porque las reglas estadísticas solo empezaban a actuar con cadenas largas.
+        if (words.Length == 1
+            && letters.Length is >= 3 and <= 8
+            && distinct <= 2
+            && longestRun >= 3
+            && !IsKnownExpressiveRoot(CollapseRepeatedLetters(words[0])))
+        {
+            return false;
+        }
+
+        // Caso real anterior: "nooo jooo ooo". Son varios pseudo-tokens dominados por una vocal.
         if (words.Length >= 2
             && letters.Length >= 7
             && distinct <= 3
@@ -167,7 +169,6 @@ public static class TranslationSourceGuard
         if (letters.Length >= 10)
         {
             double entropy = CharacterEntropy(letters);
-
             if (distinct <= 2 && dominantRatio >= 0.62)
             {
                 return false;
@@ -190,11 +191,65 @@ public static class TranslationSourceGuard
         return true;
     }
 
+    private static bool IsReliableRegionReading(ComicRegion region, string value, string type)
+    {
+        if (!IsReliableText(value, type))
+        {
+            return false;
+        }
+        if (region.IsManual || IsSfx(type) || type is "sign" or "caption" or "narration")
+        {
+            return true;
+        }
+
+        string[] words = ExtractWords(value);
+        int letterCount = value.Count(char.IsLetter);
+
+        // Para un diálogo de una sola palabra muy corta, la cadena por sí sola tiene poca
+        // información. Si no es una palabra/interjección inequívoca, exigimos que el detector
+        // haya encontrado realmente un contenedor de bocadillo. Esto elimina falsos "OOOC",
+        // "LIO", etc. detectados sobre ropa, caras o tramas sin castigar YES!, NO!, OH!, HELP!,…
+        if (words.Length == 1 && letterCount <= 8)
+        {
+            string token = words[0];
+            if (IsKnownShortDialogueToken(token)
+                || IsKnownExpressiveRoot(CollapseRepeatedLetters(token)))
+            {
+                return true;
+            }
+
+            return region.BubbleConfidence >= 0.10;
+        }
+
+        // Dos fragmentos diminutos sin ninguna palabra funcional tampoco bastan si no hay
+        // evidencia geométrica de bocadillo. Las frases normales quedan fuera de esta regla.
+        if (words.Length == 2
+            && letterCount <= 10
+            && !ContainsPlainLanguageAnchor(words)
+            && region.BubbleConfidence < 0.08)
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool IsSfx(string? type) =>
+        string.Equals(type, "sfx", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(type, "sound_effect", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(type, "sound-effect", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(type, "onomatopoeia", StringComparison.OrdinalIgnoreCase);
+
+    private static string[] ExtractWords(string value) =>
+        Regex.Matches(value, @"[\p{L}]+(?:['’\-][\p{L}]+)*")
+            .Select(match => match.Value)
+            .ToArray();
+
     private static int ReadingEvidenceScore(string value)
     {
         string compact = Compact(value);
         int letters = compact.Count(char.IsLetter);
-        int words = Regex.Matches(compact, @"[\p{L}]+(?:['’\-][\p{L}]+)*").Count;
+        int words = ExtractWords(compact).Length;
         int diversity = compact.Where(char.IsLetter)
             .Select(char.ToUpperInvariant)
             .Distinct()
@@ -210,7 +265,7 @@ public static class TranslationSourceGuard
         string compact = Regex.Replace(text.ToUpperInvariant(), @"[^A-ZÁÉÍÓÚÜÑ]", string.Empty);
         return Regex.IsMatch(
             compact,
-            @"^(?:(?:HA|HE|HI|HO|HU|JA|JE|JI|JO|JU)){2,}$",
+            @"^(?:(?:HA|HE|HI|HO|HU)){2,}$",
             RegexOptions.CultureInvariant);
     }
 
@@ -225,18 +280,38 @@ public static class TranslationSourceGuard
             .Select(CollapseRepeatedLetters)
             .Where(value => value.Length > 0)
             .ToArray();
-        if (roots.Length != words.Count)
-        {
-            return false;
-        }
+        return roots.Length == words.Count
+               && roots.Distinct(StringComparer.OrdinalIgnoreCase).Count() == 1
+               && IsKnownExpressiveRoot(roots[0]);
+    }
 
+    private static bool IsKnownExpressiveRoot(string value)
+    {
+        string root = value.ToUpperInvariant();
         string[] known =
         [
-            "NO", "OH", "AH", "HA", "HE", "HI", "HO", "HU",
-            "JA", "JE", "JI", "JO", "JU", "HM", "MM", "BO"
+            "NO", "OH", "AH", "UH", "HA", "HE", "HI", "HO", "HU",
+            "HM", "M", "MM", "BO", "BOO", "BR", "GR", "SH", "PS", "PSST",
+            "YES", "YEAH", "SO", "OK", "OKAY", "PLEASE", "WHOA", "WOW", "UGH", "ARGH"
         ];
-        return roots.Distinct(StringComparer.OrdinalIgnoreCase).Count() == 1
-               && known.Contains(roots[0], StringComparer.OrdinalIgnoreCase);
+        return known.Contains(root, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static bool IsKnownShortDialogueToken(string value)
+    {
+        string token = value.Trim('’', '\'').ToUpperInvariant();
+        string[] known =
+        [
+            "A", "AN", "AM", "AND", "ARE", "AS", "AT", "BE", "BUT", "BY", "CAN",
+            "COME", "DID", "DO", "DON'T", "FOR", "FROM", "GO", "GOOD", "HAD", "HAS",
+            "HAVE", "HE", "HELP", "HER", "HERE", "HEY", "HIM", "HIS", "HOW", "I", "IF",
+            "IN", "IS", "IT", "ITS", "LET", "LOOK", "ME", "MY", "NO", "NOT", "NOW", "OF",
+            "OH", "OK", "OKAY", "ON", "OR", "OUR", "OUT", "RUN", "SHE", "SO", "STOP",
+            "THAT", "THE", "THEM", "THEY", "THIS", "TO", "UP", "US", "WAIT", "WAS", "WE",
+            "WERE", "WHAT", "WHEN", "WHERE", "WHO", "WHY", "WILL", "WITH", "WOW", "YES",
+            "YOU", "YOUR"
+        ];
+        return known.Contains(token, StringComparer.OrdinalIgnoreCase);
     }
 
     private static string CollapseRepeatedLetters(string value)
@@ -269,7 +344,7 @@ public static class TranslationSourceGuard
         ];
 
         return words
-            .Select(word => word.Trim('’', '\'' ).ToUpperInvariant())
+            .Select(word => word.Trim('’', '\'').ToUpperInvariant())
             .Any(word => anchors.Contains(word, StringComparer.Ordinal));
     }
 
