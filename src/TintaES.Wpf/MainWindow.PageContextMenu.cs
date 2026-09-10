@@ -42,7 +42,7 @@ public partial class MainWindow
 
     private static void MainWindow_PageContextMenuLoaded(object sender, RoutedEventArgs e)
     {
-        if (sender is MainWindow window && !window._readerOnlyMode)
+        if (sender is MainWindow window)
         {
             window.Dispatcher.BeginInvoke(
                 window.InstallPageContextMenu,
@@ -52,7 +52,7 @@ public partial class MainWindow
 
     private void InstallPageContextMenu()
     {
-        if (_readerOnlyMode || _pageContextMenuInstalled || ImageScrollViewer is null)
+        if (_pageContextMenuInstalled || ImageScrollViewer is null)
         {
             return;
         }
