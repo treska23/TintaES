@@ -247,6 +247,11 @@ public partial class MainWindow
         SetFooterStatus($"Cómic cargado · {_comicPages.Count} páginas. Pulsa Traducir cómic.", "#4CB2BB");
     }
 
+    /// <summary>
+    /// Todas las entradas antiguas de navegación pasan por el cargador rápido actual. Mantener
+    /// dos cargadores había dejado una ruta que volvía a Original, ocultaba OverlayCanvas y hacía
+    /// desaparecer las cajas traducidas al usar las flechas o el menú contextual.
+    /// </summary>
     private void ShowComicPage(int index)
     {
         if (_comicBatchBusy || index < 0 || index >= _comicPages.Count)
@@ -254,51 +259,7 @@ public partial class MainWindow
             return;
         }
 
-        PersistVisibleComicPageRegions();
-        ComicBookPageState page = _comicPages[index];
-        _comicPageIndex = index;
-        _visibleComicPageIndex = -1;
-        LoadImage(page.SourcePath);
-
-        if (page.Processed && !string.IsNullOrWhiteSpace(page.CleanedPath) && File.Exists(page.CleanedPath))
-        {
-            _cleanedBaseBitmap = LoadBitmapSource(page.CleanedPath);
-            _cleanedBitmap = _cleanedBaseBitmap;
-            _maskBitmap = !string.IsNullOrWhiteSpace(page.MaskPath) && File.Exists(page.MaskPath)
-                ? LoadBitmapSource(page.MaskPath)
-                : null;
-
-            _regions.Clear();
-            foreach (ComicRegion region in page.Regions)
-            {
-                _regions.Add(region);
-            }
-
-            LanguageText.Text = $"{page.SourceLanguage.ToUpperInvariant()} → ES";
-            MaskPreviewButton.IsEnabled = _maskBitmap is not null;
-            CleanPreviewButton.IsEnabled = true;
-            ResultPreviewButton.IsEnabled = true;
-            PageImage.Source = _originalBitmap;
-            ShowPreviewMode("original");
-            OverlayCanvas.Children.Clear();
-            UpdateRegionCount();
-            if (_regions.Count > 0)
-            {
-                RegionListBox.SelectedIndex = 0;
-            }
-        }
-
-        _visibleComicPageIndex = index;
-        PageNameText.Text = page.DisplayName;
-        if (_originalBitmap is not null)
-        {
-            PageInfoText.Text = $"{_originalBitmap.PixelWidth} × {_originalBitmap.PixelHeight} px · Página {index + 1} de {_comicPages.Count}";
-        }
-
-        UpdateComicControls();
-        SynchronizeActiveDocumentState();
-        string state = page.Error is not null ? "con error" : page.Processed ? "traducida" : "pendiente";
-        SetFooterStatus($"Página {index + 1}/{_comicPages.Count} · {state}", page.Error is null ? "#58A77D" : "#C99A35");
+        _ = ShowComicPageFastAsync(index);
     }
 
     private void PersistVisibleComicPageRegions()
