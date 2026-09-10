@@ -8,6 +8,7 @@ internal static class TranslationSourceGuardRegression
     {
         RejectsHalftoneAndRepeatedLetterNoise();
         RejectsBrokenVocalisationNoiseFromRealPage();
+        RejectsPreviouslySavedHallucinationAtRenderTime();
         AcceptsActualComicDialogueAndSfx();
         AcceptsRealVocalisations();
         AcceptsARealStoredOcrAlternative();
@@ -60,6 +61,30 @@ internal static class TranslationSourceGuardRegression
             Require(!TranslationSourceGuard.IsReliable(region),
                 $"Una secuencia rota de pseudo-vocalizaciones no puede traducirse por contexto: «{source}».");
         }
+    }
+
+    private static void RejectsPreviouslySavedHallucinationAtRenderTime()
+    {
+        var automatic = new ComicRegion
+        {
+            Original = "nooo «jooo ooo",
+            Translation = "¡Nooo!",
+            Type = "dialogue",
+            Confidence = 0.95
+        };
+        Require(!automatic.HasRenderableTranslation && automatic.DisplayText.Length == 0,
+            "Una alucinación ya guardada en un proyecto antiguo tampoco puede volver a mostrarse.");
+
+        var manual = new ComicRegion
+        {
+            Original = "texto libre",
+            Translation = "Texto manual",
+            Type = "dialogue",
+            Confidence = 0,
+            IsManual = true
+        };
+        Require(manual.HasRenderableTranslation,
+            "Una zona creada manualmente por el usuario no depende de la confianza del OCR.");
     }
 
     private static void AcceptsActualComicDialogueAndSfx()
