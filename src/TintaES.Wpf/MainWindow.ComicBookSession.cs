@@ -113,7 +113,8 @@ public partial class MainWindow
             Style = toolbarStyle,
             ToolTip = "Página anterior"
         };
-        _previousPageButton.Click += (_, _) => ShowComicPage(_comicPageIndex - 1);
+        _previousPageButton.Click += async (_, _) =>
+            await ShowComicPageFastAsync(_comicPageIndex - 1);
 
         _pageCounterText = new TextBlock
         {
@@ -136,7 +137,8 @@ public partial class MainWindow
             Style = toolbarStyle,
             ToolTip = "Página siguiente"
         };
-        _nextPageButton.Click += (_, _) => ShowComicPage(_comicPageIndex + 1);
+        _nextPageButton.Click += async (_, _) =>
+            await ShowComicPageFastAsync(_comicPageIndex + 1);
 
         previewPanel.Children.Insert(0, _previousPageButton);
         previewPanel.Children.Insert(1, _pageCounterText);
@@ -242,24 +244,9 @@ public partial class MainWindow
         _comicPageIndex = 0;
         _visibleComicPageIndex = -1;
         SynchronizeActiveDocumentState();
-        ShowComicPage(0);
+        _ = ShowComicPageFastAsync(0);
         UpdateComicControls();
         SetFooterStatus($"Cómic cargado · {_comicPages.Count} páginas. Pulsa Traducir cómic.", "#4CB2BB");
-    }
-
-    /// <summary>
-    /// Todas las entradas antiguas de navegación pasan por el cargador rápido actual. Mantener
-    /// dos cargadores había dejado una ruta que volvía a Original, ocultaba OverlayCanvas y hacía
-    /// desaparecer las cajas traducidas al usar las flechas o el menú contextual.
-    /// </summary>
-    private void ShowComicPage(int index)
-    {
-        if (_comicBatchBusy || index < 0 || index >= _comicPages.Count)
-        {
-            return;
-        }
-
-        _ = ShowComicPageFastAsync(index);
     }
 
     private void PersistVisibleComicPageRegions()
@@ -303,6 +290,10 @@ public partial class MainWindow
         if (_exportComicButton is not null)
         {
             _exportComicButton.IsEnabled = hasComic && !busy;
+        }
+        if (_comicReaderButton is not null)
+        {
+            _comicReaderButton.IsEnabled = hasComic && !busy;
         }
 
         OpenImageButton.IsEnabled = true;
