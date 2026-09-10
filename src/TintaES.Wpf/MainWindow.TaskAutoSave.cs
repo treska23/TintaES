@@ -8,7 +8,7 @@ namespace TintaES.Wpf;
 /// <summary>
 /// Persiste cada unidad de trabajo terminada directamente en el .tinta principal. No genera
 /// versiones, snapshots ni copias permanentes: solo usa un temporal efímero para que sustituir
-/// project.json sea atómico y el archivo principal nunca quede a medio escribir.
+/// el contenido sea atómico y el archivo principal nunca quede a medio escribir.
 /// </summary>
 public partial class MainWindow
 {
@@ -63,7 +63,12 @@ public partial class MainWindow
             throw new OperationCanceledException("No existe el proyecto principal para autoguardar.");
         }
 
+        // El análisis ya generó el fondo sin las letras inglesas y su máscara. El modo lector
+        // anterior los descartaba y por eso el español acababa dibujado encima del inglés.
+        CommitPreparedComicPageArtifacts(pageIndex);
+
         string projectPath = _currentProjectPath;
+        ComicBookPageState page = _comicPages[pageIndex];
         TintaProjectManifest manifest = BuildIncrementalProjectManifest(pageIndex);
         byte[] manifestJson = JsonSerializer.SerializeToUtf8Bytes(manifest, ProjectJsonOptions);
 
@@ -71,8 +76,11 @@ public partial class MainWindow
         try
         {
             await Task.Run(() =>
-                TintaProjectTaskAutosaveService.ReplaceManifestTransactionally(
+                TintaProjectTaskAutosaveService.ReplacePageTransactionally(
                     projectPath,
+                    pageIndex,
+                    page.CleanedPath,
+                    page.MaskPath,
                     manifestJson));
 
             MarkActiveDocumentPageSaved(pageIndex);
