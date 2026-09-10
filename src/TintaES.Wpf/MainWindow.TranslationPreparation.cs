@@ -70,11 +70,19 @@ public partial class MainWindow
         ComicRegion[] detectorCandidates = organic.Analysis.Regions
             .Where(IsReadableLetteringCandidate)
             .ToArray();
-        ComicRegion[] readableCandidates = detectorCandidates
-            .Where(TranslationSourceGuard.IsReliable)
-            .ToArray();
+        var readableCandidates = new List<ComicRegion>(detectorCandidates.Length);
+        foreach (ComicRegion candidate in detectorCandidates)
+        {
+            // Si la lectura principal es ruido pero Paddle/otra pasada dejó una alternativa OCR
+            // real y legible, esa alternativa se convierte en Original. Las alternativas que
+            // también sean ruido se eliminan antes de construir TARGETS y CONTEXT.
+            if (TranslationSourceGuard.NormalizeEvidence(candidate))
+            {
+                readableCandidates.Add(candidate);
+            }
+        }
 
-        int rejectedNoise = detectorCandidates.Length - readableCandidates.Length;
+        int rejectedNoise = detectorCandidates.Length - readableCandidates.Count;
         if (rejectedNoise > 0)
         {
             progress.Report(new AnalysisProgress(
@@ -83,7 +91,7 @@ public partial class MainWindow
                 $"Descartadas {rejectedNoise} lectura(s) OCR sin evidencia textual suficiente; no se inventará diálogo."));
         }
 
-        if (readableCandidates.Length == 0)
+        if (readableCandidates.Count == 0)
         {
             throw new InvalidOperationException(
                 "No se ha detectado ningún texto legible. Las lecturas OCR dudosas se descartan en vez de inventar diálogo.");
