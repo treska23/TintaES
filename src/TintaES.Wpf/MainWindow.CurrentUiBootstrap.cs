@@ -4,14 +4,14 @@ using System.Windows.Threading;
 namespace TintaES.Wpf;
 
 /// <summary>
-/// Instala de forma explícita la interfaz actual. La rotulación nace desde AddRegionVisual y
-/// aquí solo se inicializan funciones independientes de la aplicación.
+/// Instala de forma explícita la interfaz de edición actual. El Reader tiene su propio arranque
+/// mínimo y no debe ejecutar instaladores de edición ni registrar comportamiento que luego oculta.
 /// </summary>
 public partial class MainWindow
 {
     internal const string CurrentUiBuildStamp = "UI 2026.08.20-r73-cuda-ocr-cache";
     private const int CurrentUiBootstrapMaxAttempts = 3;
-    
+
     private static readonly bool CurrentUiBootstrapRegistered = RegisterCurrentUiBootstrap();
 
     private bool _currentUiBootstrapInstalled;
@@ -60,8 +60,19 @@ public partial class MainWindow
             return;
         }
 
+        // MainWindow(readerOnly: true) es la implementación canónica del lector. No necesita
+        // Ollama, OCR, herramientas, menús de edición ni los instaladores que los acompañan.
+        if (_readerOnlyMode)
+        {
+            _currentUiBootstrapInstalled = true;
+            return;
+        }
+
         _currentUiBootstrapAttempt++;
         Title = $"Tinta ES · Traductor local de cómics · {CurrentUiBuildStamp}";
+        AnalyzeButton.Content = "✦  Detectar y traducir";
+        AnalyzeButton.ToolTip =
+            "Detectar el texto original, borrarlo y colocar únicamente la traducción española";
         FontCategoryComboBox.SelectedValue = "comic";
         FontCategoryComboBox.IsEnabled = false;
         FontCategoryComboBox.ToolTip = "TintaES utiliza una única tipografía de cómic gruesa para todos los bocadillos";
@@ -94,7 +105,6 @@ public partial class MainWindow
         RunCurrentUiInstaller(InstallIconOnlyFloatingPalette, "iconos de la paleta", failures);
         RunCurrentUiInstaller(InstallResponsiveTopBars, "barra superior única", failures);
         RunCurrentUiInstaller(InstallOrRefreshResizableSidePanels, "paneles laterales ajustables", failures);
-        RunCurrentUiInstaller(InstallReaderFirstMode, "modo lector y traductor", failures);
         RunCurrentUiInstaller(UpdateClassicMenuAvailability, "estado del menú", failures);
 
         if (failures.Count == 0)
