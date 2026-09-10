@@ -66,13 +66,27 @@ public partial class MainWindow
 
         OrganicAnalysisResult organic = await AnalyzePageWithWatchdogAsync(
             sourcePath, progress, cancellationToken);
-        ComicRegion[] readableCandidates = organic.Analysis.Regions
+
+        ComicRegion[] detectorCandidates = organic.Analysis.Regions
             .Where(IsReadableLetteringCandidate)
             .ToArray();
+        ComicRegion[] readableCandidates = detectorCandidates
+            .Where(TranslationSourceGuard.IsReliable)
+            .ToArray();
+
+        int rejectedNoise = detectorCandidates.Length - readableCandidates.Length;
+        if (rejectedNoise > 0)
+        {
+            progress.Report(new AnalysisProgress(
+                99,
+                100,
+                $"Descartadas {rejectedNoise} lectura(s) OCR sin evidencia textual suficiente; no se inventará diálogo."));
+        }
+
         if (readableCandidates.Length == 0)
         {
             throw new InvalidOperationException(
-                "No se ha detectado ningún texto pulsable. La página queda pendiente para poder reintentarla.");
+                "No se ha detectado ningún texto legible. Las lecturas OCR dudosas se descartan en vez de inventar diálogo.");
         }
 
         int pageIndex = ResolveComicPageIndex(sourcePath);
