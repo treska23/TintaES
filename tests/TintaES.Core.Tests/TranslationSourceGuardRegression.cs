@@ -8,9 +8,11 @@ internal static class TranslationSourceGuardRegression
     {
         RejectsHalftoneAndRepeatedLetterNoise();
         RejectsBrokenVocalisationNoiseFromRealPage();
+        RejectsPhantomShortRegionsFromRealPage();
         RejectsPreviouslySavedHallucinationAtRenderTime();
         AcceptsActualComicDialogueAndSfx();
         AcceptsRealVocalisations();
+        AcceptsShortProperNameWhenBalloonExists();
         AcceptsARealStoredOcrAlternative();
         IgnoresDocumentResearchAsOcrEvidence();
         Console.WriteLine("OK  La barrera OCR impide traducir ruido como si fuera diálogo");
@@ -63,6 +65,33 @@ internal static class TranslationSourceGuardRegression
         }
     }
 
+    private static void RejectsPhantomShortRegionsFromRealPage()
+    {
+        string[] repeatedNoise = ["OOOC", "OOOC,", "OOOCC", "CCCO"];
+        foreach (string source in repeatedNoise)
+        {
+            var region = new ComicRegion
+            {
+                Original = source,
+                Type = "dialogue",
+                Confidence = 0.99,
+                BubbleConfidence = 0.95
+            };
+            Require(!TranslationSourceGuard.IsReliable(region),
+                $"El pseudo-token corto «{source}» debe rechazarse incluso con confianza geométrica alta.");
+        }
+
+        var noBalloon = new ComicRegion
+        {
+            Original = "LIO",
+            Type = "dialogue",
+            Confidence = 0.90,
+            BubbleConfidence = 0
+        };
+        Require(!TranslationSourceGuard.IsReliable(noBalloon),
+            "Una palabra corta desconocida detectada sobre el dibujo no es diálogo si no existe contenedor de bocadillo.");
+    }
+
     private static void RejectsPreviouslySavedHallucinationAtRenderTime()
     {
         var automatic = new ComicRegion
@@ -74,6 +103,17 @@ internal static class TranslationSourceGuardRegression
         };
         Require(!automatic.HasRenderableTranslation && automatic.DisplayText.Length == 0,
             "Una alucinación ya guardada en un proyecto antiguo tampoco puede volver a mostrarse.");
+
+        var phantom = new ComicRegion
+        {
+            Original = "OOOC",
+            Translation = "OOOC",
+            Type = "dialogue",
+            Confidence = 0.99,
+            BubbleConfidence = 0.95
+        };
+        Require(!phantom.HasRenderableTranslation && phantom.DisplayText.Length == 0,
+            "Un falso OOOC ya guardado tampoco puede volver a rotularse en la página.");
 
         var manual = new ComicRegion
         {
@@ -127,7 +167,8 @@ internal static class TranslationSourceGuardRegression
             "NOOO!",
             "NOOO! NOOO!",
             "OOOH!",
-            "HA HA HA!"
+            "HA HA HA!",
+            "YEEES!"
         ];
 
         foreach (string source in vocalisations)
@@ -141,6 +182,19 @@ internal static class TranslationSourceGuardRegression
             Require(TranslationSourceGuard.IsReliable(region),
                 $"Una vocalización real no debe descartarse solo por repetir letras: «{source}».");
         }
+    }
+
+    private static void AcceptsShortProperNameWhenBalloonExists()
+    {
+        var region = new ComicRegion
+        {
+            Original = "VICK",
+            Type = "dialogue",
+            Confidence = 0.70,
+            BubbleConfidence = 0.72
+        };
+        Require(TranslationSourceGuard.IsReliable(region),
+            "Un nombre corto dentro de un bocadillo real no debe confundirse con una detección fantasma.");
     }
 
     private static void AcceptsARealStoredOcrAlternative()
