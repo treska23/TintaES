@@ -389,6 +389,11 @@ public partial class MainWindow
               CompactFailureMessage(lastTranslationError?.Message ?? string.Empty)
             : null;
         MarkActiveDocumentDirty(pageIndex);
+
+        // Una página ya terminada es una unidad de trabajo cerrada. Se persiste antes de permitir
+        // que el coordinador pase a la siguiente; cancelar o cerrar después de este punto no puede
+        // hacer perder esta traducción.
+        await AutoSaveCompletedProjectTaskAsync(pageIndex);
     }
 
     internal static bool IsReadableLetteringCandidate(ComicRegion region)
