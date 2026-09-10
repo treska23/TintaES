@@ -66,8 +66,6 @@ class PaddleCropInputTests(unittest.TestCase):
         if with_manifest:
             arguments.append(str(self.manifest_path))
         output = io.StringIO()
-        # Estas pruebas congelan los píxeles y la asociación del camino de inferencia;
-        # no deben iniciar un proceso residente real ni cargar modelos externos.
         with mock.patch.dict(worker.os.environ, {"TINTAES_PADDLE_RESIDENT": "0"}), \
              mock.patch.object(sys, "argv", arguments), contextlib.redirect_stdout(output):
             self.assertEqual(worker.main(), 0)
@@ -131,7 +129,8 @@ class PaddleCropInputTests(unittest.TestCase):
             "region-0000.png", "region-0001.png", "region-0002.png",
         ])
 
-        def predict(inputs):
+        def predict(inputs, **kwargs):
+            self.assertEqual(kwargs["prompt_label"], "ocr")
             for index in (2, 0, 1):
                 yield types.SimpleNamespace(json={
                     "input_path": str(inputs[index]).replace("/", "\\"),
