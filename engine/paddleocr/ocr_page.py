@@ -4,14 +4,17 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import socket
 import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
-_PROTOCOL = "tintaes-paddle-resident-v2"
+_PROTOCOL = "tintaes-paddle-resident-v3"
 _HOST = "127.0.0.1"
 _TIMING_LOG = Path(tempfile.gettempdir()) / "tintaes-paddle-timing.jsonl"
 
@@ -104,17 +107,32 @@ def _content_from_result(payload: object) -> str:
     return " ".join(parts)
 
 
+def _bounded_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        return max(minimum, min(maximum, int(os.environ.get(name, str(default)))))
+    except ValueError:
+        return default
+
+
+def _max_new_tokens() -> int:
+    # A comic crop is a speech balloon/narration box, not a whole document. 768 is
+    # intentionally generous while preventing a bad crop from generating thousands
+    # of repeated tokens (the generic document default can be around 4096).
+    return _bounded_int("TINTAES_PADDLE_MAX_NEW_TOKENS", 768, 128, 2048)
+
+
+def _page_parallelism() -> int:
+    # One page normally contains several independent crops. Four server slots let
+    # them be recognised concurrently without loading four copies of the model.
+    return _bounded_int("TINTAES_PADDLE_PAGE_PARALLEL", 4, 1, 8)
+
+
 def _crop_inputs(
     image_path: Path,
     manifest_path: Path,
     temp_dir: Path,
 ) -> tuple[list[str], list[list[float]]]:
-    """Create lossless, index-stable crop files for Paddle.
-
-    We deliberately keep file paths instead of numpy inputs because Paddle returns
-    input_path for file inputs. That lets TintaES bind every asynchronous result to
-    the exact crop even when internal queues finish out of order.
-    """
+    """Create lossless, index-stable crop files for Paddle."""
     from PIL import Image
 
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -150,8 +168,6 @@ def _crop_inputs(
                     crop = resized
                 crop_path = temp_dir / f"region-{len(paths):04d}.png"
                 try:
-                    # Lossless. compress_level=0 removes virtually all PNG CPU work;
-                    # these are short-lived local files and disk size is irrelevant.
                     crop.save(crop_path, format="PNG", compress_level=0)
                 finally:
                     crop.close()
@@ -171,22 +187,43 @@ def _configure_environment() -> None:
     os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
 
 
-def _create_pipeline(*, crop_mode: bool = False):
+def _create_pipeline(
+    *,
+    crop_mode: bool = False,
+    vlm_server_url: str | None = None,
+    vlm_max_concurrency: int | None = None,
+):
     from paddleocr import PaddleOCRVL
 
-    # Crops are already localized by CTD. Loading PP-DocLayout again only adds
-    # work and VRAM. Queues let file loading/VLM inference overlap across the
-    # list of speech-balloon crops. Whole-page mode deliberately keeps the old
-    # settings for compatibility.
-    return PaddleOCRVL(
-        pipeline_version="v1.6",
-        engine=os.environ.get("TINTAES_PADDLE_ENGINE", "transformers"),
-        device=os.environ.get("TINTAES_PADDLE_DEVICE", "gpu:0"),
-        use_doc_orientation_classify=False,
-        use_doc_unwarping=False,
-        use_layout_detection=not crop_mode,
-        use_queues=crop_mode,
-    )
+    kwargs: dict[str, object] = {
+        "pipeline_version": "v1.6",
+        "use_doc_orientation_classify": False,
+        "use_doc_unwarping": False,
+        "use_layout_detection": not crop_mode,
+        "use_queues": crop_mode,
+    }
+    if vlm_server_url:
+        # Paddle's supported production path: one shared llama.cpp model with
+        # concurrent requests for the independent crops of THIS page.
+        kwargs.update(
+            vl_rec_backend="llama-cpp-server",
+            vl_rec_server_url=vlm_server_url,
+            vl_rec_max_concurrency=vlm_max_concurrency or 1,
+        )
+    else:
+        kwargs.update(
+            engine=os.environ.get("TINTAES_PADDLE_ENGINE", "transformers"),
+            device=os.environ.get("TINTAES_PADDLE_DEVICE", "gpu:0"),
+        )
+    return PaddleOCRVL(**kwargs)
+
+
+def _crop_predict_options() -> dict[str, object]:
+    return {
+        "prompt_label": "ocr",
+        "temperature": 0.0,
+        "max_new_tokens": _max_new_tokens(),
+    }
 
 
 def _predict_spots(
@@ -212,12 +249,14 @@ def _predict_spots(
                 return spots
 
             infer_started = time.perf_counter()
-            results = pipeline.predict(inputs)
+            # Force materialisation so timing includes the complete page inference
+            # even if a Paddle version returns a lazy iterable.
+            results = list(pipeline.predict(inputs, **_crop_predict_options()))
             if timings is not None:
-                timings["inference_ms"] = (time.perf_counter() - infer_started) * 1000.0
+                inference_ms = (time.perf_counter() - infer_started) * 1000.0
+                timings["inference_ms"] = inference_ms
+                timings["per_crop_ms"] = inference_ms / max(1, len(inputs))
 
-            # input_path is the source of truth. The numeric fallback preserves
-            # compatibility with older Paddle versions that omit it.
             used_indices: set[int] = set()
             for fallback_index, result in enumerate(results):
                 payload = result.json
@@ -233,7 +272,7 @@ def _predict_spots(
         return spots
 
     infer_started = time.perf_counter()
-    results = pipeline.predict(str(image_path))
+    results = list(pipeline.predict(str(image_path)))
     if timings is not None:
         timings["inference_ms"] = (time.perf_counter() - infer_started) * 1000.0
     for result in results:
@@ -250,7 +289,6 @@ def _server_port() -> int:
         (
             str(Path(__file__).resolve()),
             os.environ.get("TINTAES_PADDLE_MODEL_HOME", ""),
-            os.environ.get("TINTAES_PADDLE_ENGINE", "transformers"),
             os.environ.get("TINTAES_PADDLE_DEVICE", "gpu:0"),
             _PROTOCOL,
         )
@@ -263,8 +301,11 @@ def _server_log_path(port: int) -> Path:
     return Path(tempfile.gettempdir()) / f"tintaes-paddle-resident-{port}.log"
 
 
+def _llama_log_path(port: int) -> Path:
+    return Path(tempfile.gettempdir()) / f"tintaes-paddle-llama-{port}.log"
+
+
 def _append_timing_log(values: dict[str, object]) -> None:
-    """Keep a small diagnostic log without affecting the OCR protocol."""
     try:
         if _TIMING_LOG.exists() and _TIMING_LOG.stat().st_size > 512 * 1024:
             _TIMING_LOG.unlink(missing_ok=True)
@@ -273,6 +314,142 @@ def _append_timing_log(values: dict[str, object]) -> None:
             stream.write(json.dumps(entry, ensure_ascii=False, separators=(",", ":")) + "\n")
     except OSError:
         pass
+
+
+def _model_root() -> Path | None:
+    value = os.environ.get("TINTAES_PADDLE_MODEL_HOME")
+    return Path(value).resolve() if value else None
+
+
+def _llama_model_paths() -> tuple[Path, Path] | None:
+    explicit_model = os.environ.get("TINTAES_PADDLE_LLAMA_MODEL")
+    explicit_mmproj = os.environ.get("TINTAES_PADDLE_LLAMA_MMPROJ")
+    if explicit_model and explicit_mmproj:
+        model = Path(explicit_model).expanduser().resolve()
+        mmproj = Path(explicit_mmproj).expanduser().resolve()
+    else:
+        model_root = _model_root()
+        if model_root is None:
+            return None
+        llama_root = model_root / "llama"
+        model = llama_root / "PaddleOCR-VL-1.6-GGUF.gguf"
+        mmproj = llama_root / "PaddleOCR-VL-1.6-GGUF-mmproj.gguf"
+    return (model, mmproj) if model.is_file() and mmproj.is_file() else None
+
+
+def _find_llama_server() -> Path | None:
+    explicit = os.environ.get("TINTAES_PADDLE_LLAMA_SERVER")
+    if explicit:
+        path = Path(explicit).expanduser()
+        if path.is_file():
+            return path.resolve()
+
+    model_root = _model_root()
+    if model_root is not None:
+        path_file = model_root.parent / "llama-server.path"
+        try:
+            candidate = Path(path_file.read_text(encoding="utf-8").strip().strip('"'))
+            if candidate.is_file():
+                return candidate.resolve()
+        except OSError:
+            pass
+
+    command = shutil.which("llama-server") or shutil.which("llama-server.exe")
+    if command:
+        return Path(command).resolve()
+
+    if os.name == "nt":
+        local = os.environ.get("LOCALAPPDATA")
+        if local:
+            link = Path(local) / "Microsoft" / "WinGet" / "Links" / "llama-server.exe"
+            if link.is_file():
+                return link.resolve()
+    return None
+
+
+def _free_local_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind((_HOST, 0))
+        return int(probe.getsockname()[1])
+
+
+def _stop_process(process: subprocess.Popen[bytes] | None) -> None:
+    if process is None or process.poll() is not None:
+        return
+    try:
+        process.terminate()
+        process.wait(timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        try:
+            process.kill()
+            process.wait(timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
+
+def _wait_for_llama(process: subprocess.Popen[bytes], base_url: str, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    health_url = base_url.rstrip("/") + "/health"
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            return False
+        try:
+            with urllib.request.urlopen(health_url, timeout=1.0) as response:
+                if 200 <= response.status < 300:
+                    return True
+        except (OSError, urllib.error.URLError, urllib.error.HTTPError):
+            pass
+        time.sleep(0.25)
+    return False
+
+
+def _start_llama_server() -> tuple[subprocess.Popen[bytes], str, int] | None:
+    disabled = os.environ.get("TINTAES_PADDLE_LLAMA", "1").strip().lower()
+    if disabled in {"0", "false", "off"}:
+        return None
+
+    executable = _find_llama_server()
+    models = _llama_model_paths()
+    if executable is None or models is None:
+        return None
+
+    model, mmproj = models
+    parallelism = _page_parallelism()
+    port = _free_local_port()
+    log_path = _llama_log_path(port)
+    try:
+        log_path.unlink(missing_ok=True)
+    except OSError:
+        pass
+    log = log_path.open("ab")
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+    try:
+        process = subprocess.Popen(
+            [
+                str(executable),
+                "-m", str(model),
+                "--mmproj", str(mmproj),
+                "--host", _HOST,
+                "--port", str(port),
+                "--temp", "0",
+                "--parallel", str(parallelism),
+                "-ngl", "99",
+                "--no-webui",
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            close_fds=True,
+            creationflags=creationflags,
+        )
+    finally:
+        log.close()
+
+    base_url = f"http://{_HOST}:{port}"
+    if not _wait_for_llama(process, base_url, timeout=180.0):
+        _stop_process(process)
+        return None
+    return process, base_url + "/v1", parallelism
 
 
 def _send_server_request(payload: dict[str, object], *, timeout: float) -> dict[str, object]:
@@ -354,95 +531,141 @@ def _ensure_server() -> tuple[bool, float]:
 
 def _serve(port: int) -> int:
     _configure_environment()
+    llama_process: subprocess.Popen[bytes] | None = None
+    backend = "transformers"
+    parallelism = 1
     load_started = time.perf_counter()
-    # The resident service is crop-only: this is the path used by TintaES.
-    # Whole-page OCR remains isolated so it keeps its historical settings.
-    pipeline = _create_pipeline(crop_mode=True)
+
+    acceleration = _start_llama_server()
+    if acceleration is not None:
+        llama_process, server_url, parallelism = acceleration
+        try:
+            pipeline = _create_pipeline(
+                crop_mode=True,
+                vlm_server_url=server_url,
+                vlm_max_concurrency=parallelism,
+            )
+            backend = "llama.cpp"
+        except Exception:
+            _stop_process(llama_process)
+            llama_process = None
+            parallelism = 1
+            pipeline = _create_pipeline(crop_mode=True)
+    else:
+        pipeline = _create_pipeline(crop_mode=True)
     model_load_ms = (time.perf_counter() - load_started) * 1000.0
 
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
-        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        try:
-            server.bind((_HOST, port))
-        except OSError:
-            return 0
-        server.listen(8)
-        server.settimeout(30.0)
-        last_activity = time.monotonic()
-
-        while True:
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
+            server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
-                connection, _ = server.accept()
-            except socket.timeout:
-                if time.monotonic() - last_activity > 5.0 * 60.0:
-                    return 0
-                continue
+                server.bind((_HOST, port))
+            except OSError:
+                return 0
+            server.listen(8)
+            server.settimeout(30.0)
+            last_activity = time.monotonic()
 
-            request: dict[str, object] = {}
-            with connection:
-                connection.settimeout(14.0 * 60.0)
-                stream = connection.makefile("rwb")
+            while True:
                 try:
-                    line = stream.readline()
-                    request = json.loads(line.decode("utf-8")) if line else {}
-                    if not isinstance(request, dict):
-                        raise ValueError("La petición del worker debe ser un objeto JSON.")
-                    command = request.get("command")
-                    if command == "ping":
-                        response: dict[str, object] = {
-                            "protocol": _PROTOCOL,
-                            "ok": True,
-                            "status": "ready",
-                            "pid": os.getpid(),
-                            "model_load_ms": round(model_load_ms, 1),
-                        }
-                    elif command == "shutdown":
-                        response = {
-                            "protocol": _PROTOCOL,
-                            "ok": True,
-                            "status": "stopping",
-                            "pid": os.getpid(),
-                        }
-                    elif command == "ocr":
-                        image_path = Path(str(request.get("image") or "")).resolve()
-                        manifest_value = request.get("manifest")
-                        if not manifest_value:
-                            raise ValueError("El worker residente rápido requiere regiones CTD.")
-                        manifest_path = Path(str(manifest_value)).resolve()
-                        if not image_path.is_file():
-                            raise FileNotFoundError(f"No existe la imagen: {image_path}")
-                        if not manifest_path.is_file():
-                            raise FileNotFoundError(f"No existe el manifiesto de regiones: {manifest_path}")
-                        request_started = time.perf_counter()
-                        timings: dict[str, float] = {}
-                        spots = _predict_spots(pipeline, image_path, manifest_path, timings)
-                        total_ms = (time.perf_counter() - request_started) * 1000.0
-                        response = {
-                            "protocol": _PROTOCOL,
-                            "ok": True,
-                            "spots": spots,
-                            "elapsed_ms": round(total_ms, 1),
-                            "crop_ms": round(timings.get("crop_ms", 0.0), 1),
-                            "inference_ms": round(timings.get("inference_ms", 0.0), 1),
-                            "crop_count": int(timings.get("crop_count", 0.0)),
-                            "model_load_ms": round(model_load_ms, 1),
-                            "pid": os.getpid(),
-                        }
-                    else:
-                        raise ValueError(f"Comando no reconocido: {command}")
-                except Exception as exc:  # noqa: BLE001 - process boundary
-                    response = {
-                        "protocol": _PROTOCOL,
-                        "ok": False,
-                        "error": f"{type(exc).__name__}: {exc}",
-                        "pid": os.getpid(),
-                    }
+                    connection, _ = server.accept()
+                except socket.timeout:
+                    if time.monotonic() - last_activity > 5.0 * 60.0:
+                        return 0
+                    continue
 
-                stream.write(json.dumps(response, ensure_ascii=False, separators=(",", ":")).encode("utf-8") + b"\n")
-                stream.flush()
-                last_activity = time.monotonic()
-                if request.get("command") == "shutdown":
-                    return 0
+                request: dict[str, object] = {}
+                with connection:
+                    connection.settimeout(14.0 * 60.0)
+                    stream = connection.makefile("rwb")
+                    try:
+                        line = stream.readline()
+                        request = json.loads(line.decode("utf-8")) if line else {}
+                        if not isinstance(request, dict):
+                            raise ValueError("La petición del worker debe ser un objeto JSON.")
+                        command = request.get("command")
+                        if command == "ping":
+                            response: dict[str, object] = {
+                                "protocol": _PROTOCOL,
+                                "ok": True,
+                                "status": "ready",
+                                "pid": os.getpid(),
+                                "model_load_ms": round(model_load_ms, 1),
+                                "backend": backend,
+                                "parallelism": parallelism,
+                            }
+                        elif command == "shutdown":
+                            response = {
+                                "protocol": _PROTOCOL,
+                                "ok": True,
+                                "status": "stopping",
+                                "pid": os.getpid(),
+                            }
+                        elif command == "ocr":
+                            image_path = Path(str(request.get("image") or "")).resolve()
+                            manifest_value = request.get("manifest")
+                            if not manifest_value:
+                                raise ValueError("El worker residente rápido requiere regiones CTD.")
+                            manifest_path = Path(str(manifest_value)).resolve()
+                            if not image_path.is_file():
+                                raise FileNotFoundError(f"No existe la imagen: {image_path}")
+                            if not manifest_path.is_file():
+                                raise FileNotFoundError(f"No existe el manifiesto de regiones: {manifest_path}")
+
+                            request_started = time.perf_counter()
+                            timings: dict[str, float] = {}
+                            fallback_reason: str | None = None
+                            try:
+                                spots = _predict_spots(pipeline, image_path, manifest_path, timings)
+                            except Exception as accelerated_error:
+                                if backend != "llama.cpp":
+                                    raise
+                                # Acceleration is optional. If the local HTTP backend
+                                # fails, retry THIS SAME page once through the proven
+                                # Transformers path instead of losing the OCR result.
+                                fallback_reason = f"{type(accelerated_error).__name__}: {accelerated_error}"
+                                _stop_process(llama_process)
+                                llama_process = None
+                                backend = "transformers"
+                                parallelism = 1
+                                pipeline = _create_pipeline(crop_mode=True)
+                                timings = {}
+                                spots = _predict_spots(pipeline, image_path, manifest_path, timings)
+
+                            total_ms = (time.perf_counter() - request_started) * 1000.0
+                            response = {
+                                "protocol": _PROTOCOL,
+                                "ok": True,
+                                "spots": spots,
+                                "elapsed_ms": round(total_ms, 1),
+                                "crop_ms": round(timings.get("crop_ms", 0.0), 1),
+                                "inference_ms": round(timings.get("inference_ms", 0.0), 1),
+                                "per_crop_ms": round(timings.get("per_crop_ms", 0.0), 1),
+                                "crop_count": int(timings.get("crop_count", 0.0)),
+                                "model_load_ms": round(model_load_ms, 1),
+                                "backend": backend,
+                                "parallelism": parallelism,
+                                "max_new_tokens": _max_new_tokens(),
+                                "fallback_reason": fallback_reason,
+                                "pid": os.getpid(),
+                            }
+                        else:
+                            raise ValueError(f"Comando no reconocido: {command}")
+                    except Exception as exc:  # noqa: BLE001 - process boundary
+                        response = {
+                            "protocol": _PROTOCOL,
+                            "ok": False,
+                            "error": f"{type(exc).__name__}: {exc}",
+                            "pid": os.getpid(),
+                        }
+
+                    stream.write(json.dumps(response, ensure_ascii=False, separators=(",", ":")).encode("utf-8") + b"\n")
+                    stream.flush()
+                    last_activity = time.monotonic()
+                    if request.get("command") == "shutdown":
+                        return 0
+    finally:
+        _stop_process(llama_process)
 
 
 def _shutdown_server() -> int:
@@ -464,11 +687,15 @@ def _run_one_shot(image_path: Path, manifest_path: Path | None) -> int:
     total_ms = (time.perf_counter() - started) * 1000.0
     _append_timing_log({
         "resident": False,
+        "backend": "transformers",
+        "parallelism": 1,
         "model_load_ms": round(model_load_ms, 1),
         "crop_ms": round(timings.get("crop_ms", 0.0), 1),
         "inference_ms": round(timings.get("inference_ms", 0.0), 1),
+        "per_crop_ms": round(timings.get("per_crop_ms", 0.0), 1),
         "total_ms": round(total_ms, 1),
         "crop_count": int(timings.get("crop_count", 0.0)),
+        "max_new_tokens": _max_new_tokens(),
     })
     print("TINTAES_RESULT=" + json.dumps(spots, ensure_ascii=False, separators=(",", ":")))
     return 0
@@ -499,8 +726,6 @@ def main() -> int:
         return 2
 
     resident_value = os.environ.get("TINTAES_PADDLE_RESIDENT", "1").strip().lower()
-    # Whole-page mode intentionally stays on the historical pipeline. TintaES uses
-    # resident mode only for CTD crops, where layout detection is redundant.
     if resident_value in {"0", "false", "off"} or manifest_path is None:
         return _run_one_shot(image_path, manifest_path)
 
@@ -527,8 +752,13 @@ def main() -> int:
             "request_ms": round(request_ms, 1),
             "crop_ms": response.get("crop_ms"),
             "inference_ms": response.get("inference_ms"),
+            "per_crop_ms": response.get("per_crop_ms"),
             "total_ms": response.get("elapsed_ms"),
             "crop_count": response.get("crop_count"),
+            "backend": response.get("backend"),
+            "parallelism": response.get("parallelism"),
+            "max_new_tokens": response.get("max_new_tokens"),
+            "fallback_reason": response.get("fallback_reason"),
             "pid": response.get("pid"),
         }
         _append_timing_log(timing)
