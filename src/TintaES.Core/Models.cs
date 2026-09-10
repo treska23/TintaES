@@ -85,28 +85,14 @@ public sealed class ComicRegion : INotifyPropertyChanged
         }
     }
 
-    // Durante la traducción, la primera zona de la página expone además una ficha documental
-    // compacta. Ollama ya incluye OcrAlternatives en el contexto completo, por lo que se puede
-    // aportar investigación sin contaminar el texto TARGET que debe traducir. La propiedad
-    // persistida de abajo guarda exclusivamente lecturas OCR reales.
+    // Solo contiene lecturas OCR reales de ESTA zona. El contexto documental de la obra se
+    // transporta por ComicResearchAmbient y nunca puede hacerse pasar por una lectura alternativa
+    // del bocadillo; de lo contrario un traductor generativo puede tratar argumento/personajes
+    // como evidencia de palabras que no están impresas en la página.
     [JsonIgnore]
     public IReadOnlyList<string> OcrAlternatives
     {
-        get
-        {
-            string? research = ComicResearchAmbient.CurrentPrompt;
-            if (Order != 1 || string.IsNullOrWhiteSpace(research))
-            {
-                return _ocrAlternatives;
-            }
-
-            return new[] { research }
-                .Concat(_ocrAlternatives)
-                .Where(value => !string.IsNullOrWhiteSpace(value))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .Take(3)
-                .ToArray();
-        }
+        get => _ocrAlternatives;
         set => _ocrAlternatives = value ?? [];
     }
 
