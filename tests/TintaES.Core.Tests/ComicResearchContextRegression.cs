@@ -5,7 +5,7 @@ using TintaES.Core;
 internal static class ComicResearchContextRegression
 {
     [ModuleInitializer]
-    internal static void VerifyResearchContextIsCompactAndNotPersistedAsOcr()
+    internal static void VerifyResearchContextIsCompactAndSeparateFromOcr()
     {
         var context = new ComicResearchContext
         {
@@ -51,13 +51,27 @@ internal static class ComicResearchContextRegression
                 OcrAlternatives = ["LETS GO."]
             };
 
-            if (!first.OcrAlternatives.Any(value =>
+            if (first.OcrAlternatives.Any(value =>
                     value.StartsWith("CONTEXTO DOCUMENTADO", StringComparison.Ordinal))
                 || second.OcrAlternatives.Any(value =>
                     value.StartsWith("CONTEXTO DOCUMENTADO", StringComparison.Ordinal)))
             {
                 throw new InvalidOperationException(
-                    "Solo la primera zona debe inyectar el contexto documental en la página.");
+                    "La investigación de la obra nunca puede aparecer como alternativa OCR de un bocadillo.");
+            }
+
+            if (!first.OcrAlternatives.SequenceEqual(["WE WILL BE WAITING."])
+                || !first.StoredOcrAlternatives.SequenceEqual(["WE WILL BE WAITING."])
+                || !second.StoredOcrAlternatives.SequenceEqual(["LETS GO."]))
+            {
+                throw new InvalidOperationException(
+                    "Las alternativas OCR deben conservar exclusivamente las lecturas reales de cada zona.");
+            }
+
+            if (!string.Equals(ComicResearchAmbient.CurrentPrompt, prompt, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    "El contexto documental puede seguir disponible por su canal propio sin contaminar el OCR.");
             }
 
             string json = JsonSerializer.Serialize(first, new JsonSerializerOptions(JsonSerializerDefaults.Web));
@@ -65,7 +79,7 @@ internal static class ComicResearchContextRegression
                 || !json.Contains("WE WILL BE WAITING", StringComparison.Ordinal))
             {
                 throw new InvalidOperationException(
-                    "La investigación no puede guardarse como una lectura OCR del bocadillo.");
+                    "La persistencia debe guardar el OCR real y nunca la investigación como evidencia del bocadillo.");
             }
         }
         finally
