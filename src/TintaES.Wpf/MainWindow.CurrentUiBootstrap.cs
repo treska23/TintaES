@@ -4,8 +4,7 @@ using System.Windows.Threading;
 namespace TintaES.Wpf;
 
 /// <summary>
-/// Instala de forma explícita la interfaz de edición actual. El Reader tiene su propio arranque
-/// mínimo y no debe ejecutar instaladores de edición ni registrar comportamiento que luego oculta.
+/// Instala de forma explícita la interfaz actual del editor.
 /// </summary>
 public partial class MainWindow
 {
@@ -57,14 +56,6 @@ public partial class MainWindow
     {
         if (_currentUiBootstrapInstalled)
         {
-            return;
-        }
-
-        // MainWindow(readerOnly: true) es la implementación canónica del lector. No necesita
-        // Ollama, OCR, herramientas, menús de edición ni los instaladores que los acompañan.
-        if (_readerOnlyMode)
-        {
-            _currentUiBootstrapInstalled = true;
             return;
         }
 
