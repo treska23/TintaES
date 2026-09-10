@@ -161,9 +161,11 @@ public partial class MainWindow
         reportStage("abriendo la imagen original");
         BitmapSource original = LoadBitmapSourceDetached(page.SourcePath, cancellationToken);
 
+        // Processed indica si la página está completamente terminada. No debe decidir si se
+        // pueden mostrar recursos parciales ya guardados: una página 48/51 sigue teniendo fondo
+        // limpio, máscara y cajas útiles que el editor debe conservar y enseñar.
         BitmapSource? cleaned = null;
-        if (page.Processed
-            && !string.IsNullOrWhiteSpace(page.CleanedPath)
+        if (!string.IsNullOrWhiteSpace(page.CleanedPath)
             && File.Exists(page.CleanedPath))
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -172,8 +174,7 @@ public partial class MainWindow
         }
 
         BitmapSource? mask = null;
-        if (page.Processed
-            && !string.IsNullOrWhiteSpace(page.MaskPath)
+        if (!string.IsNullOrWhiteSpace(page.MaskPath)
             && File.Exists(page.MaskPath))
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -263,9 +264,9 @@ public partial class MainWindow
         _visibleComicPageIndex = -1;
         _sourcePath = page.SourcePath;
         _originalBitmap = cache.Original;
-        _cleanedBaseBitmap = page.Processed ? cache.Cleaned ?? cache.Original : cache.Original;
+        _cleanedBaseBitmap = cache.Cleaned ?? cache.Original;
         _cleanedBitmap = _cleanedBaseBitmap;
-        _maskBitmap = page.Processed ? cache.Mask : null;
+        _maskBitmap = cache.Mask;
         _selectedRegion = null;
 
         IReadOnlyList<ComicRegion> groupedRegions = BalloonRegionGrouper.Group(page.Regions);
@@ -291,24 +292,32 @@ public partial class MainWindow
             current.PropertyChanged -= Region_PropertyChanged;
         }
         _regions.Clear();
-        if (page.Processed)
+
+        // Las regiones pertenecen al documento aunque la página esté parcial o tenga Error.
+        // Antes se descartaban de la UI cuando Processed=false; por eso una página incompleta
+        // podía conservar 48 traducciones en el .tinta y, aun así, aparecer sin ninguna caja.
+        foreach (ComicRegion region in page.Regions)
         {
-            foreach (ComicRegion region in page.Regions)
-            {
-                region.PropertyChanged -= Region_PropertyChanged;
-                region.PropertyChanged += Region_PropertyChanged;
-                _regions.Add(region);
-            }
+            region.PropertyChanged -= Region_PropertyChanged;
+            region.PropertyChanged += Region_PropertyChanged;
+            _regions.Add(region);
         }
+
+        bool hasRegions = _regions.Count > 0;
+        bool hasCleanedBackground = cache.Cleaned is not null;
+        bool hasRenderableTranslation = _regions.Any(region =>
+            region.IsEnabled && region.HasRenderableTranslation);
 
         RegionListBox.SelectedItem = null;
         ShowRegionEditor(null);
-        _previewMode = page.Processed ? "result" : "original";
+        _previewMode = hasRegions ? "result" : "original";
         OriginalPreviewButton.IsEnabled = true;
         MaskPreviewButton.IsEnabled = _maskBitmap is not null;
-        CleanPreviewButton.IsEnabled = page.Processed;
-        ResultPreviewButton.IsEnabled = page.Processed;
-        LanguageText.Text = page.Processed ? $"{page.SourceLanguage.ToUpperInvariant()} → ES" : "— → ES";
+        CleanPreviewButton.IsEnabled = hasCleanedBackground;
+        ResultPreviewButton.IsEnabled = hasRegions || hasCleanedBackground;
+        LanguageText.Text = hasRegions
+            ? $"{page.SourceLanguage.ToUpperInvariant()} → ES"
+            : "— → ES";
 
         ShowPreviewMode(_previewMode);
         OverlayCanvas.Children.Clear();
@@ -324,7 +333,7 @@ public partial class MainWindow
         BusyProgressBar.IsIndeterminate = false;
         FooterProgressBar.IsIndeterminate = false;
         FooterProgressBar.Value = 45;
-        FooterStatusText.Text = page.Processed && _regions.Count > 0
+        FooterStatusText.Text = hasRegions
             ? $"Preparando {_regions.Count} textos…"
             : $"Mostrando página {index + 1}…";
         await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Render);
@@ -364,8 +373,12 @@ public partial class MainWindow
 
         FooterProgressBar.Value = 100;
         SynchronizeActiveDocumentState();
-        string state = page.Error is not null ? "con error" : page.Processed ? "traducida" : "pendiente";
-        SetFooterStatus($"Página {index + 1}/{_comicPages.Count} · {state}", page.Error is null ? "#58A77D" : "#C99A35");
+        string state = page.Error is not null
+            ? hasRenderableTranslation ? "parcial" : "con error"
+            : page.Processed ? "traducida" : "pendiente";
+        SetFooterStatus(
+            $"Página {index + 1}/{_comicPages.Count} · {state}",
+            page.Error is null ? "#58A77D" : "#C99A35");
     }
 
     private void PruneComicPageBitmapCache(int centerIndex)
