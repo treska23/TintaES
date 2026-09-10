@@ -47,7 +47,7 @@ class PaddleFastModeTests(unittest.TestCase):
             worker._create_pipeline(
                 crop_mode=True,
                 vlm_server_url="http://127.0.0.1:8123/v1",
-                vlm_max_concurrency=4,
+                vlm_max_concurrency=8,
             )
 
         fake.PaddleOCRVL.assert_called_once_with(
@@ -58,7 +58,7 @@ class PaddleFastModeTests(unittest.TestCase):
             use_queues=True,
             vl_rec_backend="llama-cpp-server",
             vl_rec_server_url="http://127.0.0.1:8123/v1",
-            vl_rec_max_concurrency=4,
+            vl_rec_max_concurrency=8,
         )
 
     def test_crop_generation_is_bounded_without_reducing_image_quality(self):
@@ -74,11 +74,30 @@ class PaddleFastModeTests(unittest.TestCase):
         with mock.patch.dict(worker.os.environ, {"TINTAES_PADDLE_MAX_NEW_TOKENS": "1200"}):
             self.assertEqual(worker._crop_predict_options()["max_new_tokens"], 1200)
 
-    def test_page_parallelism_is_bounded(self):
+    def test_page_parallelism_override_is_bounded_but_allows_more_balloon_workers(self):
         with mock.patch.dict(worker.os.environ, {"TINTAES_PADDLE_PAGE_PARALLEL": "99"}):
-            self.assertEqual(worker._page_parallelism(), 8)
+            self.assertEqual(worker._page_parallelism(), 16)
         with mock.patch.dict(worker.os.environ, {"TINTAES_PADDLE_PAGE_PARALLEL": "0"}):
             self.assertEqual(worker._page_parallelism(), 1)
+
+    def test_page_parallelism_uses_available_gpu_memory_when_not_overridden(self):
+        with mock.patch.dict(worker.os.environ, {}, clear=False):
+            worker.os.environ.pop("TINTAES_PADDLE_PAGE_PARALLEL", None)
+            for free_mib, expected in (
+                (20_000, 16),
+                (14_000, 12),
+                (9_000, 10),
+                (7_000, 8),
+                (5_500, 6),
+                (3_500, 4),
+            ):
+                with self.subTest(free_mib=free_mib), mock.patch.object(
+                    worker, "_free_gpu_memory_mib", return_value=free_mib
+                ):
+                    self.assertEqual(worker._page_parallelism(), expected)
+
+            with mock.patch.object(worker, "_free_gpu_memory_mib", return_value=None):
+                self.assertEqual(worker._page_parallelism(), 8)
 
     def test_whole_page_pipeline_keeps_historical_quality_path(self):
         fake = self.make_fake_paddle()
@@ -99,7 +118,7 @@ class PaddleFastModeTests(unittest.TestCase):
         )
 
     def test_resident_protocol_version_prevents_reusing_old_worker(self):
-        self.assertEqual(worker._PROTOCOL, "tintaes-paddle-resident-v3")
+        self.assertEqual(worker._PROTOCOL, "tintaes-paddle-resident-v4")
 
     def test_timing_log_is_bounded_and_does_not_affect_ocr(self):
         with tempfile.TemporaryDirectory(prefix="tintaes-paddle-timing-test-") as root:
@@ -108,7 +127,7 @@ class PaddleFastModeTests(unittest.TestCase):
                 worker._append_timing_log({
                     "resident": True,
                     "backend": "llama.cpp",
-                    "parallelism": 4,
+                    "parallelism": 8,
                     "inference_ms": 123.4,
                 })
             value = log.read_text(encoding="utf-8")
