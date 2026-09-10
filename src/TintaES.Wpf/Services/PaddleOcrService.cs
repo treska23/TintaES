@@ -27,6 +27,7 @@ public sealed class PaddleOcrService
 {
     private const string CacheVersion = "paddleocr-vl-1.6-ctd-crops-v4-owned-raw";
     private const string ResultPrefix = "TINTAES_RESULT=";
+    private const string FastServerRequiredEngine = "__tintaes_fast_server_required__";
     private static readonly SemaphoreSlim Gate = new(1, 1);
     private static readonly HttpClient Ollama = new()
     {
@@ -62,11 +63,19 @@ public sealed class PaddleOcrService
         {
             byte[] imageBytes = await File.ReadAllBytesAsync(sourcePath, cancellationToken);
             (int width, int height) = ReadImageSize(imageBytes);
-            return TryLoadSpots(
-                CreateCachePath(imageBytes, projectRoot, regions),
-                width,
-                height,
-                out _);
+            if (TryLoadSpots(
+                    CreateCachePath(imageBytes, projectRoot, regions),
+                    width,
+                    height,
+                    out _))
+            {
+                return true;
+            }
+
+            // Si no hay resultado de Paddle guardado y tampoco está preparado el
+            // servidor rápido, el análisis orgánico sigue siendo reutilizable: en
+            // ese caso usaremos el OCR clásico sin lanzar el camino lento oculto.
+            return !IsFastBackendPrepared(projectRoot, out _);
         }
         catch (Exception exception) when (exception is IOException or JsonException)
         {
@@ -90,9 +99,10 @@ public sealed class PaddleOcrService
             return new PaddleOcrPassResult(false, 0, 0, "entorno local no preparado");
         }
         cancellationToken.ThrowIfCancellationRequested();
-        if (!regions.Any(region => region.IsEnabled))
+        int enabledCount = regions.Count(region => region.IsEnabled);
+        if (enabledCount == 0)
         {
-            return new PaddleOcrPassResult(true, 0, 0, "sin bocadillos habilitados para releer");
+            return new PaddleOcrPassResult(true, 0, 0, "sin zonas de texto habilitadas");
         }
 
         await Gate.WaitAsync(cancellationToken);
@@ -112,10 +122,19 @@ public sealed class PaddleOcrService
                     $"{cachedReplacements} zona(s) corregidas desde la caché visual");
             }
 
+            if (!IsFastBackendPrepared(projectRoot, out string fastBackendProblem))
+            {
+                return new PaddleOcrPassResult(
+                    false,
+                    0,
+                    0,
+                    $"aceleración Paddle no preparada: {fastBackendProblem}");
+            }
+
             progress?.Report(new AnalysisProgress(
                 93,
                 100,
-                "PaddleOCR-VL 1.6 está releyendo los bocadillos…"));
+                $"PaddleOCR-VL: segunda pasada de precisión sobre {enabledCount} zona(s) de texto, en paralelo…"));
             await UnloadOllamaModelsAsync(cancellationToken);
             string response = await RunWorkerAsync(
                 sourcePath,
@@ -175,6 +194,55 @@ public sealed class PaddleOcrService
         File.Exists(LocalEnginePaths.GetPaddlePython(projectRoot))
         && File.Exists(GetWorkerPath(projectRoot));
 
+    private static bool IsFastBackendPrepared(string projectRoot, out string problem)
+    {
+        string home = LocalEnginePaths.GetPaddleRoot(projectRoot);
+        string? explicitServer = Environment.GetEnvironmentVariable("TINTAES_PADDLE_LLAMA_SERVER");
+        string serverPath;
+        if (!string.IsNullOrWhiteSpace(explicitServer))
+        {
+            serverPath = explicitServer.Trim().Trim('"');
+        }
+        else
+        {
+            string pathFile = Path.Combine(home, "llama-server.path");
+            if (!File.Exists(pathFile))
+            {
+                problem = "falta llama-server.path; vuelve a ejecutar setup-paddleocr.ps1";
+                return false;
+            }
+            try
+            {
+                serverPath = File.ReadAllText(pathFile, Encoding.UTF8).Trim().Trim('"');
+            }
+            catch (IOException exception)
+            {
+                problem = $"no se puede leer llama-server.path: {exception.Message}";
+                return false;
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(serverPath) || !File.Exists(serverPath))
+        {
+            problem = "no se encuentra llama-server.exe; vuelve a ejecutar setup-paddleocr.ps1";
+            return false;
+        }
+
+        string modelRoot = Path.Combine(home, "models", "llama");
+        string model = Environment.GetEnvironmentVariable("TINTAES_PADDLE_LLAMA_MODEL")
+                       ?? Path.Combine(modelRoot, "PaddleOCR-VL-1.6-GGUF.gguf");
+        string mmproj = Environment.GetEnvironmentVariable("TINTAES_PADDLE_LLAMA_MMPROJ")
+                        ?? Path.Combine(modelRoot, "PaddleOCR-VL-1.6-GGUF-mmproj.gguf");
+        if (!File.Exists(model) || !File.Exists(mmproj))
+        {
+            problem = "faltan los GGUF de PaddleOCR-VL; vuelve a ejecutar setup-paddleocr.ps1";
+            return false;
+        }
+
+        problem = string.Empty;
+        return true;
+    }
+
     private static string GetWorkerPath(string projectRoot) =>
         Path.Combine(projectRoot, "engine", "paddleocr", "ocr_page.py");
 
@@ -228,6 +296,19 @@ public sealed class PaddleOcrService
         startInfo.Environment["PYTHONIOENCODING"] = "utf-8";
         startInfo.Environment["TINTAES_PADDLE_MODEL_HOME"] = Path.Combine(home, "models");
 
+        // Esta invocación sólo tiene sentido si entra por el servidor llama.cpp.
+        // El worker Python históricamente caía silenciosamente a Transformers y
+        // podía dejar una página 10-15 minutos en "releyendo". Un engine inválido
+        // actúa como fusible: no se usa cuando llama.cpp funciona y hace fallar de
+        // inmediato cualquier fallback lento, para continuar con el OCR clásico.
+        startInfo.Environment["TINTAES_PADDLE_ENGINE"] = FastServerRequiredEngine;
+        if (!startInfo.Environment.ContainsKey("TINTAES_PADDLE_MAX_NEW_TOKENS"))
+        {
+            // 256 tokens son muchísimo más texto del que cabe en un bocadillo normal
+            // y limitan los crops patológicos que no emiten EOS y se eternizan.
+            startInfo.Environment["TINTAES_PADDLE_MAX_NEW_TOKENS"] = "256";
+        }
+
         try
         {
             using var process = new Process { StartInfo = startInfo };
@@ -240,7 +321,7 @@ public sealed class PaddleOcrService
             Task<string> errorTask = process.StandardError.ReadToEndAsync();
             try
             {
-                await WaitForWorkerExitAsync(process, TimeSpan.FromMinutes(15), cancellationToken);
+                await WaitForWorkerExitAsync(process, TimeSpan.FromMinutes(5), cancellationToken);
             }
             catch (OperationCanceledException)
             {
