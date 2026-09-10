@@ -8,7 +8,7 @@ namespace TintaES.Wpf;
 /// </summary>
 public partial class MainWindow
 {
-    internal const string CurrentUiBuildStamp = "UI 2026.09.10-r75-editor-cards";
+    internal const string CurrentUiBuildStamp = "UI 2026.09.10-r76-grounded-ocr";
     private const int CurrentUiBootstrapMaxAttempts = 3;
 
     private static readonly bool CurrentUiBootstrapRegistered = RegisterCurrentUiBootstrap();
