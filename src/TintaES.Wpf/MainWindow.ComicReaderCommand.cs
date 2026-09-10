@@ -1,7 +1,5 @@
 using System.Windows;
 using System.Windows.Controls;
-using Microsoft.Win32;
-using TintaES.Core;
 
 namespace TintaES.Wpf;
 
@@ -21,7 +19,7 @@ public partial class MainWindow
             Content = "Leer cómic",
             Style = FindResource("ToolbarButton") as Style,
             Margin = new Thickness(7, 0, 0, 0),
-            ToolTip = "Abrir el documento actual en el lector traducido de TintaES"
+            ToolTip = "Abrir el documento actual en el lector de TintaES"
         };
         _comicReaderButton.Click += OpenComicReaderButton_Click;
 
@@ -29,64 +27,44 @@ public partial class MainWindow
             ? openPanel.Children.IndexOf(_openFolderButton)
             : openPanel.Children.IndexOf(OpenImageButton);
         openPanel.Children.Insert(Math.Min(openPanel.Children.Count, anchorIndex + 1), _comicReaderButton);
+        _comicReaderButton.IsEnabled = _comicPages.Count > 0 && !_comicBatchBusy;
     }
 
-    private void OpenComicReaderButton_Click(object sender, RoutedEventArgs e)
+    private async void OpenComicReaderButton_Click(object sender, RoutedEventArgs e)
     {
-        if (_comicPages.Count > 0)
+        if (_comicPages.Count == 0 || _comicBatchBusy || _pageNavigationBusy)
         {
-            PersistVisibleComicPageRegions();
-            var document = new ReaderComicDocument(
-                _comicTitle ?? "Cómic",
-                _comicPages
-                    .Select(page => new ReaderComicPage(
-                        page.SourcePath,
-                        page.DisplayName,
-                        page.Regions))
-                    .ToArray(),
-                Math.Clamp(_comicPageIndex, 0, _comicPages.Count - 1),
-                ReaderTranslationEdited);
+            return;
+        }
 
-            var currentReader = new ComicReaderWindow(document)
+        PersistVisibleComicPageRegions();
+
+        // El ejecutable TintaES.Reader y el botón «Leer cómic» usan exactamente la misma ventana:
+        // MainWindow en modo de solo lectura. El antiguo ComicReaderWindow duplicaba navegación,
+        // hit-testing, tarjeta y gestos, y era la causa de que ambos lectores se comportasen distinto.
+        var reader = new MainWindow(readerOnly: true)
+        {
+            Owner = this,
+            ShowInTaskbar = false
+        };
+
+        try
+        {
+            reader.Show();
+            await reader.OpenReaderSnapshotAsync(this);
+        }
+        catch (Exception exception)
+        {
+            if (reader.IsVisible)
             {
-                Owner = this
-            };
-            currentReader.Show();
-            return;
+                reader.Close();
+            }
+            MessageBox.Show(
+                this,
+                $"No se pudo abrir el lector.\n\n{exception.Message}",
+                "Tinta ES Reader",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
         }
-
-        var dialog = new OpenFileDialog
-        {
-            Title = "Leer cómic CBZ",
-            Filter = "Comic Book ZIP|*.cbz|Todos los archivos|*.*",
-            Multiselect = false,
-            CheckFileExists = true
-        };
-        if (dialog.ShowDialog(this) != true)
-        {
-            return;
-        }
-
-        var reader = new ComicReaderWindow(dialog.FileName)
-        {
-            Owner = this
-        };
-        reader.Show();
-    }
-
-    private void ReaderTranslationEdited(int pageIndex, ComicRegion region)
-    {
-        MarkActiveDocumentDirty(pageIndex);
-        if (pageIndex != _visibleComicPageIndex)
-        {
-            return;
-        }
-
-        RegionListBox.Items.Refresh();
-        if (ReferenceEquals(_selectedRegion, region))
-        {
-            ShowRegionEditor(region);
-        }
-        SetFooterStatus($"Traducción corregida en la página {pageIndex + 1}.", "#58A77D");
     }
 }
