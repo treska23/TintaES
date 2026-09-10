@@ -6,7 +6,7 @@ public sealed partial class OllamaClient
 {
     /// <summary>
     /// Recovers only invalid targets after the contextual pass. Neighbours supply evidence,
-    /// never translation targets. The caller retains its normal final quality checks.
+    /// never translation targets. Unreadable OCR is never sent to the generative recovery path.
     /// </summary>
     public async Task RecoverTranslateGemmaRegionsAsync(
         IReadOnlyList<ComicRegion> targets,
@@ -17,7 +17,8 @@ public sealed partial class OllamaClient
     {
         cancellationToken.ThrowIfCancellationRequested();
         ComicRegion[] unresolved = targets
-            .Where(region => !IsAcceptableTranslation(region, region.Translation))
+            .Where(region => TranslationSourceGuard.IsReliable(region)
+                             && !IsAcceptableTranslation(region, region.Translation))
             .Distinct()
             .ToArray();
         if (unresolved.Length == 0)
@@ -32,7 +33,8 @@ public sealed partial class OllamaClient
             cancellationToken.ThrowIfCancellationRequested();
             LocalTranslationGroup group = groups[index];
             ComicRegion[] pending = group.Targets
-                .Where(region => !IsAcceptableTranslation(region, region.Translation))
+                .Where(region => TranslationSourceGuard.IsReliable(region)
+                                 && !IsAcceptableTranslation(region, region.Translation))
                 .ToArray();
             if (pending.Length == 0)
             {
@@ -51,7 +53,8 @@ public sealed partial class OllamaClient
         // Un servidor que omite las claves de un lote aún puede devolver una frase inequívoca
         // para un único objetivo. Se mantiene ese rescate con los vecinos inmediatos.
         foreach (ComicRegion region in groups.SelectMany(group => group.Targets).Where(region =>
-                     !IsAcceptableTranslation(region, region.Translation)))
+                     TranslationSourceGuard.IsReliable(region)
+                     && !IsAcceptableTranslation(region, region.Translation)))
         {
             cancellationToken.ThrowIfCancellationRequested();
             ReportTranslationProgress(progress, fullContext,
@@ -72,7 +75,9 @@ public sealed partial class OllamaClient
         IReadOnlyList<ComicRegion> fullContext)
     {
         // The supplied page sequence is the same reading order used by the initial prompt.
-        var orderedContext = fullContext.ToList();
+        var orderedContext = fullContext
+            .Where(region => targets.Contains(region) || TranslationSourceGuard.IsReliable(region))
+            .ToList();
         foreach (ComicRegion target in targets)
         {
             if (!orderedContext.Contains(target))
@@ -136,7 +141,11 @@ public sealed partial class OllamaClient
                      neighbour <= Math.Min(fullContext.Count - 1, index + radius);
                      neighbour++)
                 {
-                    included.Add(neighbour);
+                    ComicRegion candidate = fullContext[neighbour];
+                    if (targets.Contains(candidate) || TranslationSourceGuard.IsReliable(candidate))
+                    {
+                        included.Add(neighbour);
+                    }
                 }
                 break;
             }
@@ -152,20 +161,15 @@ public sealed partial class OllamaClient
         IReadOnlyList<ComicRegion> context)
     {
         var targetSet = targets.ToHashSet();
-        string text = string.Join("\n", context.Select((region, index) =>
-        {
-            string source = $"C{index:000} ({region.Type}): {FormatSourceForModel(region)}";
-            return !targetSet.Contains(region) && IsAcceptableTranslation(region, region.Translation)
-                ? source + $"\n    ESPAÑOL_VECINO: {NormalizeSourceText(region.Translation)}"
-                : source;
-        }));
-
-        // Keep the documented identities/register even when page region1 is outside the
-        // local window. This is document research, not a repetition of remote page dialogue.
-        string? research = ComicResearchAmbient.CurrentPrompt;
-        return !string.IsNullOrWhiteSpace(research) && !context.Any(region => region.Order == 1)
-            ? research + "\n" + text
-            : text;
+        return string.Join("\n", context
+            .Where(region => targetSet.Contains(region) || TranslationSourceGuard.IsReliable(region))
+            .Select((region, index) =>
+            {
+                string source = $"C{index:000} ({region.Type}): {FormatSourceForModel(region)}";
+                return !targetSet.Contains(region) && IsAcceptableTranslation(region, region.Translation)
+                    ? source + $"\n    ESPAÑOL_VECINO: {NormalizeSourceText(region.Translation)}"
+                    : source;
+            }));
     }
 
     private sealed record LocalTranslationGroup(ComicRegion[] Targets, ComicRegion[] Context);
