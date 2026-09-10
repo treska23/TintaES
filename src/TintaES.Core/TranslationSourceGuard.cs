@@ -12,11 +12,6 @@ public static class TranslationSourceGuard
     public static bool IsReliable(ComicRegion region) =>
         TryGetReliableReading(region, out _);
 
-    /// <summary>
-    /// Devuelve una lectura OCR real y suficientemente fiable. Si el OCR principal es ruido pero
-    /// una segunda pasada leyó texto coherente, se utiliza esa segunda lectura; nunca se usa
-    /// contexto documental ni texto procedente del traductor.
-    /// </summary>
     public static bool TryGetReliableReading(ComicRegion region, out string reading)
     {
         ArgumentNullException.ThrowIfNull(region);
@@ -43,10 +38,6 @@ public static class TranslationSourceGuard
         return reading.Length > 0;
     }
 
-    /// <summary>
-    /// Prepara la evidencia que verá el traductor. Elimina alternativas que también sean ruido y,
-    /// cuando sea necesario, asciende una lectura OCR secundaria fiable a Original.
-    /// </summary>
     public static bool NormalizeEvidence(ComicRegion region)
     {
         if (!TryGetReliableReading(region, out string selected))
@@ -78,8 +69,7 @@ public static class TranslationSourceGuard
     }
 
     /// <summary>
-    /// Comprueba solo la forma lingüística. La validación completa de una región se hace en
-    /// IsReliableRegionReading, que además usa la evidencia geométrica del bocadillo.
+    /// Comprueba la forma lingüística de una lectura sin usar contexto de escena.
     /// </summary>
     public static bool IsReliableText(string? value, string? type = null)
     {
@@ -98,10 +88,27 @@ public static class TranslationSourceGuard
             return false;
         }
 
-        bool sfx = IsSfx(type);
-        if (sfx)
+        int distinct = letters.Distinct().Count();
+        int longestRun = LongestIdenticalRun(letters);
+
+        if (IsSfx(type))
         {
-            return letters.Length <= 80;
+            if (letters.Length > 80)
+            {
+                return false;
+            }
+
+            // CTD puede etiquetar como SFX una mancha o trama que Paddle lee como OOOC/CCCC.
+            // Un SFX repetitivo real suele conservar una raíz reconocible (BZ, BR, GR, SH, HM…).
+            // No damos barra libre a cualquier secuencia de dos letras repetidas.
+            if (letters.Length is >= 3 and <= 8
+                && distinct <= 2
+                && longestRun >= 3
+                && !IsKnownSfxRoot(CollapseRepeatedLetters(compact)))
+            {
+                return false;
+            }
+            return true;
         }
 
         string[] words = ExtractWords(compact);
@@ -110,22 +117,16 @@ public static class TranslationSourceGuard
             return false;
         }
 
-        // Gritos reales como NOOO!, OOOH!, YEEES! o HA HA HA son válidos. Se reconocen antes
-        // de las reglas de repetición, pero solo cuando la raíz resultante es una vocalización
-        // conocida. "OOOC" no tiene una raíz lingüística y no entra aquí.
         if (LooksLikeLaughterOrVocalisation(compact)
             || LooksLikeKnownVocalisationSequence(words))
         {
             return true;
         }
 
-        int distinct = letters.Distinct().Count();
         if (letters.Length >= 4 && distinct == 1)
         {
             return false;
         }
-
-        int longestRun = LongestIdenticalRun(letters);
         if (longestRun >= 7)
         {
             return false;
@@ -136,8 +137,7 @@ public static class TranslationSourceGuard
             .Max(group => group.Count());
         double dominantRatio = dominantCount / (double)letters.Length;
 
-        // Ruido corto típico de tramas y contornos: OOOC, OOOCC, CCCO, AAAB, etc. Antes se
-        // aceptaba porque las reglas estadísticas solo empezaban a actuar con cadenas largas.
+        // Ruido corto típico de tramas y contornos: OOOC, OOOCC, CCCO, AAAB, etc.
         if (words.Length == 1
             && letters.Length is >= 3 and <= 8
             && distinct <= 2
@@ -147,7 +147,7 @@ public static class TranslationSourceGuard
             return false;
         }
 
-        // Caso real anterior: "nooo jooo ooo". Son varios pseudo-tokens dominados por una vocal.
+        // Caso observado en la página real: "nooo jooo ooo".
         if (words.Length >= 2
             && letters.Length >= 7
             && distinct <= 3
@@ -205,10 +205,9 @@ public static class TranslationSourceGuard
         string[] words = ExtractWords(value);
         int letterCount = value.Count(char.IsLetter);
 
-        // Para un diálogo de una sola palabra muy corta, la cadena por sí sola tiene poca
-        // información. Si no es una palabra/interjección inequívoca, exigimos que el detector
-        // haya encontrado realmente un contenedor de bocadillo. Esto elimina falsos "OOOC",
-        // "LIO", etc. detectados sobre ropa, caras o tramas sin castigar YES!, NO!, OH!, HELP!,…
+        // Una detección de diálogo de una sola palabra desconocida necesita evidencia de que
+        // realmente está dentro de un bocadillo. Las interjecciones/palabras inequívocas pueden
+        // sobrevivir aunque el contorno del globo sea difícil de segmentar.
         if (words.Length == 1 && letterCount <= 8)
         {
             string token = words[0];
@@ -217,12 +216,9 @@ public static class TranslationSourceGuard
             {
                 return true;
             }
-
             return region.BubbleConfidence >= 0.10;
         }
 
-        // Dos fragmentos diminutos sin ninguna palabra funcional tampoco bastan si no hay
-        // evidencia geométrica de bocadillo. Las frases normales quedan fuera de esta regla.
         if (words.Length == 2
             && letterCount <= 10
             && !ContainsPlainLanguageAnchor(words)
@@ -293,6 +289,18 @@ public static class TranslationSourceGuard
             "NO", "OH", "AH", "UH", "HA", "HE", "HI", "HO", "HU",
             "HM", "M", "MM", "BO", "BOO", "BR", "GR", "SH", "PS", "PSST",
             "YES", "YEAH", "SO", "OK", "OKAY", "PLEASE", "WHOA", "WOW", "UGH", "ARGH"
+        ];
+        return known.Contains(root, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static bool IsKnownSfxRoot(string value)
+    {
+        string root = value.ToUpperInvariant();
+        string[] known =
+        [
+            "BZ", "BR", "GR", "HM", "SH", "PS", "PSST", "Z",
+            "NO", "OH", "AH", "UH", "HA", "HE", "HI", "HO", "HU",
+            "BO", "BOO", "BANG", "BOOM", "POW", "WHAM", "THUD", "THWIP", "CRASH", "SMASH"
         ];
         return known.Contains(root, StringComparer.OrdinalIgnoreCase);
     }
