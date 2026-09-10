@@ -203,7 +203,8 @@ public sealed partial class ComicReaderWindow
             return;
         }
 
-        ComicRegion? region = ResolveReaderRegionAt(e.GetPosition(_pageStage));
+        Point pagePoint = e.GetPosition(_pageStage);
+        ComicRegion? region = ResolveReaderRegionAt(pagePoint);
         if (region is null)
         {
             HideTranslationCard();
@@ -211,8 +212,9 @@ public sealed partial class ComicReaderWindow
         }
 
         // En escritorio no hace falta hacer clic: basta con colocar el puntero sobre el
-        // bocadillo. La tarjeta no participa en hit-testing, así que el hover no se corta solo.
+        // bocadillo. La colocación se calcula aquí mismo, en la ruta real del hover.
         ShowTranslationCard(region);
+        PositionTranslationCard(region, e.GetPosition(_viewerHost), isTouch: false);
     }
 
     private void ReaderTranslationHover_MouseLeave(object sender, MouseEventArgs e)
@@ -256,8 +258,8 @@ public sealed partial class ComicReaderWindow
             return;
         }
 
-        ComicRegion? region = ResolveReaderTouchRegionAt(
-            e.GetTouchPoint(_pageStage).Position);
+        Point pagePoint = e.GetTouchPoint(_pageStage).Position;
+        ComicRegion? region = ResolveReaderTouchRegionAt(pagePoint);
         if (region is null)
         {
             HideTranslationCard();
@@ -266,6 +268,7 @@ public sealed partial class ComicReaderWindow
 
         _readerTranslationTouchDevice = e.TouchDevice;
         ShowTranslationCard(region);
+        PositionTranslationCard(region, e.GetTouchPoint(_viewerHost).Position, isTouch: true);
         e.TouchDevice.Capture(_viewerHost);
         e.Handled = true;
     }
@@ -278,8 +281,8 @@ public sealed partial class ComicReaderWindow
         }
 
         _ignoreSyntheticMouseUntilUtc = DateTime.UtcNow.AddMilliseconds(750);
-        ComicRegion? region = ResolveReaderTouchRegionAt(
-            e.GetTouchPoint(_pageStage).Position);
+        Point pagePoint = e.GetTouchPoint(_pageStage).Position;
+        ComicRegion? region = ResolveReaderTouchRegionAt(pagePoint);
         if (region is null)
         {
             HideTranslationCard();
@@ -287,6 +290,7 @@ public sealed partial class ComicReaderWindow
         else
         {
             ShowTranslationCard(region);
+            PositionTranslationCard(region, e.GetTouchPoint(_viewerHost).Position, isTouch: true);
         }
         e.Handled = true;
     }
