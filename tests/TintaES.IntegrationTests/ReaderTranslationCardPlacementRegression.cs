@@ -10,10 +10,9 @@ internal static class ReaderTranslationCardPlacementRegression
         var page = new Rect(0, 0, 1000, 1400);
         var card = new Size(260, 130);
 
-        // Caso normal: la traducción debe quedar a la izquierda del bocadillo y del puntero.
         var middleBubble = new Rect(430, 560, 180, 150);
         var middlePointer = new Point(520, 635);
-        Point middle = MainWindow.ResolveMainTranslationCardPlacement(
+        Point middle = ComicReaderWindow.ResolveReaderTranslationCardPlacement(
             page, middleBubble, middlePointer, card, isTouch: true);
         var middleCard = new Rect(middle, card);
         Require(middleCard.Right < middleBubble.Left,
@@ -23,10 +22,9 @@ internal static class ReaderTranslationCardPlacementRegression
         Require(Contains(page, middleCard),
             "La tarjeta normal debe quedar completamente dentro de la página.");
 
-        // Bocadillo pegado a la izquierda: debe saltar en diagonal hacia la derecha y arriba.
         var leftBubble = new Rect(5, 560, 190, 150);
         var leftPointer = new Point(95, 635);
-        Point left = MainWindow.ResolveMainTranslationCardPlacement(
+        Point left = ComicReaderWindow.ResolveReaderTranslationCardPlacement(
             page, leftBubble, leftPointer, card, isTouch: true);
         var leftCard = new Rect(left, card);
         Require(leftCard.Left > leftBubble.Right,
@@ -36,10 +34,9 @@ internal static class ReaderTranslationCardPlacementRegression
         Require(!leftCard.Contains(leftPointer) && Contains(page, leftCard),
             "La diagonal derecha debe seguir visible y dejar libre el dedo.");
 
-        // Esquina superior izquierda: arriba ya no cabe, así que la tarjeta debe caer por debajo.
         var topLeftBubble = new Rect(0, 4, 200, 135);
         var topLeftPointer = new Point(90, 55);
-        Point topLeft = MainWindow.ResolveMainTranslationCardPlacement(
+        Point topLeft = ComicReaderWindow.ResolveReaderTranslationCardPlacement(
             page, topLeftBubble, topLeftPointer, card, isTouch: true);
         var topLeftCard = new Rect(topLeft, card);
         Require(topLeftCard.Left > topLeftBubble.Right,
@@ -49,11 +46,9 @@ internal static class ReaderTranslationCardPlacementRegression
         Require(!topLeftCard.Contains(topLeftPointer) && Contains(page, topLeftCard),
             "La corrección por borde superior debe mantener tarjeta y dedo visibles.");
 
-        // Bocadillo alto con espacio a la izquierda: la Y debe deslizarse hacia abajo en vez de
-        // permitir que la tarjeta salga por el borde superior.
         var topBubble = new Rect(430, 0, 180, 150);
         var topPointer = new Point(520, 35);
-        Point top = MainWindow.ResolveMainTranslationCardPlacement(
+        Point top = ComicReaderWindow.ResolveReaderTranslationCardPlacement(
             page, topBubble, topPointer, card, isTouch: false);
         var topCard = new Rect(top, card);
         Require(topCard.Top >= page.Top,
@@ -61,11 +56,10 @@ internal static class ReaderTranslationCardPlacementRegression
         Require(Contains(page, topCard),
             "Una tarjeta junto al borde superior nunca puede desaparecer fuera de la página.");
 
-        // Al mover el dedo dentro del mismo bocadillo, la posición vertical debe poder adaptarse.
         var tallBubble = new Rect(420, 360, 170, 360);
-        Point fingerHigh = MainWindow.ResolveMainTranslationCardPlacement(
+        Point fingerHigh = ComicReaderWindow.ResolveReaderTranslationCardPlacement(
             page, tallBubble, new Point(505, 430), card, isTouch: true);
-        Point fingerLow = MainWindow.ResolveMainTranslationCardPlacement(
+        Point fingerLow = ComicReaderWindow.ResolveReaderTranslationCardPlacement(
             page, tallBubble, new Point(505, 650), card, isTouch: true);
         Require(Math.Abs(fingerHigh.Y - fingerLow.Y) > 40,
             "La tarjeta debe recolocarse al mover el dedo dentro del bocadillo.");
