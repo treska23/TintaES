@@ -10,6 +10,9 @@ namespace TintaES.Wpf;
 public partial class MainWindow
 {
     private const bool ReaderFirstModeEnabled = false;
+    private bool _translatedResultModeInstalled;
+    private int _lastTranslatedResultPageIndex = -1;
+    private string? _lastTranslatedResultCleanedPath;
 
     private void InstallReaderFirstMode()
     {
@@ -20,6 +23,7 @@ public partial class MainWindow
         {
             AnalyzeButton.ToolTip =
                 "Detectar el texto original, borrarlo y colocar únicamente la traducción española";
+            InstallTranslatedResultMode();
             return;
         }
 
@@ -47,5 +51,51 @@ public partial class MainWindow
         {
             ShowPreviewMode("original");
         }
+    }
+
+    private void InstallTranslatedResultMode()
+    {
+        if (_translatedResultModeInstalled)
+        {
+            return;
+        }
+
+        _translatedResultModeInstalled = true;
+        LayoutUpdated += MainWindow_TranslatedResultLayoutUpdated;
+    }
+
+    private void MainWindow_TranslatedResultLayoutUpdated(object? sender, EventArgs e)
+    {
+        if (ReaderFirstModeEnabled
+            || _comicBatchBusy
+            || _pageNavigationBusy
+            || _comicPageIndex < 0
+            || _comicPageIndex >= _comicPages.Count)
+        {
+            return;
+        }
+
+        ComicBookPageState page = _comicPages[_comicPageIndex];
+        if (!page.Processed
+            || string.IsNullOrWhiteSpace(page.CleanedPath)
+            || _cleanedBitmap is null)
+        {
+            return;
+        }
+
+        bool alreadyApplied = _lastTranslatedResultPageIndex == _comicPageIndex
+                              && string.Equals(
+                                  _lastTranslatedResultCleanedPath,
+                                  page.CleanedPath,
+                                  StringComparison.OrdinalIgnoreCase);
+        if (alreadyApplied)
+        {
+            return;
+        }
+
+        _lastTranslatedResultPageIndex = _comicPageIndex;
+        _lastTranslatedResultCleanedPath = page.CleanedPath;
+        ShowPreviewMode("result");
+        RebuildOverlay();
     }
 }
