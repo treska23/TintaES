@@ -5,10 +5,8 @@ using System.Windows.Input;
 namespace TintaES.Wpf;
 
 /// <summary>
-/// Desplazamiento directo de la página: el botón izquierdo arrastra sin teclas modificadoras.
-/// En el Reader, pulsar dentro de una zona traducida tiene prioridad y mantiene visible su tarjeta.
-/// Ctrl+clic sobre una zona fija o libera su tarjeta en el inspector para poder editarla sin
-/// que el hover cambie la selección. Escape libera cualquier selección fijada.
+/// Desplazamiento directo de la página del editor con el botón izquierdo.
+/// La experiencia de lectura vive exclusivamente en ComicReaderWindow.
 /// </summary>
 public partial class MainWindow
 {
@@ -21,31 +19,13 @@ public partial class MainWindow
     {
         base.OnPreviewMouseLeftButtonDown(e);
 
-        if (!ImageScrollViewer.IsMouseOver || BusyOverlay.Visibility == Visibility.Visible)
+        if (!ImageScrollViewer.IsMouseOver
+            || BusyOverlay.Visibility == Visibility.Visible
+            || (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control)
         {
             return;
         }
 
-        // Ctrl+clic pertenece exclusivamente al bloqueo de tarjeta. No inicia pan y por tanto
-        // no compite con el gesto normal de arrastrar la página.
-        if ((Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control)
-        {
-            if (ToggleMainTranslationSelectionLockAt(e.GetPosition(ImageStage)))
-            {
-                e.Handled = true;
-            }
-            return;
-        }
-
-        // En el Reader, un clic dentro de un bocadillo es una consulta de traducción. Solo un
-        // clic en espacio libre empieza a desplazar la página.
-        if (BeginMainTranslationMouseHold(e.GetPosition(ImageStage)))
-        {
-            e.Handled = true;
-            return;
-        }
-
-        HideMainTranslation();
         _isSpacePanning = true;
         _panStartPointer = e.GetPosition(ImageScrollViewer);
         _panStartHorizontalOffset = ImageScrollViewer.HorizontalOffset;
@@ -76,13 +56,6 @@ public partial class MainWindow
     {
         base.OnPreviewMouseLeftButtonUp(e);
 
-        if (_mainTranslationMouseHeld)
-        {
-            EndMainTranslationMouseHold();
-            e.Handled = true;
-            return;
-        }
-
         if (!_isSpacePanning)
         {
             return;
@@ -91,16 +64,6 @@ public partial class MainWindow
         EndSpacePan();
         ImageScrollViewer.Cursor = Cursors.Hand;
         e.Handled = true;
-    }
-
-    protected override void OnPreviewKeyDown(KeyEventArgs e)
-    {
-        base.OnPreviewKeyDown(e);
-
-        if (e.Key == Key.Escape && ReleaseMainTranslationSelectionLock())
-        {
-            e.Handled = true;
-        }
     }
 
     private void EndSpacePan()
