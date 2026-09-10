@@ -11,12 +11,6 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- El Reader es la aplicación madre en modo de solo lectura. No vuelve a compilar un visor
-         paralelo: referencia TintaES.Wpf y arranca su MainWindow real. -->
     <ProjectReference Include="..\TintaES.Wpf\TintaES.Wpf.csproj" />
-
-    <!-- Implementación histórica del visor independiente. Se conserva en Git únicamente como
-         referencia mientras se valida la transición, pero no forma parte del ejecutable. -->
-    <Compile Remove="Reader*.cs" />
   </ItemGroup>
 </Project>
