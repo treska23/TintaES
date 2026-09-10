@@ -26,8 +26,9 @@ public partial class MainWindow
         ImageStage.MouseLeave += MainImage_MouseLeaveForTranslation;
 
         // Táctil: no existe hover, así que la traducción permanece visible mientras el dedo
-        // está apoyado sobre el texto.
+        // está apoyado sobre el texto y se recoloca al moverlo dentro del bocadillo.
         ImageStage.PreviewTouchDown += MainImage_PreviewTouchDown;
+        ImageStage.PreviewTouchMove += MainImage_PreviewTouchMove;
         ImageStage.PreviewTouchUp += MainImage_PreviewTouchUp;
         ImageStage.LostTouchCapture += (_, _) => HideMainTranslation();
 
