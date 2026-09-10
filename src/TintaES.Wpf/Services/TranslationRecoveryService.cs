@@ -7,9 +7,9 @@ using TintaES.Core;
 namespace TintaES.Wpf.Services;
 
 /// <summary>
-/// Último rescate individual para bocadillos que el traductor contextual dejó vacíos. Se usa
-/// solo después de los reintentos normales, por lo que una respuesta no puede desplazarse a
-/// otra zona. También conserva nombres propios y siglas que legítimamente no cambian.
+/// Último rescate individual para bocadillos que el traductor contextual dejó vacíos. Solo actúa
+/// cuando la propia lectura OCR contiene evidencia textual suficiente. Nunca reconstruye diálogo
+/// a partir del contexto ni obliga al modelo a contestar cuando el OCR es ilegible.
 /// </summary>
 public sealed class TranslationRecoveryService
 {
@@ -32,6 +32,17 @@ public sealed class TranslationRecoveryService
             if (region.HasRenderableTranslation)
             {
                 completed++;
+                Report(progress, completed, regions.Count);
+                continue;
+            }
+
+            // Esta barrera va antes de nombres propios, heurísticas y Ollama. El comportamiento
+            // anterior llegaba a pedir explícitamente «una lectura española útil aunque el OCR
+            // sea dudoso», lo que convertía tramas y ruido como OOOOO en diálogo inventado.
+            if (!TranslationSourceGuard.IsReliable(region))
+            {
+                region.Translation = string.Empty;
+                Report(progress, completed, regions.Count);
                 continue;
             }
 
@@ -56,16 +67,7 @@ public sealed class TranslationRecoveryService
                 string candidate = await TranslateOneAsync(
                     source,
                     model,
-                    cancellationToken,
-                    forceOcrRepair: false);
-                if (!IsUsableSpanish(source, candidate))
-                {
-                    candidate = await TranslateOneAsync(
-                        source,
-                        model,
-                        cancellationToken,
-                        forceOcrRepair: true);
-                }
+                    cancellationToken);
                 if (IsUsableSpanish(source, candidate))
                 {
                     region.Translation = candidate;
@@ -78,7 +80,8 @@ public sealed class TranslationRecoveryService
             }
             catch
             {
-                // La página seguirá marcada como parcial si tampoco funciona este último pase.
+                // Si este único pase estricto falla, la zona queda pendiente. No existe un
+                // segundo pase creativo que intente adivinar qué «debería» decir el bocadillo.
             }
 
             Report(progress, completed, regions.Count);
@@ -88,29 +91,18 @@ public sealed class TranslationRecoveryService
     private static async Task<string> TranslateOneAsync(
         string source,
         string model,
-        CancellationToken cancellationToken,
-        bool forceOcrRepair)
+        CancellationToken cancellationToken)
     {
-        string prompt = forceOcrRepair
-            ?
-            $"""
-             El OCR de este cómic está deteriorado. Reconstruye silenciosamente la frase inglesa
-             más probable y tradúcela. {EuropeanSpanishDialect.ModelInstruction}
-             Debes devolver una lectura española útil aunque el OCR sea dudoso. No copies la frase
-             inglesa. Si es una onomatopeya, usa su equivalente habitual en un cómic publicado en
-             España. Si es un nombre o una marca, corrige su escritura y conserva solamente ese
-             nombre. Devuelve exclusivamente el resultado final, sin explicación, etiquetas ni comillas.
-
-             OCR:
-             {source}
-             """
-            :
+        string prompt =
             $"""
              Traduce esta única frase de cómic del inglés. {EuropeanSpanishDialect.ModelInstruction}
-             Devuelve únicamente la traducción final, sin etiquetas, comentarios, comillas ni
-             repetir el texto inglés. Corrige errores evidentes del OCR por gramática. Conserva
-             nombres propios, siglas y palabras que legítimamente no cambian en español. Sé
-             conciso, pero no omitas ninguna idea.
+             Usa EXCLUSIVAMENTE las palabras presentes en TEXTO. No completes palabras ausentes,
+             no inventes diálogo y no deduzcas lo que un personaje podría estar diciendo.
+             Puedes corregir un error mecánico obvio del OCR solo si la propia cadena conserva
+             evidencia inequívoca de las letras. Si el texto no se entiende con seguridad,
+             devuelve exactamente [[UNREADABLE]]. Conserva nombres propios, siglas y palabras
+             que legítimamente no cambian en español. Sé conciso, pero no omitas ninguna idea
+             que sí esté explícitamente presente.
 
              TEXTO:
              {source}
@@ -158,7 +150,7 @@ public sealed class TranslationRecoveryService
         finally
         {
             OllamaClient.RecordTranslateGemmaTiming(
-                forceOcrRepair ? "final_ocr_repair" : "final_recovery",
+                "final_recovery_strict",
                 model,
                 1,
                 1,
@@ -193,6 +185,7 @@ public sealed class TranslationRecoveryService
     private static bool IsUsableSpanish(string source, string candidate)
     {
         if (string.IsNullOrWhiteSpace(candidate)
+            || string.Equals(candidate.Trim(), "[[UNREADABLE]]", StringComparison.OrdinalIgnoreCase)
             || candidate.Contains("[[", StringComparison.Ordinal)
             || candidate.Contains("SOURCE:", StringComparison.OrdinalIgnoreCase)
             || candidate.Contains("TRANSLATION:", StringComparison.OrdinalIgnoreCase)
@@ -299,6 +292,16 @@ public sealed class TranslationRecoveryService
         int corrected = 0;
         foreach (ComicRegion region in regions.Where(region => region.IsEnabled))
         {
+            if (!TranslationSourceGuard.IsReliable(region))
+            {
+                if (region.HasRenderableTranslation)
+                {
+                    region.Translation = string.Empty;
+                    corrected++;
+                }
+                continue;
+            }
+
             if (TryKnownLocalTranslation(region.Original, out string translation))
             {
                 region.Translation = translation;
