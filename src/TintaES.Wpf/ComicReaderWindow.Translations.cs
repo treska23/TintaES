@@ -13,6 +13,8 @@ public sealed partial class ComicReaderWindow
     private Border? _translationCard;
     private TextBlock? _translationText;
     private bool _translationMouseHeld;
+    private TouchDevice? _translationTouchDevice;
+    private ComicRegion? _activeTranslationRegion;
     private DockPanel? _readerToolbar;
     private TextBlock? _readerStatus;
     private Button? _fullscreenButton;
@@ -100,24 +102,28 @@ public sealed partial class ComicReaderWindow
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(3),
             Padding = new Thickness(20, 13, 20, 14),
-            Margin = new Thickness(40),
+            Margin = new Thickness(0),
             MaxWidth = 780,
-            HorizontalAlignment = HorizontalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Top,
             Visibility = Visibility.Collapsed,
             IsHitTestVisible = false
         };
         Panel.SetZIndex(_translationCard, 2000);
         _viewerHost.Children.Add(_translationCard);
 
+        // Esta es la única ruta de interacción con traducciones del Reader. Ningún otro partial
+        // registra hover, toque o posicionamiento de la tarjeta.
         AddPageTurnButtons();
         _viewerHost.PreviewMouseLeftButtonDown += ViewerHost_PreviewMouseLeftButtonDown;
+        _viewerHost.PreviewMouseLeftButtonUp += ViewerHost_PreviewMouseLeftButtonUp;
         _viewerHost.PreviewTouchDown += ViewerHost_PreviewTouchDown;
+        _viewerHost.PreviewTouchMove += ViewerHost_PreviewTouchMove;
         _viewerHost.PreviewTouchUp += ViewerHost_PreviewTouchUp;
-        _viewerHost.LostTouchCapture += (_, _) => HideTranslationCard();
+        _viewerHost.LostTouchCapture += (_, _) => EndTouchTranslationHold();
         _scrollViewer.LostMouseCapture += (_, _) => EndMouseTranslationHold();
         _viewerHost.MouseMove += ViewerHost_MouseMove;
-        _viewerHost.MouseLeave += (_, _) => HideEdgeNavigationButtons();
+        _viewerHost.MouseLeave += ViewerHost_MouseLeave;
     }
 
     private void AddPageTurnButtons()
@@ -158,20 +164,49 @@ public sealed partial class ComicReaderWindow
 
     private void ViewerHost_MouseMove(object sender, MouseEventArgs e)
     {
-        if (DateTime.UtcNow < _ignoreSyntheticMouseUntilUtc || _dragging)
+        if (DateTime.UtcNow < _ignoreSyntheticMouseUntilUtc || _translationTouchDevice is not null)
         {
             HideEdgeNavigationButtons();
             return;
         }
 
-        Point point = e.GetPosition(_viewerHost);
+        if (_dragging)
+        {
+            HideEdgeNavigationButtons();
+            HideTranslationCard();
+            return;
+        }
+
+        Point pointer = e.GetPosition(_viewerHost);
         const double revealDistance = 82;
         SetEdgeButtonReveal(
             _edgePreviousButton,
-            _leftEdgeNavigationAvailable && point.X <= revealDistance);
+            _leftEdgeNavigationAvailable && pointer.X <= revealDistance);
         SetEdgeButtonReveal(
             _edgeNextButton,
-            _rightEdgeNavigationAvailable && point.X >= _viewerHost.ActualWidth - revealDistance);
+            _rightEdgeNavigationAvailable && pointer.X >= _viewerHost.ActualWidth - revealDistance);
+
+        ComicRegion? region = ResolveReaderRegionAt(e.GetPosition(_pageStage));
+        if (region is null)
+        {
+            HideTranslationCard();
+            return;
+        }
+
+        if (_translationMouseHeld)
+        {
+            _activeTranslationRegion = region;
+        }
+        ShowTranslationCardAt(region, pointer, isTouch: false);
+    }
+
+    private void ViewerHost_MouseLeave(object sender, MouseEventArgs e)
+    {
+        HideEdgeNavigationButtons();
+        if (!_translationMouseHeld && _translationTouchDevice is null)
+        {
+            HideTranslationCard();
+        }
     }
 
     private static void SetEdgeButtonReveal(Button? button, bool reveal)
@@ -241,6 +276,29 @@ public sealed partial class ComicReaderWindow
         return ComicRegionHitResolver.Resolve(_readerDocument.Pages[_pageIndex].Regions, x, y);
     }
 
+    private ComicRegion? ResolveReaderTouchRegionAt(Point pagePoint)
+    {
+        if (_readerDocument is null
+            || _pageIndex < 0
+            || _pageIndex >= _readerDocument.Pages.Count
+            || _pageStage.ActualWidth <= 1
+            || _pageStage.ActualHeight <= 1
+            || pagePoint.X < 0
+            || pagePoint.Y < 0
+            || pagePoint.X > _pageStage.ActualWidth
+            || pagePoint.Y > _pageStage.ActualHeight)
+        {
+            return null;
+        }
+
+        double x = pagePoint.X / _pageStage.ActualWidth * 1000d;
+        double y = pagePoint.Y / _pageStage.ActualHeight * 1000d;
+        return ComicRegionHitResolver.ResolveForTouch(
+            _readerDocument.Pages[_pageIndex].Regions,
+            x,
+            y);
+    }
+
     private void ViewerHost_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
         if (DateTime.UtcNow < _ignoreSyntheticMouseUntilUtc)
@@ -251,12 +309,23 @@ public sealed partial class ComicReaderWindow
 
         if (ResolveReaderRegionAt(e.GetPosition(_pageStage)) is { } region)
         {
-            BeginMouseTranslationHold(region);
+            BeginMouseTranslationHold(region, e.GetPosition(_viewerHost));
             e.Handled = true;
             return;
         }
 
         HideTranslationCard();
+    }
+
+    private void ViewerHost_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (!_translationMouseHeld)
+        {
+            return;
+        }
+
+        EndMouseTranslationHold();
+        e.Handled = true;
     }
 
     private void ZoomReaderAroundPoint(double percent, Point viewportPoint)
@@ -387,34 +456,59 @@ public sealed partial class ComicReaderWindow
 
     private void ViewerHost_PreviewTouchDown(object? sender, TouchEventArgs e)
     {
-        _ignoreSyntheticMouseUntilUtc = DateTime.UtcNow.AddMilliseconds(650);
-        if (ResolveReaderRegionAt(e.GetTouchPoint(_pageStage).Position) is { } region)
+        _ignoreSyntheticMouseUntilUtc = DateTime.UtcNow.AddMilliseconds(750);
+        if (_translationTouchDevice is not null && _translationTouchDevice != e.TouchDevice)
         {
-            ShowTranslationCard(region);
-            e.TouchDevice.Capture(_viewerHost);
-            e.Handled = true;
             return;
         }
 
-        HideTranslationCard();
+        ComicRegion? region = ResolveReaderTouchRegionAt(e.GetTouchPoint(_pageStage).Position);
+        if (region is null)
+        {
+            HideTranslationCard();
+            return;
+        }
+
+        _translationTouchDevice = e.TouchDevice;
+        _activeTranslationRegion = region;
+        ShowTranslationCardAt(region, e.GetTouchPoint(_viewerHost).Position, isTouch: true);
+        e.TouchDevice.Capture(_viewerHost);
+        e.Handled = true;
+    }
+
+    private void ViewerHost_PreviewTouchMove(object? sender, TouchEventArgs e)
+    {
+        if (_translationTouchDevice != e.TouchDevice)
+        {
+            return;
+        }
+
+        _ignoreSyntheticMouseUntilUtc = DateTime.UtcNow.AddMilliseconds(750);
+        ComicRegion? region = ResolveReaderTouchRegionAt(e.GetTouchPoint(_pageStage).Position);
+        if (region is null)
+        {
+            HideTranslationCard();
+        }
+        else
+        {
+            _activeTranslationRegion = region;
+            ShowTranslationCardAt(region, e.GetTouchPoint(_viewerHost).Position, isTouch: true);
+        }
+        e.Handled = true;
     }
 
     private void ViewerHost_PreviewTouchUp(object? sender, TouchEventArgs e)
     {
-        if (!_viewerHost.AreAnyTouchesCapturedWithin)
+        if (_translationTouchDevice != e.TouchDevice)
         {
             return;
         }
 
-        if (_viewerHost.AreAnyTouchesCapturedWithin)
-        {
-            e.TouchDevice.Capture(null);
-        }
-        HideTranslationCard();
+        EndTouchTranslationHold();
         e.Handled = true;
     }
 
-    private void ShowTranslationCard(ComicRegion region)
+    private void ShowTranslationCardAt(ComicRegion region, Point pointer, bool isTouch)
     {
         if (_translationCard is null || _translationText is null)
         {
@@ -427,7 +521,13 @@ public sealed partial class ComicReaderWindow
         _translationText.Foreground = region.HasRenderableTranslation
             ? Brushes.Black
             : new SolidColorBrush(Color.FromRgb(120, 80, 20));
+
+        // La tarjeta no tiene estado "centrado". Siempre se hace visible y se posiciona en la
+        // misma operación, con el punto real del dedo/puntero que activó el bocadillo.
+        _translationCard.HorizontalAlignment = HorizontalAlignment.Left;
+        _translationCard.VerticalAlignment = VerticalAlignment.Top;
         _translationCard.Visibility = Visibility.Visible;
+        PositionTranslationCard(region, pointer, isTouch);
         Panel.SetZIndex(_translationCard, 2000);
     }
 
@@ -439,10 +539,11 @@ public sealed partial class ComicReaderWindow
         }
     }
 
-    private void BeginMouseTranslationHold(ComicRegion region)
+    private void BeginMouseTranslationHold(ComicRegion region, Point pointer)
     {
         _translationMouseHeld = true;
-        ShowTranslationCard(region);
+        _activeTranslationRegion = region;
+        ShowTranslationCardAt(region, pointer, isTouch: false);
         Mouse.Capture(_scrollViewer, CaptureMode.Element);
     }
 
@@ -454,10 +555,23 @@ public sealed partial class ComicReaderWindow
         }
 
         _translationMouseHeld = false;
+        _activeTranslationRegion = null;
         HideTranslationCard();
         if (Mouse.Captured == _scrollViewer)
         {
             Mouse.Capture(null);
+        }
+    }
+
+    private void EndTouchTranslationHold()
+    {
+        TouchDevice? device = _translationTouchDevice;
+        _translationTouchDevice = null;
+        _activeTranslationRegion = null;
+        HideTranslationCard();
+        if (device?.Captured is not null)
+        {
+            device.Capture(null);
         }
     }
 
