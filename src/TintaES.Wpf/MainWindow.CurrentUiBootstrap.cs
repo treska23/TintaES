@@ -8,7 +8,7 @@ namespace TintaES.Wpf;
 /// </summary>
 public partial class MainWindow
 {
-    internal const string CurrentUiBuildStamp = "UI 2026.09.10-r78-phantom-region-guard";
+    internal const string CurrentUiBuildStamp = "UI 2026.09.10-r79-phantom-card-rejection";
     private const int CurrentUiBootstrapMaxAttempts = 3;
 
     private static readonly bool CurrentUiBootstrapRegistered = RegisterCurrentUiBootstrap();
