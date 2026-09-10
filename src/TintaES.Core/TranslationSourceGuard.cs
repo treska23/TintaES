@@ -9,17 +9,74 @@ namespace TintaES.Core;
 /// </summary>
 public static class TranslationSourceGuard
 {
-    public static bool IsReliable(ComicRegion region)
+    public static bool IsReliable(ComicRegion region) =>
+        TryGetReliableReading(region, out _);
+
+    /// <summary>
+    /// Devuelve una lectura OCR real y suficientemente fiable. Si el OCR principal es ruido pero
+    /// una segunda pasada leyó texto coherente, se utiliza esa segunda lectura; nunca se usa
+    /// contexto documental ni texto procedente del traductor.
+    /// </summary>
+    public static bool TryGetReliableReading(ComicRegion region, out string reading)
     {
         ArgumentNullException.ThrowIfNull(region);
+        reading = string.Empty;
         if (!region.IsEnabled || region.Confidence < 0.05)
         {
             return false;
         }
 
         string type = region.Type?.Trim().ToLowerInvariant() ?? string.Empty;
-        return EnumerateRealOcrReadings(region)
-            .Any(reading => IsReliableText(reading, type));
+        string primary = Compact(region.Original);
+        if (IsReliableText(primary, type))
+        {
+            reading = primary;
+            return true;
+        }
+
+        reading = region.StoredOcrAlternatives
+            .Where(value => IsReliableText(value, type))
+            .Select(Compact)
+            .Where(value => value.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderByDescending(ReadingEvidenceScore)
+            .FirstOrDefault() ?? string.Empty;
+        return reading.Length > 0;
+    }
+
+    /// <summary>
+    /// Prepara la evidencia que verá el traductor. Elimina alternativas que también sean ruido y,
+    /// cuando sea necesario, asciende una lectura OCR secundaria fiable a Original. De esta forma
+    /// TARGET nunca contiene OOOOO mientras CONTEXT contiene la frase que el modelo debería adivinar.
+    /// </summary>
+    public static bool NormalizeEvidence(ComicRegion region)
+    {
+        if (!TryGetReliableReading(region, out string selected))
+        {
+            region.Translation = string.Empty;
+            return false;
+        }
+
+        string type = region.Type?.Trim().ToLowerInvariant() ?? string.Empty;
+        string previousPrimary = Compact(region.Original);
+        string[] reliable = new[] { previousPrimary }
+            .Concat(region.StoredOcrAlternatives)
+            .Select(Compact)
+            .Where(value => IsReliableText(value, type))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderByDescending(ReadingEvidenceScore)
+            .ToArray();
+
+        if (!string.Equals(previousPrimary, selected, StringComparison.Ordinal))
+        {
+            region.Original = selected;
+        }
+
+        region.StoredOcrAlternatives = reliable
+            .Where(value => !string.Equals(value, selected, StringComparison.OrdinalIgnoreCase))
+            .Take(4)
+            .ToArray();
+        return true;
     }
 
     public static bool IsReliableText(string? value, string? type = null)
@@ -29,7 +86,7 @@ public static class TranslationSourceGuard
             return false;
         }
 
-        string compact = Regex.Replace(value.Trim(), @"\s+", " ");
+        string compact = Compact(value);
         string letters = new(compact
             .Where(char.IsLetter)
             .Select(char.ToUpperInvariant)
@@ -107,17 +164,20 @@ public static class TranslationSourceGuard
         return true;
     }
 
-    private static IEnumerable<string> EnumerateRealOcrReadings(ComicRegion region)
+    private static int ReadingEvidenceScore(string value)
     {
-        yield return region.Original;
-        foreach (string alternative in region.StoredOcrAlternatives
-                     .Where(value => !string.IsNullOrWhiteSpace(value))
-                     .Distinct(StringComparer.OrdinalIgnoreCase)
-                     .Take(4))
-        {
-            yield return alternative;
-        }
+        string compact = Compact(value);
+        int letters = compact.Count(char.IsLetter);
+        int words = Regex.Matches(compact, @"[\p{L}]+(?:['’\-][\p{L}]+)*").Count;
+        int diversity = compact.Where(char.IsLetter)
+            .Select(char.ToUpperInvariant)
+            .Distinct()
+            .Count();
+        return Math.Min(letters, 180) + words * 12 + diversity * 3;
     }
+
+    private static string Compact(string? value) =>
+        Regex.Replace((value ?? string.Empty).Trim(), @"\s+", " ");
 
     private static bool LooksLikeLaughterOrVocalisation(string text)
     {
