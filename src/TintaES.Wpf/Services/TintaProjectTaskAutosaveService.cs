@@ -5,7 +5,7 @@ using System.Text.Json;
 namespace TintaES.Wpf.Services;
 
 /// <summary>
-/// Actualiza únicamente project.json dentro del .tinta principal mediante una copia temporal
+/// Actualiza una página terminada dentro del .tinta principal mediante una copia temporal
 /// en el mismo directorio y una sustitución atómica. El temporal existe solo durante la escritura:
 /// no se conserva ninguna copia de seguridad ni archivo alternativo del proyecto.
 /// </summary>
@@ -13,6 +13,19 @@ internal static class TintaProjectTaskAutosaveService
 {
     internal static void ReplaceManifestTransactionally(
         string projectPath,
+        ReadOnlyMemory<byte> manifestJson) =>
+        ReplacePageTransactionally(
+            projectPath,
+            pageIndex: -1,
+            cleanedPath: null,
+            maskPath: null,
+            manifestJson);
+
+    internal static void ReplacePageTransactionally(
+        string projectPath,
+        int pageIndex,
+        string? cleanedPath,
+        string? maskPath,
         ReadOnlyMemory<byte> manifestJson)
     {
         if (string.IsNullOrWhiteSpace(projectPath) || !File.Exists(projectPath))
@@ -45,6 +58,19 @@ internal static class TintaProjectTaskAutosaveService
             {
                 using (var archive = new ZipArchive(stream, ZipArchiveMode.Update, leaveOpen: true))
                 {
+                    if (pageIndex >= 0)
+                    {
+                        int number = pageIndex + 1;
+                        ReplacePageArchiveEntry(
+                            archive,
+                            $"processed/{number:D4}-clean.png",
+                            cleanedPath);
+                        ReplacePageArchiveEntry(
+                            archive,
+                            $"processed/{number:D4}-mask.png",
+                            maskPath);
+                    }
+
                     archive.GetEntry("project.json")?.Delete();
                     ZipArchiveEntry manifestEntry = archive.CreateEntry(
                         "project.json",
@@ -60,8 +86,8 @@ internal static class TintaProjectTaskAutosaveService
 
             ValidateArchive(temporaryPath);
 
-            // Sin .bak: el usuario ha pedido que el progreso se guarde directamente en el fichero
-            // principal. File.Replace mantiene la sustitución atómica y el temporal desaparece.
+            // Sin .bak: el progreso se guarda directamente en el fichero principal. File.Replace
+            // mantiene la sustitución atómica y el temporal desaparece.
             File.Replace(
                 temporaryPath,
                 projectPath,
@@ -73,6 +99,31 @@ internal static class TintaProjectTaskAutosaveService
             TryDelete(temporaryPath);
             throw;
         }
+    }
+
+    private static void ReplacePageArchiveEntry(
+        ZipArchive archive,
+        string entryName,
+        string? filePath)
+    {
+        archive.GetEntry(entryName)?.Delete();
+        if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
+        {
+            return;
+        }
+
+        // Los PNG ya llegan comprimidos. Guardarlos sin recomprimir evita gastar CPU justo al
+        // terminar la traducción y mantiene corto el autoguardado por página.
+        ZipArchiveEntry entry = archive.CreateEntry(entryName, CompressionLevel.NoCompression);
+        using Stream input = new FileStream(
+            filePath,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            bufferSize: 1024 * 1024,
+            FileOptions.SequentialScan);
+        using Stream output = entry.Open();
+        input.CopyTo(output, 1024 * 1024);
     }
 
     private static void ValidateArchive(string projectPath)
