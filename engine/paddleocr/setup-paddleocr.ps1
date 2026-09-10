@@ -22,63 +22,120 @@ if (-not (Test-Path -LiteralPath $venvPython)) {
 & $venvPython -m pip install --upgrade transformers accelerate huggingface_hub
 & $venvPython -c "import torch; from paddleocr import PaddleOCRVL; print('CUDA=' + str(torch.cuda.is_available())); print('PaddleOCR-VL 1.6 preparado')"
 
-# Backend de baja latencia para una sola página. PaddleOCR lo soporta oficialmente
-# como servicio VLM y puede enviar varios bocadillos de la MISMA página a la vez.
-function Find-LlamaServer {
-    $command = Get-Command llama-server -ErrorAction SilentlyContinue
-    if ($null -ne $command -and (Test-Path -LiteralPath $command.Source)) {
-        return $command.Source
-    }
+# -----------------------------------------------------------------------------
+# llama.cpp CUDA para OCR concurrente dentro de UNA sola página
+# -----------------------------------------------------------------------------
+# No usamos ya el paquete winget ggml.llamacpp como ruta principal: en Windows
+# ese paquete puede resolver a la compilación Vulkan. En una NVIDIA queremos la
+# compilación CUDA oficial para que los slots simultáneos de cada bocadillo usen
+# el backend adecuado.
+$llamaBuild = "b10809"
+$llamaCudaRoot = Join-Path $InstallRoot "llama-cuda\$llamaBuild"
+$llamaServer = Join-Path $llamaCudaRoot "llama-server.exe"
+$llamaMarker = Join-Path $llamaCudaRoot ".tintaes-ready"
 
-    if ($env:LOCALAPPDATA) {
-        $wingetLink = Join-Path $env:LOCALAPPDATA "Microsoft\WinGet\Links\llama-server.exe"
-        if (Test-Path -LiteralPath $wingetLink) {
-            return $wingetLink
+$llamaBaseUrl = "https://github.com/ggml-org/llama.cpp/releases/download/$llamaBuild"
+$llamaBinUrl = "$llamaBaseUrl/llama-$llamaBuild-bin-win-cuda-12.4-x64.zip"
+$llamaRuntimeUrl = "$llamaBaseUrl/cudart-llama-bin-win-cuda-12.4-x64.zip"
+
+function Install-LlamaCuda {
+    param(
+        [string]$Destination,
+        [string]$BinaryUrl,
+        [string]$RuntimeUrl
+    )
+
+    $downloadRoot = Join-Path $env:TEMP ("tintaes-llama-cuda-" + [Guid]::NewGuid().ToString("N"))
+    $binZip = Join-Path $downloadRoot "llama-cuda.zip"
+    $runtimeZip = Join-Path $downloadRoot "llama-cudart.zip"
+    New-Item -ItemType Directory -Force -Path $downloadRoot | Out-Null
+
+    try {
+        Write-Host "Descargando llama.cpp CUDA oficial para NVIDIA..." -ForegroundColor Cyan
+        Invoke-WebRequest -Uri $BinaryUrl -OutFile $binZip -UseBasicParsing
+        Invoke-WebRequest -Uri $RuntimeUrl -OutFile $runtimeZip -UseBasicParsing
+
+        if (Test-Path -LiteralPath $Destination) {
+            Remove-Item -LiteralPath $Destination -Recurse -Force
+        }
+        New-Item -ItemType Directory -Force -Path $Destination | Out-Null
+        Expand-Archive -LiteralPath $binZip -DestinationPath $Destination -Force
+        Expand-Archive -LiteralPath $runtimeZip -DestinationPath $Destination -Force
+
+        $server = Get-ChildItem -LiteralPath $Destination -Filter "llama-server.exe" -File -Recurse |
+            Select-Object -First 1
+        if ($null -eq $server) {
+            throw "El paquete CUDA oficial no contiene llama-server.exe."
         }
 
-        $packageRoot = Join-Path $env:LOCALAPPDATA "Microsoft\WinGet\Packages"
-        if (Test-Path -LiteralPath $packageRoot) {
-            $found = Get-ChildItem -LiteralPath $packageRoot -Filter "llama-server.exe" -File -Recurse -ErrorAction SilentlyContinue |
-                Where-Object { $_.FullName -like "*ggml.llamacpp*" } |
-                Select-Object -First 1
-            if ($null -ne $found) {
-                return $found.FullName
+        # Normalizamos la ruta esperada aunque el ZIP cambie su carpeta interna.
+        if ($server.FullName -ne (Join-Path $Destination "llama-server.exe")) {
+            $sourceDir = $server.Directory.FullName
+            Get-ChildItem -LiteralPath $sourceDir -File | ForEach-Object {
+                Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $Destination $_.Name) -Force
             }
         }
+        return (Join-Path $Destination "llama-server.exe")
     }
-    return $null
-}
-
-$llamaServer = Find-LlamaServer
-if (-not $llamaServer) {
-    $winget = Get-Command winget -ErrorAction SilentlyContinue
-    if ($null -ne $winget) {
-        Write-Host "Instalando llama.cpp para acelerar los bocadillos de cada página..." -ForegroundColor Cyan
-        & winget install --id ggml.llamacpp -e --accept-source-agreements --accept-package-agreements --silent
-        if ($LASTEXITCODE -ne 0) {
-            Write-Warning "winget no pudo instalar llama.cpp (código $LASTEXITCODE). PaddleOCR seguirá funcionando con Transformers."
-        }
-        $llamaServer = Find-LlamaServer
+    finally {
+        Remove-Item -LiteralPath $downloadRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 
-if ($llamaServer) {
-    Set-Content -LiteralPath (Join-Path $InstallRoot "llama-server.path") -Value $llamaServer -Encoding UTF8
-    Write-Host "llama-server: $llamaServer" -ForegroundColor DarkGray
+if (-not (Test-Path -LiteralPath $llamaServer) -or -not (Test-Path -LiteralPath $llamaMarker)) {
+    try {
+        $llamaServer = Install-LlamaCuda `
+            -Destination $llamaCudaRoot `
+            -BinaryUrl $llamaBinUrl `
+            -RuntimeUrl $llamaRuntimeUrl
+        [System.IO.File]::WriteAllText(
+            $llamaMarker,
+            $llamaBuild,
+            (New-Object System.Text.UTF8Encoding($false)))
+    }
+    catch {
+        Write-Warning "No se pudo instalar llama.cpp CUDA: $($_.Exception.Message)"
+        $llamaServer = $null
+    }
+}
+
+# Si la instalación CUDA no pudo hacerse, aceptamos un llama-server ya existente
+# como último recurso. Es preferible seguir teniendo OCR a fallar completamente.
+if (-not $llamaServer -or -not (Test-Path -LiteralPath $llamaServer)) {
+    $existing = Get-Command llama-server -ErrorAction SilentlyContinue
+    if ($null -ne $existing -and (Test-Path -LiteralPath $existing.Source)) {
+        $llamaServer = $existing.Source
+        Write-Warning "Usando llama-server existente como fallback. Para máximo rendimiento en NVIDIA vuelve a ejecutar este instalador cuando puedas descargar CUDA."
+    }
+}
+
+if ($llamaServer -and (Test-Path -LiteralPath $llamaServer)) {
+    $pathFile = Join-Path $InstallRoot "llama-server.path"
+    [System.IO.File]::WriteAllText(
+        $pathFile,
+        [IO.Path]::GetFullPath($llamaServer),
+        (New-Object System.Text.UTF8Encoding($false)))
+    Write-Host "llama-server CUDA: $llamaServer" -ForegroundColor Green
 } else {
-    Write-Warning "No se encontró llama-server. El OCR seguirá funcionando, pero sin la aceleración concurrente intra-página."
+    Write-Warning "No se encontró llama-server. PaddleOCR seguirá funcionando con Transformers, pero sin concurrencia VLM acelerada."
 }
 
-# Usamos el GGUF OFICIAL de PaddlePaddle, no una cuantización comunitaria ni un
-# modelo distinto. Así cambiamos el motor de inferencia, no el OCR que reconoce.
+# Usamos el GGUF OFICIAL de PaddlePaddle. No cambiamos el modelo OCR ni aplicamos
+# una cuantización comunitaria: sólo cambiamos el motor y el número de peticiones
+# simultáneas dentro de la página.
 $llamaModelDir = Join-Path $InstallRoot "models\llama"
 New-Item -ItemType Directory -Force -Path $llamaModelDir | Out-Null
-Write-Host "Preparando PaddleOCR-VL 1.6 GGUF oficial (~1,8 GB)..." -ForegroundColor Cyan
-& $venvPython -c "from huggingface_hub import hf_hub_download; import sys; repo='PaddlePaddle/PaddleOCR-VL-1.6-GGUF'; names=('PaddleOCR-VL-1.6-GGUF.gguf','PaddleOCR-VL-1.6-GGUF-mmproj.gguf'); [hf_hub_download(repo_id=repo, filename=n, local_dir=sys.argv[1]) for n in names]" $llamaModelDir
-if ($LASTEXITCODE -ne 0) {
-    throw "No se pudieron descargar los modelos GGUF oficiales de PaddleOCR-VL 1.6."
+$modelFile = Join-Path $llamaModelDir "PaddleOCR-VL-1.6-GGUF.gguf"
+$mmprojFile = Join-Path $llamaModelDir "PaddleOCR-VL-1.6-GGUF-mmproj.gguf"
+if (-not (Test-Path -LiteralPath $modelFile) -or -not (Test-Path -LiteralPath $mmprojFile)) {
+    Write-Host "Preparando PaddleOCR-VL 1.6 GGUF oficial (~1,8 GB)..." -ForegroundColor Cyan
+    & $venvPython -c "from huggingface_hub import hf_hub_download; import sys; repo='PaddlePaddle/PaddleOCR-VL-1.6-GGUF'; names=('PaddleOCR-VL-1.6-GGUF.gguf','PaddleOCR-VL-1.6-GGUF-mmproj.gguf'); [hf_hub_download(repo_id=repo, filename=n, local_dir=sys.argv[1]) for n in names]" $llamaModelDir
+    if ($LASTEXITCODE -ne 0) {
+        throw "No se pudieron descargar los modelos GGUF oficiales de PaddleOCR-VL 1.6."
+    }
 }
 
 Write-Host "Entorno instalado en $InstallRoot" -ForegroundColor Green
-Write-Host "PaddleOCR usará hasta 4 solicitudes concurrentes dentro de cada página cuando llama.cpp esté disponible." -ForegroundColor Green
-Write-Host "Puedes ajustar TINTAES_PADDLE_PAGE_PARALLEL (1-8) y TINTAES_PADDLE_MAX_NEW_TOKENS (128-2048) si necesitas afinar el equipo." -ForegroundColor DarkGray
+Write-Host "TintaES elegirá automáticamente entre 4 y 16 lecturas de bocadillos simultáneas según la VRAM NVIDIA libre." -ForegroundColor Green
+Write-Host "Puedes forzar TINTAES_PADDLE_PAGE_PARALLEL=1..16 si quieres fijar manualmente la concurrencia." -ForegroundColor DarkGray
+Write-Host "El OCR mantiene los mismos crops y PaddleOCR-VL 1.6; el cambio es de backend y paralelismo, no de calidad." -ForegroundColor DarkGray
