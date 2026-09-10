@@ -36,7 +36,7 @@ public partial class MainWindow
 
     private static void MainWindow_FloatingEditorPaletteLoaded(object sender, RoutedEventArgs e)
     {
-        if (sender is MainWindow window)
+        if (sender is MainWindow window && !window._readerOnlyMode)
         {
             window.Dispatcher.BeginInvoke(
                 window.TryInstallFloatingEditorPalette,
@@ -46,15 +46,16 @@ public partial class MainWindow
 
     private void TryInstallFloatingEditorPalette()
     {
+        if (_readerOnlyMode)
+        {
+            return;
+        }
+
         if (_floatingEditorPaletteInstalled)
         {
             MoveHistoryAndSaveOutsideCanvas();
             ApplyCompactCanvasToolIcons();
             ClampFloatingEditorPalette();
-            if (ReaderFirstModeEnabled && _floatingEditorPalette is not null)
-            {
-                _floatingEditorPalette.Visibility = Visibility.Collapsed;
-            }
             return;
         }
 
@@ -160,10 +161,6 @@ public partial class MainWindow
         ImageScrollViewer.SizeChanged += (_, _) => ClampFloatingEditorPalette();
         ApplyCompactCanvasToolIcons();
         ClampFloatingEditorPalette();
-        if (ReaderFirstModeEnabled)
-        {
-            _floatingEditorPalette.Visibility = Visibility.Collapsed;
-        }
     }
 
     private void MoveHistoryAndSaveOutsideCanvas()
