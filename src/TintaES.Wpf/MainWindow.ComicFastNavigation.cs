@@ -22,7 +22,6 @@ public partial class MainWindow
         }
 
         PersistVisibleComicPageRegions();
-        HideMainTranslation();
         _pageNavigationBusy = true;
         ComicBookPageState page = _comicPages[index];
 
@@ -286,7 +285,6 @@ public partial class MainWindow
         OverlayCanvas.Height = _originalBitmap.PixelHeight;
         EmptyState.Visibility = Visibility.Collapsed;
         ImageScrollViewer.Visibility = Visibility.Visible;
-        OverlayCanvas.Visibility = Visibility.Visible;
 
         foreach (ComicRegion current in _regions)
         {
@@ -305,7 +303,7 @@ public partial class MainWindow
 
         RegionListBox.SelectedItem = null;
         ShowRegionEditor(null);
-        _previewMode = page.Processed && !_readerOnlyMode ? "result" : "original";
+        _previewMode = page.Processed ? "result" : "original";
         OriginalPreviewButton.IsEnabled = true;
         MaskPreviewButton.IsEnabled = _maskBitmap is not null;
         CleanPreviewButton.IsEnabled = page.Processed;
@@ -331,9 +329,7 @@ public partial class MainWindow
             : $"Mostrando página {index + 1}…";
         await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Render);
 
-        ComicRegion[] enabledRegions = _readerOnlyMode
-            ? []
-            : _regions.Where(region => region.IsEnabled).ToArray();
+        ComicRegion[] enabledRegions = _regions.Where(region => region.IsEnabled).ToArray();
         for (int regionIndex = 0; regionIndex < enabledRegions.Length; regionIndex++)
         {
             AddRegionVisual(enabledRegions[regionIndex]);
@@ -351,7 +347,7 @@ public partial class MainWindow
         FinalizeProgressiveOverlayTextLayout(finalPass: false);
         await Dispatcher.Yield(DispatcherPriority.Render);
 
-        if (_regions.Count > 0 && !_readerOnlyMode)
+        if (_regions.Count > 0)
         {
             _suppressSelectionRebuild = true;
             try
