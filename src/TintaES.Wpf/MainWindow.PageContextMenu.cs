@@ -42,7 +42,7 @@ public partial class MainWindow
 
     private static void MainWindow_PageContextMenuLoaded(object sender, RoutedEventArgs e)
     {
-        if (sender is MainWindow window)
+        if (sender is MainWindow window && !window._readerOnlyMode)
         {
             window.Dispatcher.BeginInvoke(
                 window.InstallPageContextMenu,
@@ -52,7 +52,7 @@ public partial class MainWindow
 
     private void InstallPageContextMenu()
     {
-        if (_pageContextMenuInstalled || ImageScrollViewer is null)
+        if (_readerOnlyMode || _pageContextMenuInstalled || ImageScrollViewer is null)
         {
             return;
         }
@@ -68,10 +68,10 @@ public partial class MainWindow
             PageContextTranslateCurrentPage_Click);
         _contextPreviousPageItem = CreatePageMenuItem(
             "Página anterior",
-            (_, _) => ShowComicPage(_comicPageIndex - 1));
+            async (_, _) => await ShowComicPageFastAsync(_comicPageIndex - 1));
         _contextNextPageItem = CreatePageMenuItem(
             "Página siguiente",
-            (_, _) => ShowComicPage(_comicPageIndex + 1));
+            async (_, _) => await ShowComicPageFastAsync(_comicPageIndex + 1));
         _contextManualTextItem = CreatePageMenuItem(
             "Traducir texto manualmente…",
             PageContextAddManualText_Click);
