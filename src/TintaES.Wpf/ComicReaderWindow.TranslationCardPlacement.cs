@@ -1,151 +1,17 @@
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Input;
 using System.Windows.Media;
-using System.Windows.Threading;
 using TintaES.Core;
 
 namespace TintaES.Wpf;
 
 /// <summary>
-/// Mantiene la tarjeta de traducción cerca del dedo o puntero sin ocultar el bocadillo pulsado.
-/// El borde visible de la página actúa como límite: la posición preferida es a la izquierda y,
-/// cuando no cabe, la tarjeta busca una posición diagonal a la derecha y se desplaza verticalmente
-/// para no desaparecer por arriba o por abajo.
+/// Posicionamiento de la tarjeta de traducción del Reader. No registra eventos ni crea una
+/// segunda ruta de interacción: ComicReaderWindow.Translations decide cuándo mostrarla y llama
+/// aquí con el puntero o dedo real que está dentro del bocadillo.
 /// </summary>
 public sealed partial class ComicReaderWindow
 {
-    private static readonly bool TranslationCardPlacementRegistered = RegisterTranslationCardPlacement();
-
-    private ComicRegion? _translationPlacementRegion;
-
-    private static bool RegisterTranslationCardPlacement()
-    {
-        EventManager.RegisterClassHandler(
-            typeof(ComicReaderWindow),
-            UIElement.PreviewMouseLeftButtonDownEvent,
-            new MouseButtonEventHandler(TranslationPlacement_PreviewMouseLeftButtonDown),
-            handledEventsToo: true);
-        EventManager.RegisterClassHandler(
-            typeof(ComicReaderWindow),
-            UIElement.MouseMoveEvent,
-            new MouseEventHandler(TranslationPlacement_MouseMove),
-            handledEventsToo: true);
-        EventManager.RegisterClassHandler(
-            typeof(ComicReaderWindow),
-            UIElement.PreviewMouseLeftButtonUpEvent,
-            new MouseButtonEventHandler(TranslationPlacement_PreviewMouseLeftButtonUp),
-            handledEventsToo: true);
-        EventManager.RegisterClassHandler(
-            typeof(ComicReaderWindow),
-            UIElement.PreviewTouchDownEvent,
-            new EventHandler<TouchEventArgs>(TranslationPlacement_PreviewTouchDown),
-            handledEventsToo: true);
-        EventManager.RegisterClassHandler(
-            typeof(ComicReaderWindow),
-            UIElement.PreviewTouchMoveEvent,
-            new EventHandler<TouchEventArgs>(TranslationPlacement_PreviewTouchMove),
-            handledEventsToo: true);
-        EventManager.RegisterClassHandler(
-            typeof(ComicReaderWindow),
-            UIElement.PreviewTouchUpEvent,
-            new EventHandler<TouchEventArgs>(TranslationPlacement_PreviewTouchUp),
-            handledEventsToo: true);
-        return true;
-    }
-
-    private static void TranslationPlacement_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
-    {
-        if (sender is not ComicReaderWindow window
-            || DateTime.UtcNow < window._ignoreSyntheticMouseUntilUtc)
-        {
-            return;
-        }
-
-        ComicRegion? region = window.ResolveReaderRegionAt(e.GetPosition(window._pageStage));
-        if (region is null)
-        {
-            window._translationPlacementRegion = null;
-            return;
-        }
-
-        window._translationPlacementRegion = region;
-        window.ShowTranslationCard(region);
-        window.PositionTranslationCard(region, e.GetPosition(window._viewerHost), isTouch: false);
-    }
-
-    private static void TranslationPlacement_MouseMove(object sender, MouseEventArgs e)
-    {
-        if (sender is not ComicReaderWindow window
-            || !window._translationMouseHeld
-            || window._translationPlacementRegion is not { } active
-            || window._translationCard?.Visibility != Visibility.Visible)
-        {
-            return;
-        }
-
-        ComicRegion? regionUnderPointer = window.ResolveReaderRegionAt(e.GetPosition(window._pageStage));
-        if (!ReferenceEquals(regionUnderPointer, active))
-        {
-            return;
-        }
-
-        window.PositionTranslationCard(active, e.GetPosition(window._viewerHost), isTouch: false);
-    }
-
-    private static void TranslationPlacement_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
-    {
-        if (sender is ComicReaderWindow window)
-        {
-            window._translationPlacementRegion = null;
-        }
-    }
-
-    private static void TranslationPlacement_PreviewTouchDown(object sender, TouchEventArgs e)
-    {
-        if (sender is not ComicReaderWindow window)
-        {
-            return;
-        }
-
-        ComicRegion? region = window.ResolveReaderRegionAt(e.GetTouchPoint(window._pageStage).Position);
-        if (region is null)
-        {
-            window._translationPlacementRegion = null;
-            return;
-        }
-
-        window._translationPlacementRegion = region;
-        window.ShowTranslationCard(region);
-        window.PositionTranslationCard(region, e.GetTouchPoint(window._viewerHost).Position, isTouch: true);
-    }
-
-    private static void TranslationPlacement_PreviewTouchMove(object sender, TouchEventArgs e)
-    {
-        if (sender is not ComicReaderWindow window
-            || window._translationPlacementRegion is not { } active
-            || window._translationCard?.Visibility != Visibility.Visible)
-        {
-            return;
-        }
-
-        ComicRegion? regionUnderFinger = window.ResolveReaderRegionAt(e.GetTouchPoint(window._pageStage).Position);
-        if (!ReferenceEquals(regionUnderFinger, active))
-        {
-            return;
-        }
-
-        window.PositionTranslationCard(active, e.GetTouchPoint(window._viewerHost).Position, isTouch: true);
-    }
-
-    private static void TranslationPlacement_PreviewTouchUp(object sender, TouchEventArgs e)
-    {
-        if (sender is ComicReaderWindow window)
-        {
-            window._translationPlacementRegion = null;
-        }
-    }
-
     private void PositionTranslationCard(ComicRegion region, Point pointer, bool isTouch)
     {
         if (_translationCard is null
@@ -278,6 +144,7 @@ public sealed partial class ComicReaderWindow
         double maxX = safe.Right - width;
         double maxY = safe.Bottom - height;
 
+        // Posición normal: completamente a la izquierda del bocadillo y del dedo/puntero.
         double leftX = obstacle.Left - width;
         if (leftX >= safe.Left)
         {
@@ -286,6 +153,7 @@ public sealed partial class ComicReaderWindow
                 Clamp(pointer.Y - height / 2d, safe.Top, maxY));
         }
 
+        // Si el margen izquierdo bloquea la tarjeta, se intenta la diagonal derecha superior.
         double rightX = Math.Max(obstacle.Right, pointer.X + pointerRadius + gap * 0.35d);
         if (rightX + width <= safe.Right)
         {
@@ -295,6 +163,7 @@ public sealed partial class ComicReaderWindow
                 return new Point(rightX, upperY);
             }
 
+            // Si arriba es el límite, la misma salida por la derecha cae por debajo.
             double lowerY = Math.Max(obstacle.Bottom, pointer.Y + pointerRadius + gap * 0.35d);
             if (lowerY + height <= safe.Bottom)
             {
@@ -306,6 +175,7 @@ public sealed partial class ComicReaderWindow
                 Clamp(pointer.Y - height / 2d, safe.Top, maxY));
         }
 
+        // Últimas posiciones naturales: encima o debajo, siempre dentro de la página visible.
         double aboveY = obstacle.Top - height;
         if (aboveY >= safe.Top)
         {
@@ -322,6 +192,8 @@ public sealed partial class ComicReaderWindow
                 belowY);
         }
 
+        // Página o tarjeta extremadamente estrechas: elige el borde con menor solape y penaliza
+        // de forma máxima cualquier posición que quede exactamente bajo el dedo/puntero.
         Point[] candidates =
         [
             new Point(safe.Left, Clamp(pointer.Y - height / 2d, safe.Top, maxY)),
