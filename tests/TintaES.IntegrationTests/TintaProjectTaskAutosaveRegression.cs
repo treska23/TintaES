@@ -35,6 +35,33 @@ internal static class TintaProjectTaskAutosaveRegression
             Require(ReadProjectJson(project).Contains("actualizado", StringComparison.Ordinal),
                 "El project.json del archivo principal debe contener el trabajo terminado.");
 
+            string cleaned = Path.Combine(root, "clean.png");
+            string mask = Path.Combine(root, "mask.png");
+            byte[] cleanedBytes = [9, 8, 7, 6, 5];
+            byte[] maskBytes = [3, 1, 4, 1, 5, 9];
+            File.WriteAllBytes(cleaned, cleanedBytes);
+            File.WriteAllBytes(mask, maskBytes);
+            byte[] translatedManifest = Encoding.UTF8.GetBytes(
+                """
+                {"version":1,"title":"traducido","currentPageIndex":0,"pages":[{"displayName":"001.png","sourceFile":"source/0001.png","cleanedFile":"processed/0001-clean.png","maskFile":"processed/0001-mask.png","sourceLanguage":"en","processed":true,"error":null,"regions":[]}]}
+                """);
+
+            TintaProjectTaskAutosaveService.ReplacePageTransactionally(
+                project,
+                pageIndex: 0,
+                cleaned,
+                mask,
+                translatedManifest);
+
+            Require(ReadEntry(project, "processed/0001-clean.png").SequenceEqual(cleanedBytes),
+                "El autoguardado debe conservar el fondo del que se borró el inglés.");
+            Require(ReadEntry(project, "processed/0001-mask.png").SequenceEqual(maskBytes),
+                "El autoguardado debe conservar la máscara de la página traducida.");
+            Require(ReadProjectJson(project).Contains("traducido", StringComparison.Ordinal),
+                "El manifiesto debe apuntar a los recursos de la página traducida.");
+            Require(!File.Exists(project + ".bak"),
+                "Guardar también los PNG procesados no debe crear una copia de seguridad.");
+
             byte[] beforeFailure = SHA256.HashData(File.ReadAllBytes(project));
             byte[] invalidManifest = Encoding.UTF8.GetBytes(
                 """
@@ -87,17 +114,22 @@ internal static class TintaProjectTaskAutosaveRegression
             "{\"version\":1,\"title\":\"original\",\"currentPageIndex\":0," +
             "\"pages\":[{\"displayName\":\"001.png\",\"sourceFile\":\"source/0001.png\"," +
             "\"cleanedFile\":null,\"maskFile\":null,\"sourceLanguage\":\"en\"," +
-            "\"processed\":false,\"error\":null,\"regions\":[]}]}" );
+            "\"processed\":false,\"error\":null,\"regions\":[]}]}");
     }
 
-    private static string ReadProjectJson(string path)
+    private static string ReadProjectJson(string path) =>
+        Encoding.UTF8.GetString(ReadEntry(path, "project.json"));
+
+    private static byte[] ReadEntry(string path, string entryName)
     {
         using FileStream stream = File.OpenRead(path);
         using var archive = new ZipArchive(stream, ZipArchiveMode.Read, leaveOpen: false);
-        ZipArchiveEntry entry = archive.GetEntry("project.json")
-            ?? throw new InvalidDataException("Falta project.json en el fixture.");
-        using var reader = new StreamReader(entry.Open(), Encoding.UTF8);
-        return reader.ReadToEnd();
+        ZipArchiveEntry entry = archive.GetEntry(entryName)
+            ?? throw new InvalidDataException($"Falta {entryName} en el fixture.");
+        using Stream input = entry.Open();
+        using var output = new MemoryStream();
+        input.CopyTo(output);
+        return output.ToArray();
     }
 
     private static void Require(bool condition, string message)
