@@ -117,8 +117,13 @@ public sealed class ComicRegion : INotifyPropertyChanged
         }
     }
 
+    // Una traducción generada automáticamente no puede mostrarse si el OCR que supuestamente
+    // traduce no contiene evidencia textual fiable. Esto protege también proyectos antiguos que
+    // ya hubieran guardado una alucinación. Las zonas manuales quedan exentas porque su texto lo
+    // introdujo deliberadamente el usuario, no un OCR.
     public bool HasRenderableTranslation =>
-        !string.IsNullOrWhiteSpace(Translation)
+        (IsManual || TranslationSourceGuard.IsReliable(this))
+        && !string.IsNullOrWhiteSpace(Translation)
         && !string.Equals(
             Translation.Trim(),
             PendingTranslationMarker,
