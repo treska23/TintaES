@@ -65,6 +65,14 @@ public partial class MainWindow
             return;
         }
 
+        // El autoguardado posterior es incremental y escribe sobre el .tinta principal. Antes
+        // de arrancar dejamos una base completa y persistente; si el proyecto es nuevo se pide
+        // la ruta ahora, no después de haber traducido varias páginas.
+        if (!await EnsureMainProjectForTaskAutoSaveAsync())
+        {
+            return;
+        }
+
         if (replacesExistingWork)
         {
             await RetranslateSelectedPagesFromScratchAsync(selected, model);
