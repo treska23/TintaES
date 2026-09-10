@@ -312,9 +312,6 @@ public partial class MainWindow
         ResultPreviewButton.IsEnabled = page.Processed;
         LanguageText.Text = page.Processed ? $"{page.SourceLanguage.ToUpperInvariant()} → ES" : "— → ES";
 
-        // En edición una página ya procesada debe entrar directamente en Resultado. La ruta
-        // anterior entraba en Original, ocultaba OverlayCanvas y luego construía las cajas detrás.
-        // El Reader independiente conserva la página original y consulta la traducción por tarjeta.
         ShowPreviewMode(_previewMode);
         OverlayCanvas.Children.Clear();
         UpdateRegionCount();
@@ -334,7 +331,7 @@ public partial class MainWindow
             : $"Mostrando página {index + 1}…";
         await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Render);
 
-        ComicRegion[] enabledRegions = _readerOnlyMode || ReaderFirstModeEnabled
+        ComicRegion[] enabledRegions = _readerOnlyMode
             ? []
             : _regions.Where(region => region.IsEnabled).ToArray();
         for (int regionIndex = 0; regionIndex < enabledRegions.Length; regionIndex++)
@@ -354,7 +351,7 @@ public partial class MainWindow
         FinalizeProgressiveOverlayTextLayout(finalPass: false);
         await Dispatcher.Yield(DispatcherPriority.Render);
 
-        if (_regions.Count > 0)
+        if (_regions.Count > 0 && !_readerOnlyMode)
         {
             _suppressSelectionRebuild = true;
             try
