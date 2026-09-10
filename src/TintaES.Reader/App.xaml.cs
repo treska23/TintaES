@@ -11,16 +11,17 @@ public partial class App : Application
     {
         base.OnStartup(e);
 
-        // r12: el Reader ya no mantiene un visor paralelo. Es la MainWindow real de TintaES con
-        // herramientas de autoría retiradas por ReaderOnlyMode.
-        var reader = new MainWindow(readerOnly: true);
+        // El Reader tiene una ventana propia de lectura. No reutiliza MainWindow ni carga
+        // instaladores, paneles o herramientas del editor.
+        var reader = new ComicReaderWindow();
         MainWindow = reader;
         reader.Show();
 
         string? startupPath = e.Args
             .Select(Path.GetFullPath)
             .FirstOrDefault(path => File.Exists(path)
-                && string.Equals(Path.GetExtension(path), ".tinta", StringComparison.OrdinalIgnoreCase));
+                && (string.Equals(Path.GetExtension(path), ".tinta", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(Path.GetExtension(path), ".cbz", StringComparison.OrdinalIgnoreCase)));
         if (startupPath is null)
         {
             return;
@@ -31,7 +32,7 @@ public partial class App : Application
             {
                 try
                 {
-                    await reader.OpenReaderProjectAsync(startupPath);
+                    await reader.OpenReaderPathAsync(startupPath);
                 }
                 catch (Exception exception)
                 {
