@@ -299,8 +299,9 @@ public partial class MainWindow
                     await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Render);
 
                     await RunLongOperationWithPromptAsync(
-                        token => _ollama.TranslateRegionsAsync(
+                        token => TranslatePageRegionsFastAsync(
                             remaining,
+                            analysis.Regions,
                             model,
                             token,
                             progress),
@@ -315,9 +316,8 @@ public partial class MainWindow
                 }
                 catch (IncompleteTranslationException exception)
                 {
-                    // OllamaClient ya repitió las zonas dudosas por lote y de una en una.
-                    // Repetir aquí el mismo prompt determinista no aporta calidad; pasamos
-                    // directamente al rescate individual especializado de la etapa siguiente.
+                    // El traductor rápido ya hizo un segundo pase agrupado y un rescate
+                    // individual de lo que seguía dudoso. No repetimos toda la página aquí.
                     lastTranslationError = exception;
                     break;
                 }
