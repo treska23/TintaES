@@ -176,7 +176,6 @@ public partial class MainWindow : Window
     {
         try
         {
-            HideMainTranslation();
             var bitmap = new BitmapImage();
             bitmap.BeginInit();
             bitmap.CacheOption = BitmapCacheOption.OnLoad;
@@ -292,7 +291,6 @@ public partial class MainWindow : Window
             MaskPreviewButton.IsEnabled = true;
             CleanPreviewButton.IsEnabled = true;
             ResultPreviewButton.IsEnabled = true;
-            ShowPreviewMode("original");
 
             _regions.Clear();
             foreach (ComicRegion region in analysis.Regions)
@@ -301,7 +299,6 @@ public partial class MainWindow : Window
                 _regions.Add(region);
             }
             LanguageText.Text = $"{analysis.SourceLanguage.ToUpperInvariant()} → ES";
-            RebuildOverlay();
             UpdateRegionCount();
 
             if (analysis.Regions.Count > 0)
@@ -317,8 +314,10 @@ public partial class MainWindow : Window
                     progress);
             }
 
-            PageImage.Source = _originalBitmap;
-            OverlayCanvas.Children.Clear();
+            // El editor siempre termina una traducción mostrando el fondo limpio y las cajas
+            // españolas. No se vuelve a Original ni se vacía OverlayCanvas al terminar.
+            ShowPreviewMode("result");
+            RebuildOverlay();
             UpdateRegionCount();
             if (_regions.Count > 0)
             {
