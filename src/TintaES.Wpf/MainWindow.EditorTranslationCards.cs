@@ -64,14 +64,10 @@ public partial class MainWindow
             IsHitTestVisible = false
         };
 
-        // La tarjeta queda sobre la página, pero la pantalla de progreso siempre queda por encima.
         Panel.SetZIndex(_editorTranslationCard, 900);
         Panel.SetZIndex(BusyOverlay, 1000);
         host.Children.Add(_editorTranslationCard);
 
-        // handledEventsToo es deliberado: los Thumb, el paneo y las herramientas del editor
-        // pueden marcar el evento como atendido. La tarjeta solo observa el puntero y no roba
-        // la interacción de edición del ratón.
         ImageScrollViewer.AddHandler(
             Mouse.PreviewMouseMoveEvent,
             new MouseEventHandler(EditorTranslation_PreviewMouseMove),
@@ -110,6 +106,10 @@ public partial class MainWindow
         && BusyOverlay.Visibility != Visibility.Visible
         && !_drawingRegion;
 
+    private static bool IsEditorTranslationRegionEligible(ComicRegion region) =>
+        region.IsEnabled
+        && (region.IsManual || TranslationSourceGuard.IsReliable(region));
+
     private ComicRegion? ResolveEditorTranslationRegion(Point pagePoint, bool isTouch)
     {
         if (!CanShowEditorTranslationCard()
@@ -125,9 +125,12 @@ public partial class MainWindow
 
         double x = pagePoint.X / ImageStage.ActualWidth * 1000d;
         double y = pagePoint.Y / ImageStage.ActualHeight * 1000d;
+        ComicRegion[] eligible = _regions
+            .Where(IsEditorTranslationRegionEligible)
+            .ToArray();
         return isTouch
-            ? ComicRegionHitResolver.ResolveForTouch(_regions, x, y)
-            : ComicRegionHitResolver.Resolve(_regions, x, y);
+            ? ComicRegionHitResolver.ResolveForTouch(eligible, x, y)
+            : ComicRegionHitResolver.Resolve(eligible, x, y);
     }
 
     private void EditorTranslation_PreviewMouseMove(object sender, MouseEventArgs e)
@@ -164,8 +167,6 @@ public partial class MainWindow
 
         _editorTranslationMouseHeld = true;
         ShowEditorTranslationCardAt(region, e.GetPosition(_editorTranslationHost!), isTouch: false);
-        // No se marca Handled y no se captura el ratón: mover/redimensionar cajas y panear
-        // siguen perteneciendo al editor. La tarjeta es únicamente una capa de consulta.
     }
 
     private void EditorTranslation_PreviewMouseUp(object sender, MouseButtonEventArgs e)
@@ -271,8 +272,10 @@ public partial class MainWindow
     {
         if (_editorTranslationCard is null
             || _editorTranslationText is null
-            || _editorTranslationHost is null)
+            || _editorTranslationHost is null
+            || !IsEditorTranslationRegionEligible(region))
         {
+            HideEditorTranslationCard();
             return;
         }
 
