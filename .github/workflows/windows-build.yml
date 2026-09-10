@@ -25,6 +25,20 @@ jobs:
           show-progress: false
           persist-credentials: false
 
+      - name: Validate PaddleOCR setup script syntax
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path "engine/paddleocr/setup-paddleocr.ps1").Path,
+            [ref]$tokens,
+            [ref]$errors) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error $_.Message }
+            exit 1
+          }
+
       - name: Build WPF project
         shell: pwsh
         run: |
