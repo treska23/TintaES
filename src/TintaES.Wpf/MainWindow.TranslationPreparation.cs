@@ -1,3 +1,4 @@
+using System.IO;
 using System.Windows.Threading;
 using TintaES.Core;
 using TintaES.Wpf.Services;
@@ -6,6 +7,9 @@ namespace TintaES.Wpf;
 
 public partial class MainWindow
 {
+    private readonly object _preparedPageArtifactsLock = new();
+    private readonly Dictionary<int, PreparedPageArtifacts> _preparedPageArtifacts = [];
+
     private async Task<ComicAnalysis> TakePreparedComicPageAsync(
         PreparedPageWindow<ComicAnalysis> preparation,
         IReadOnlyList<int> pageIndices,
@@ -71,9 +75,108 @@ public partial class MainWindow
                 "No se ha detectado ningún texto pulsable. La página queda pendiente para poder reintentarla.");
         }
 
-        // Se conservan los objetos originales y toda la evidencia OCR. Los bitmaps
-        // del análisis no se retienen mientras se traduce la ventana de páginas.
-        // El documento solo se modifica al completar ProcessComicPageReliablyAsync.
+        int pageIndex = ResolveComicPageIndex(sourcePath);
+        if (pageIndex >= 0)
+        {
+            await StagePreparedPageArtifactsAsync(
+                pageIndex,
+                organic.CleanedBitmap,
+                organic.MaskBitmap,
+                cancellationToken);
+        }
+
+        // El análisis textual sigue siendo ligero. El fondo limpio y la máscara quedan en
+        // ficheros temporales hasta que la página completa termina; así no se conserva una
+        // colección de bitmaps enormes mientras TranslateGemma procesa varias páginas.
         return new ComicAnalysis(organic.Analysis.SourceLanguage, readableCandidates);
     }
+
+    private int ResolveComicPageIndex(string sourcePath)
+    {
+        for (int index = 0; index < _comicPages.Count; index++)
+        {
+            if (string.Equals(
+                    _comicPages[index].SourcePath,
+                    sourcePath,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return index;
+            }
+        }
+        return -1;
+    }
+
+    private async Task StagePreparedPageArtifactsAsync(
+        int pageIndex,
+        System.Windows.Media.Imaging.BitmapSource cleaned,
+        System.Windows.Media.Imaging.BitmapSource mask,
+        CancellationToken cancellationToken)
+    {
+        string workspace = _comicWorkspace
+                           ?? Path.Combine(Path.GetTempPath(), "TintaES", "prepared-pages");
+        string stagingDirectory = Path.Combine(workspace, "processed", ".prepared");
+        Directory.CreateDirectory(stagingDirectory);
+
+        string stamp = $"{pageIndex + 1:D4}-{Guid.NewGuid():N}";
+        string cleanedPath = Path.Combine(stagingDirectory, $"{stamp}-clean.png");
+        string maskPath = Path.Combine(stagingDirectory, $"{stamp}-mask.png");
+
+        try
+        {
+            await Task.WhenAll(
+                Task.Run(() => SaveBitmapAtomicallyFast(cleaned, cleanedPath), cancellationToken),
+                Task.Run(() => SaveBitmapAtomicallyFast(mask, maskPath), cancellationToken));
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+        catch
+        {
+            DeleteFileQuietly(cleanedPath);
+            DeleteFileQuietly(maskPath);
+            throw;
+        }
+
+        PreparedPageArtifacts? previous = null;
+        lock (_preparedPageArtifactsLock)
+        {
+            _preparedPageArtifacts.Remove(pageIndex, out previous);
+            _preparedPageArtifacts[pageIndex] = new PreparedPageArtifacts(cleanedPath, maskPath);
+        }
+
+        if (previous is not null)
+        {
+            DeleteFileQuietly(previous.CleanedPath);
+            DeleteFileQuietly(previous.MaskPath);
+        }
+    }
+
+    private void CommitPreparedComicPageArtifacts(int pageIndex)
+    {
+        PreparedPageArtifacts? artifacts;
+        lock (_preparedPageArtifactsLock)
+        {
+            if (!_preparedPageArtifacts.Remove(pageIndex, out artifacts))
+            {
+                return;
+            }
+        }
+
+        if (!File.Exists(artifacts.CleanedPath))
+        {
+            throw new FileNotFoundException(
+                "El fondo limpio preparado para la página ha desaparecido.",
+                artifacts.CleanedPath);
+        }
+        if (!File.Exists(artifacts.MaskPath))
+        {
+            throw new FileNotFoundException(
+                "La máscara preparada para la página ha desaparecido.",
+                artifacts.MaskPath);
+        }
+
+        ComicBookPageState page = _comicPages[pageIndex];
+        page.CleanedPath = artifacts.CleanedPath;
+        page.MaskPath = artifacts.MaskPath;
+    }
+
+    private sealed record PreparedPageArtifacts(string CleanedPath, string MaskPath);
 }
