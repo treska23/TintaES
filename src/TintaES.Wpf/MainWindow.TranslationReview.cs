@@ -65,6 +65,10 @@ public partial class MainWindow
 
         PersistVisibleComicPageRegions();
         await EnsureComicResearchContextAsync(forceInteractive: false);
+        if (!await EnsureMainProjectForTaskAutoSaveAsync())
+        {
+            return;
+        }
 
         _analysisCancellation?.Cancel();
         _analysisCancellation?.Dispose();
@@ -161,11 +165,15 @@ public partial class MainWindow
                         : $"Revisión parcial: quedan {missing} texto(s) sin traducción válida.";
 
                     bool pageChanged = changes.Any(change => change.PageNumber == pageIndex + 1);
-                    if (pageChanged
-                        || page.Processed != wasProcessed
-                        || !string.Equals(page.Error, previousError, StringComparison.Ordinal))
+                    bool pageStateChanged = page.Processed != wasProcessed
+                                            || !string.Equals(
+                                                page.Error,
+                                                previousError,
+                                                StringComparison.Ordinal);
+                    if (pageChanged || pageStateChanged)
                     {
                         MarkActiveDocumentDirty(pageIndex);
+                        await AutoSaveCompletedProjectTaskAsync(pageIndex);
                     }
                 }
                 catch (OperationCanceledException)

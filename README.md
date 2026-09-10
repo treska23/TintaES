@@ -8,6 +8,7 @@ No usa servicios de pago, suscripciones ni claves de API. Las imágenes permanec
 
 - **Detección y OCR:** Comic Text Detector aporta geometría y máscaras; PaddleOCR-VL 1.6 mejora localmente la lectura del OCR 48 px de Manga Image Translator.
 - **Traducción:** `translategemma:12b` se ejecuta en Ollama y traduce todos los textos detectados de la página con contexto compartido. TintaES conserva compatibilidad con `translategemma:4b` en equipos con menos memoria.
+- **Procesamiento de varias páginas:** la primera se detecta y traduce inmediatamente. Después, un coordinador prepara el OCR de hasta cuatro páginas y las traduce seguidas para reducir las recargas del modelo en la GPU. Conserva el orden, los mismos textos y los controles de calidad; cada página mantiene su recuperación de errores y solo sustituye el trabajo anterior al terminar.
 - **Lectura intacta:** las zonas de pulsación son invisibles y nunca borran, tapan ni sustituyen píxeles del cómic.
 - **Interacción directa:** rueda para ampliar, clic y arrastre para moverse, pellizco táctil para zoom y barrido horizontal seguro para cambiar de página.
 - **Revisión:** cada traducción se puede corregir desde el lector o desde el panel de textos y queda guardada en el proyecto `.tinta`.
@@ -94,6 +95,10 @@ Python del motor:
 ```powershell
 python -m unittest discover -s tests -p test_paddle_crop_inputs.py -v
 ```
+
+La medición reproducible del coordinador, con tiempos de carga de Ollama y comparación
+de entradas OCR y peticiones de traducción, se explica en
+[TranslationSchedulingBenchmark.md](tests/TintaES.IntegrationTests/TranslationSchedulingBenchmark.md).
 
 ## Privacidad
 

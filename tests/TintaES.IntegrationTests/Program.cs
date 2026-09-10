@@ -10,6 +10,14 @@ using TintaES.Wpf.Services;
 
 try
 {
+    if (args.Length >= 1 && args[0] == "--translation-scheduling-benchmark")
+    {
+        return await RunOnStaThreadAsync(() => TranslationSchedulingBenchmark.RunAsync(args[1..]));
+    }
+    if (args is ["--windows-ocr-pixels-self-test"])
+    {
+        return await RunOnStaThreadAsync(WindowsOcrPerformanceRegression.RunPixelChecksAsync);
+    }
     if (args.Length >= 1 && args[0] == "--windows-ocr-performance-self-test")
     {
         return await RunOnStaThreadAsync(() => WindowsOcrPerformanceRegression.RunAsync(args[1..]));

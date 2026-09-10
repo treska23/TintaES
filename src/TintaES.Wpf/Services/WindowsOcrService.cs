@@ -94,16 +94,12 @@ public sealed class WindowsOcrService
 
     private static async Task<SoftwareBitmap> CreateSoftwareBitmapAsync(BitmapSource source)
     {
-        if (source.Format == PixelFormats.Bgr24
-            || source.Format == PixelFormats.Bgr32
-            || source.Format == PixelFormats.Pbgra32)
+        if (source.Format == PixelFormats.Bgr24 || source.Format == PixelFormats.Bgr32)
         {
-            // Los formatos opacos y Pbgra32 ya pueden entregarse directamente como
-            // BGRA premultiplicado. Evitamos la compresión PNG y la decodificación WIC
-            // sin cambiar los píxeles que recibe Windows OCR.
-            BitmapSource converted = source.Format == PixelFormats.Pbgra32
-                ? source
-                : new FormatConvertedBitmap(source, PixelFormats.Pbgra32, null, 0);
+            // Los formatos opacos no necesitan el viaje de compresión PNG y
+            // decodificación WIC. Pbgra32 conserva la ruta anterior: el PNG puede
+            // redondear sus canales al desmultiplicar y volver a premultiplicar.
+            var converted = new FormatConvertedBitmap(source, PixelFormats.Pbgra32, null, 0);
             int stride = checked(source.PixelWidth * 4);
             byte[] pixels = new byte[checked(stride * source.PixelHeight)];
             converted.CopyPixels(pixels, stride, 0);
@@ -118,7 +114,7 @@ public sealed class WindowsOcrService
             return bitmap;
         }
 
-        // Conservar la ruta anterior para alfa no premultiplicado, paletas y otros espacios de color.
+        // Conservar la ruta anterior para transparencia, paletas y otros espacios de color.
         byte[] png = EncodePng(source);
         using var stream = new InMemoryRandomAccessStream();
         using (var writer = new DataWriter(stream))

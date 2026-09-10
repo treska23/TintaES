@@ -201,6 +201,7 @@ public partial class MainWindow
         CancellationToken cancellationToken = _analysisCancellation.Token;
 
         var stopwatch = Stopwatch.StartNew();
+        var preparation = new PreparedPageWindow<ComicAnalysis>(selected.Length);
         var failures = new List<ComicPageRetranslationFailure>();
         int completedPages = 0;
         int partialPages = 0;
@@ -245,7 +246,9 @@ public partial class MainWindow
                             selected.Length,
                             model,
                             cancellationToken,
-                            attempt);
+                            attempt,
+                            token => TakePreparedComicPageAsync(
+                                preparation, selected, position, model, token));
                         completed = true;
                         finalError = null;
                         break;

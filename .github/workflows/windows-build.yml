@@ -84,6 +84,9 @@ jobs:
       - name: Build integration regressions
         run: dotnet build tests/TintaES.IntegrationTests/TintaES.IntegrationTests.csproj --configuration Release
 
+      - name: Verify lossless Windows OCR pixels
+        run: dotnet run --project tests/TintaES.IntegrationTests/TintaES.IntegrationTests.csproj --configuration Release --no-build -- --windows-ocr-pixels-self-test
+
       - name: Verify Paddle OCR cache regression
         run: dotnet run --project tests/TintaES.IntegrationTests/TintaES.IntegrationTests.csproj --configuration Release -- --paddle-cache-self-test
 

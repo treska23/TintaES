@@ -66,7 +66,10 @@ class PaddleCropInputTests(unittest.TestCase):
         if with_manifest:
             arguments.append(str(self.manifest_path))
         output = io.StringIO()
-        with mock.patch.object(sys, "argv", arguments), contextlib.redirect_stdout(output):
+        # Estas pruebas congelan los píxeles y la asociación del camino de inferencia;
+        # no deben iniciar un proceso residente real ni cargar modelos externos.
+        with mock.patch.dict(worker.os.environ, {"TINTAES_PADDLE_RESIDENT": "0"}), \
+             mock.patch.object(sys, "argv", arguments), contextlib.redirect_stdout(output):
             self.assertEqual(worker.main(), 0)
         line = output.getvalue().strip()
         self.assertTrue(line.startswith("TINTAES_RESULT="), line)
@@ -74,12 +77,12 @@ class PaddleCropInputTests(unittest.TestCase):
 
     def test_png_crops_preserve_all_pixels_and_resize_boundaries(self):
         boxes = [
-            [0, 0, 1000, 1000],  # No enlargement.
-            [0, 0, 480, 500],  # Longest edge exactly 768 px.
-            [100, 50, 350, 250],  # Enlarge to 768 px with Lanczos.
-            [100, 50, 150, 90],  # Enlargement capped at three times.
-            [-30, -20, 1100, 1200],  # Clamp to page edges.
-            [800.125, 900.25, 700, 800],  # Preserve minimum one-pixel crop.
+            [0, 0, 1000, 1000],
+            [0, 0, 480, 500],
+            [100, 50, 350, 250],
+            [100, 50, 150, 90],
+            [-30, -20, 1100, 1200],
+            [800.125, 900.25, 700, 800],
         ]
         self.write_manifest([{"bbox": box} for box in boxes])
         paths, returned_boxes = worker._crop_inputs(self.image_path, self.manifest_path, self.crops)
@@ -161,7 +164,6 @@ class PaddleCropInputTests(unittest.TestCase):
         for manifest in ([], [None, {}, {"bbox": []}, "invalid"]):
             with self.subTest(manifest=manifest):
                 self.write_manifest(manifest)
-                # Importing Paddle would fail, even before any model could load.
                 with mock.patch.dict(sys.modules, {"paddleocr": None}):
                     self.assertEqual(self.run_main(), [])
 
