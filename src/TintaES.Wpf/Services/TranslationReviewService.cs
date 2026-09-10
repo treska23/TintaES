@@ -29,15 +29,27 @@ public sealed class TranslationReviewService
         IProgress<AnalysisProgress>? progress = null)
     {
         // El proyecto puede haber guardado como principal una lectura parcial y conservar la
-        // frase completa entre las alternativas OCR. Se corrige antes de construir el prompt:
-        // así Repasar traducción también puede arreglar media frase sin repetir la detección.
+        // frase completa entre las alternativas OCR. Se corrige antes de construir el prompt.
         OcrReadingCompletion.PromoteCompleteAlternatives(regions);
 
-        ComicRegion[] targets = regions
-            .Where(region => region.IsEnabled
-                             && !string.IsNullOrWhiteSpace(region.Original))
-            .OrderBy(region => region.Order)
-            .ToArray();
+        var verifiedTargets = new List<ComicRegion>();
+        foreach (ComicRegion region in regions
+                     .Where(region => region.IsEnabled)
+                     .OrderBy(region => region.Order))
+        {
+            // También sanea proyectos creados por versiones anteriores: una traducción fluida
+            // apoyada únicamente en OOOOO/ruido se vacía y jamás se manda a la revisión contextual.
+            if (TranslationSourceGuard.NormalizeEvidence(region))
+            {
+                verifiedTargets.Add(region);
+            }
+            else
+            {
+                region.Translation = string.Empty;
+            }
+        }
+
+        ComicRegion[] targets = verifiedTargets.ToArray();
         if (targets.Length == 0)
         {
             return new TranslationReviewResult(0, 0, 0);
@@ -122,9 +134,16 @@ public sealed class TranslationReviewService
              con su BORRADOR español. Conserva el borrador exactamente igual cuando sea correcto
              y natural; modifícalo solo si existe un error claro de significado, contexto, sujeto,
              negación, nombre, continuidad, registro, gramática o variedad lingüística. Si el
-             borrador figura como [SIN TRADUCCIÓN], crea únicamente la traducción que falta.
+             borrador figura como [SIN TRADUCCIÓN], traduce exclusivamente las palabras que estén
+             respaldadas por ese ORIGINAL; si no basta para entenderlo, deja [SIN TRADUCCIÓN].
 
              {EuropeanSpanishDialect.ModelInstruction}
+
+             REGLA DE EVIDENCIA: nunca inventes diálogo, nunca completes una frase a partir de lo
+             que dicen los vecinos y nunca deduzcas lo que un personaje debería decir. El contexto
+             de página sirve solo para resolver referencias de una frase que ya sea legible. El
+             contexto documentado sirve únicamente para ortografía de nombres/terminología que YA
+             aparezcan en ORIGINAL; jamás aporta palabras ausentes del bocadillo.
 
              Mantén la voz y la intensidad del personaje. No suavices tacos. Evita traducciones
              literales torpes. Conserva cada resultado conciso para el mismo bocadillo. No cambies
@@ -256,7 +275,9 @@ public sealed class TranslationReviewService
         string candidate,
         IReadOnlyList<ComicRegion> fullPage)
     {
-        if (string.IsNullOrWhiteSpace(candidate)
+        if (!TranslationSourceGuard.IsReliable(region)
+            || string.IsNullOrWhiteSpace(candidate)
+            || string.Equals(candidate.Trim(), "[SIN TRADUCCIÓN]", StringComparison.OrdinalIgnoreCase)
             || candidate.Contains("[[", StringComparison.Ordinal)
             || candidate.Contains("ORIGINAL:", StringComparison.OrdinalIgnoreCase)
             || candidate.Contains("BORRADOR:", StringComparison.OrdinalIgnoreCase)
