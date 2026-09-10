@@ -130,18 +130,44 @@ public sealed class TranslationRecoveryService
             }
         };
 
-        using HttpResponseMessage response = await Client.PostAsJsonAsync(
-            "api/chat",
-            payload,
-            cancellationToken);
-        string body = await response.Content.ReadAsStringAsync(cancellationToken);
-        response.EnsureSuccessStatusCode();
-        using JsonDocument document = JsonDocument.Parse(body);
-        string content = document.RootElement
-            .GetProperty("message")
-            .GetProperty("content")
-            .GetString() ?? string.Empty;
-        return Clean(content);
+        long started = System.Diagnostics.Stopwatch.GetTimestamp();
+        string? body = null;
+        string outcome = "failed";
+        try
+        {
+            using HttpResponseMessage response = await Client.PostAsJsonAsync(
+                "api/chat",
+                payload,
+                cancellationToken);
+            body = await response.Content.ReadAsStringAsync(cancellationToken);
+            response.EnsureSuccessStatusCode();
+            using JsonDocument document = JsonDocument.Parse(body);
+            string content = document.RootElement
+                .GetProperty("message")
+                .GetProperty("content")
+                .GetString() ?? string.Empty;
+            string result = Clean(content);
+            outcome = "completed";
+            return result;
+        }
+        catch (OperationCanceledException)
+        {
+            outcome = "canceled";
+            throw;
+        }
+        finally
+        {
+            OllamaClient.RecordTranslateGemmaTiming(
+                forceOcrRepair ? "final_ocr_repair" : "final_recovery",
+                model,
+                1,
+                1,
+                source.Length,
+                prompt.Length,
+                body,
+                System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds,
+                outcome);
+        }
     }
 
     private static string Clean(string value)

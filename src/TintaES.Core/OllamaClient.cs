@@ -15,7 +15,7 @@ public sealed class IncompleteTranslationException : InvalidOperationException
     }
 }
 
-public sealed class OllamaClient : IDisposable
+public sealed partial class OllamaClient : IDisposable
 {
     private static readonly JsonNode DetectionSchema = JsonNode.Parse(
         """
@@ -843,32 +843,8 @@ public sealed class OllamaClient : IDisposable
             ReportTranslationProgress(progress, regions, "Traduciendo la escena con contexto…");
         }
 
-        ComicRegion[] unresolved = translatable
-            .Where(region => !IsAcceptableTranslation(region, region.Translation))
-            .ToArray();
-        for (int start = 0; start < unresolved.Length; start += chunkSize)
-        {
-            ComicRegion[] retry = unresolved.Skip(start).Take(chunkSize).ToArray();
-            foreach (ComicRegion region in retry)
-            {
-                region.Translation = string.Empty;
-            }
-            await TranslateGemmaChunkAsync(retry, regions, model, cancellationToken);
-            ReportTranslationProgress(progress, regions, "Repitiendo líneas dudosas…");
-        }
-
-        // Si TranslateGemma pierde todas las etiquetas de un lote, repetir el mismo lote no
-        // basta. Cada zona se solicita de forma aislada: así una respuesta sin etiquetas sigue
-        // siendo inequívoca y nunca se desplaza a otro bocadillo.
-        ComicRegion[] individuallyUnresolved = translatable
-            .Where(region => !IsAcceptableTranslation(region, region.Translation))
-            .ToArray();
-        foreach (ComicRegion region in individuallyUnresolved)
-        {
-            region.Translation = string.Empty;
-            await TranslateGemmaChunkAsync([region], regions, model, cancellationToken);
-            ReportTranslationProgress(progress, regions, "Recuperando un bocadillo aislado…");
-        }
+        await RecoverTranslateGemmaRegionsAsync(
+            translatable, regions, model, cancellationToken, progress);
 
         await RepairSplitFragmentSequencesAsync(
             regions,
@@ -891,10 +867,8 @@ public sealed class OllamaClient : IDisposable
                 group.Select(region => NormalizeOcrForTranslation(region.Original)));
             string token = "G" + Convert.ToHexString(
                 SHA256.HashData(Encoding.UTF8.GetBytes(combinedSource)))[..10];
-            string context = string.Join(
-                "\n",
-                regions.Select((region, index) =>
-                    $"C{index:000} ({region.Type}): {FormatSourceForModel(region)}"));
+            ComicRegion[] localContext = SelectLocalTranslationContext(group, regions, radius: 2);
+            string context = FormatLocalTranslationContext(group, localContext);
             string prompt =
                 $"""
                  You are translating one continuous English comic sentence into natural concise Spanish from
@@ -903,7 +877,7 @@ public sealed class OllamaClient : IDisposable
                  replies and do not repeat the same verb or idea. Return one complete Spanish sentence inside
                  the exact tag, with no explanation and no English.
 
-                 PAGE CONTEXT:
+                 LOCAL SCENE CONTEXT (neighbouring translations are context, not extra fragments):
                  {context}
 
                  SOURCE FRAGMENTS:
@@ -930,7 +904,9 @@ public sealed class OllamaClient : IDisposable
                 }
             };
 
-            string content = await SendChatAsync(payload, cancellationToken);
+            string content = await SendChatAsync(payload, cancellationToken,
+                new TranslateGemmaRequestMetrics("split_repair", model, group.Length,
+                    localContext.Length, context.Length, prompt.Length));
             Match match = Regex.Match(
                 content,
                 $@"\[\[{Regex.Escape(token)}\]\]\s*(.*?)\s*\[\[/{Regex.Escape(token)}\]\]",
@@ -1086,15 +1062,18 @@ public sealed class OllamaClient : IDisposable
         ComicRegion[] targets = regions
             .Where(region => region.Type != "sfx"
                              && ((NormalizeSourceText(region.Original).Length >= 68
-                                  && region.OcrAlternatives.Count > 0)
+                                  && region.StoredOcrAlternatives.Any(alternative =>
+                                      !string.Equals(NormalizeOcrForTranslation(alternative),
+                                          NormalizeOcrForTranslation(region.Original),
+                                          StringComparison.OrdinalIgnoreCase)))
                                  || LooksLikeLiteralDraft(region.Translation)))
             .ToArray();
-        const int chunkSize = 12;
-        for (int start = 0; start < targets.Length; start += chunkSize)
+        foreach (LocalTranslationGroup group in GroupLocalTranslationTargets(targets, regions))
         {
-            ComicRegion[] chunk = targets.Skip(start).Take(chunkSize).ToArray();
-            await RefineTranslateGemmaChunkAsync(chunk, regions, model, cancellationToken);
-            ReportTranslationProgress(progress, regions, "Puliendo el español de los diálogos largos…");
+            cancellationToken.ThrowIfCancellationRequested();
+            ReportTranslationProgress(progress, regions,
+                $"Puliendo {group.Targets.Length} diálogos · contexto local");
+            await RefineTranslateGemmaChunkAsync(group.Targets, group.Context, model, cancellationToken);
         }
     }
 
@@ -1104,10 +1083,7 @@ public sealed class OllamaClient : IDisposable
         string model,
         CancellationToken cancellationToken)
     {
-        string context = string.Join(
-            "\n",
-            fullContext.Select((region, index) =>
-                $"C{index:000} ({region.Type}): {FormatSourceForModel(region)}"));
+        string context = FormatLocalTranslationContext(targets, fullContext);
         var tokens = targets.ToDictionary(region => region, CreateTranslationToken);
         string drafts = string.Join(
             "\n",
@@ -1122,7 +1098,7 @@ public sealed class OllamaClient : IDisposable
             """
             You are the final dialogue editor for a professionally published Spanish comic.
             Proofread each DRAFT into idiomatic, concise Spanish from Spain. Correct literal phrasing and obvious
-            OCR damage by using the complete page context, while preserving the exact action, speaker, humour,
+            OCR damage by using the local scene context, while preserving the exact action, speaker, humour,
             negation, names and every meaningful fragment. Never add information from a neighbouring balloon.
             Read the balloons as one continuous scene: keep questions and replies coherent, preserve callbacks
             and rhyme or wordplay when the source uses them, and avoid dictionary-like calques or invented words.
@@ -1135,7 +1111,7 @@ public sealed class OllamaClient : IDisposable
             with a different one from the page.
             Return every revised draft inside its exact random opening and closing tags. Do not explain anything.
 
-            COMPLETE PAGE CONTEXT:
+            LOCAL SCENE CONTEXT (ESPAÑOL_VECINO is a validated neighbouring draft, never a target):
             """ + "\n" + context + "\n\nDRAFTS TO REVISE:\n" + drafts;
         object payload = new
         {
@@ -1152,7 +1128,9 @@ public sealed class OllamaClient : IDisposable
             }
         };
 
-        string content = await SendChatAsync(payload, cancellationToken);
+        string content = await SendChatAsync(payload, cancellationToken,
+            new TranslateGemmaRequestMetrics("refine_local", model, targets.Count,
+                fullContext.Count, context.Length, prompt.Length));
         foreach (ComicRegion region in targets)
         {
             string token = tokens[region];
@@ -1176,13 +1154,23 @@ public sealed class OllamaClient : IDisposable
             @"\b(?:no\s+casi|figuré|entendí|una\s+suerte|sufició|son\s+equipo)\b",
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
-    private async Task TranslateGemmaChunkAsync(
+    private Task TranslateGemmaChunkAsync(
         IReadOnlyList<ComicRegion> targets,
         IReadOnlyList<ComicRegion> fullContext,
         string model,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken) =>
+        TranslateGemmaChunkWithContextAsync(targets, fullContext, model, cancellationToken,
+            "initial", localContext: false);
+
+    private async Task TranslateGemmaChunkWithContextAsync(
+        IReadOnlyList<ComicRegion> targets,
+        IReadOnlyList<ComicRegion> fullContext,
+        string model,
+        CancellationToken cancellationToken,
+        string phase,
+        bool localContext)
     {
-        string context = string.Join(
+        string context = localContext ? FormatLocalTranslationContext(targets, fullContext) : string.Join(
             "\n",
             fullContext.Select((region, index) =>
                 $"C{index:000} ({region.Type}): {FormatSourceForModel(region)}"));
@@ -1223,6 +1211,17 @@ public sealed class OllamaClient : IDisposable
             COMPLETE PAGE CONTEXT:
             """ + "\n" + context + "\n\nTARGETS:\n" + targetText;
 
+        if (localContext)
+        {
+            prompt = prompt.Replace(
+                    "CONTEXT contains the complete page in reading order. Use it only to understand the scene.",
+                    "CONTEXT contains the target and nearby lettering in reading order. Use it only to understand the scene. " +
+                    "ESPAÑOL_VECINO is an already validated neighbouring translation: preserve its register and question/reply " +
+                    "continuity, but never copy its meaning into a different target or rewrite that neighbour.",
+                    StringComparison.Ordinal)
+                .Replace("COMPLETE PAGE CONTEXT:", "LOCAL SCENE CONTEXT:", StringComparison.Ordinal);
+        }
+
         object payload = new
         {
             model,
@@ -1240,7 +1239,9 @@ public sealed class OllamaClient : IDisposable
             }
         };
 
-        string content = await SendChatAsync(payload, cancellationToken);
+        string content = await SendChatAsync(payload, cancellationToken,
+            new TranslateGemmaRequestMetrics(phase, model, targets.Count,
+                fullContext.Count, context.Length, prompt.Length));
         IReadOnlyDictionary<string, string> structured = ParseStructuredTranslations(content);
         foreach (ComicRegion region in targets)
         {
@@ -1414,21 +1415,53 @@ public sealed class OllamaClient : IDisposable
         }
     }
 
-    private async Task<string> SendChatAsync(object payload, CancellationToken cancellationToken)
+    private async Task<string> SendChatAsync(
+        object payload,
+        CancellationToken cancellationToken,
+        TranslateGemmaRequestMetrics? timing = null)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Post, "api/chat")
+        long started = System.Diagnostics.Stopwatch.GetTimestamp();
+        TranslateGemmaResponseMetrics responseMetrics = default;
+        string outcome = "failed";
+        try
         {
-            Content = JsonContent.Create(payload, options: new JsonSerializerOptions(JsonSerializerDefaults.Web))
-        };
-        using HttpResponseMessage response = await _httpClient.SendAsync(request, cancellationToken);
-        await EnsureSuccessAsync(response, cancellationToken);
-        using JsonDocument document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
-        if (!document.RootElement.TryGetProperty("message", out JsonElement message)
-            || !message.TryGetProperty("content", out JsonElement content))
-        {
-            throw new InvalidOperationException("Ollama no devolvió contenido analizable.");
+            using var request = new HttpRequestMessage(HttpMethod.Post, "api/chat")
+            {
+                Content = JsonContent.Create(payload, options: new JsonSerializerOptions(JsonSerializerDefaults.Web))
+            };
+            using HttpResponseMessage response = await _httpClient.SendAsync(request, cancellationToken);
+            await EnsureSuccessAsync(response, cancellationToken);
+            using JsonDocument document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
+            if (timing is not null)
+            {
+                responseMetrics = ReadTranslateGemmaResponseMetrics(document.RootElement);
+            }
+            if (!document.RootElement.TryGetProperty("message", out JsonElement message)
+                || !message.TryGetProperty("content", out JsonElement content))
+            {
+                throw new InvalidOperationException("Ollama no devolvió contenido analizable.");
+            }
+            string result = content.GetString()
+                ?? throw new InvalidOperationException("Ollama devolvió una respuesta vacía.");
+            outcome = "completed";
+            return result;
         }
-        return content.GetString() ?? throw new InvalidOperationException("Ollama devolvió una respuesta vacía.");
+        catch (OperationCanceledException)
+        {
+            outcome = "canceled";
+            throw;
+        }
+        finally
+        {
+            if (timing is not null)
+            {
+                TryWriteTranslateGemmaTiming(
+                    timing,
+                    responseMetrics,
+                    System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds,
+                    outcome);
+            }
+        }
     }
 
     private static TileAnalysis ParseTileAnalysis(string content, ComicImageTile tile)

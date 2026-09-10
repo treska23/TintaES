@@ -160,24 +160,50 @@ public sealed class TranslationReviewService
             }
         };
 
-        using HttpResponseMessage response = await Client.PostAsJsonAsync(
-            "api/chat",
-            payload,
-            cancellationToken);
-        string body = await response.Content.ReadAsStringAsync(cancellationToken);
-        if (!response.IsSuccessStatusCode)
+        long started = System.Diagnostics.Stopwatch.GetTimestamp();
+        string? body = null;
+        string content;
+        string outcome = "failed";
+        try
         {
-            throw new InvalidOperationException(
-                string.IsNullOrWhiteSpace(body)
-                    ? $"Ollama respondió con HTTP {(int)response.StatusCode}."
-                    : body);
-        }
+            using HttpResponseMessage response = await Client.PostAsJsonAsync(
+                "api/chat",
+                payload,
+                cancellationToken);
+            body = await response.Content.ReadAsStringAsync(cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                throw new InvalidOperationException(
+                    string.IsNullOrWhiteSpace(body)
+                        ? $"Ollama respondió con HTTP {(int)response.StatusCode}."
+                        : body);
+            }
 
-        using JsonDocument document = JsonDocument.Parse(body);
-        string content = document.RootElement
-            .GetProperty("message")
-            .GetProperty("content")
-            .GetString() ?? string.Empty;
+            using JsonDocument document = JsonDocument.Parse(body);
+            content = document.RootElement
+                .GetProperty("message")
+                .GetProperty("content")
+                .GetString() ?? string.Empty;
+            outcome = "completed";
+        }
+        catch (OperationCanceledException)
+        {
+            outcome = "canceled";
+            throw;
+        }
+        finally
+        {
+            OllamaClient.RecordTranslateGemmaTiming(
+                "manual_review",
+                model,
+                targets.Count,
+                fullPage.Count,
+                pageContext.Length + documentedContext.Length,
+                prompt.Length,
+                body,
+                System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds,
+                outcome);
+        }
 
         int changed = 0;
         int resolved = 0;

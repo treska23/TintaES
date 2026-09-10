@@ -34,8 +34,10 @@ public partial class MainWindow
         CancellationToken cancellationToken,
         IProgress<AnalysisProgress>? progress)
     {
-        if (!model.StartsWith("translategemma:12b", StringComparison.OrdinalIgnoreCase)
-            || targets.Count <= 24)
+        bool recoveringSubset = model.StartsWith("translategemma", StringComparison.OrdinalIgnoreCase)
+                                && targets.Count < fullContext.Count;
+        if (!recoveringSubset && (!model.StartsWith("translategemma:12b", StringComparison.OrdinalIgnoreCase)
+            || targets.Count <= 24))
         {
             await _ollama.TranslateRegionsAsync(targets, model, cancellationToken, progress);
             return;
@@ -43,16 +45,25 @@ public partial class MainWindow
 
         // Aunque el camino de preparación normal ya intenta hacerlo, aquí se garantiza otra
         // vez que el VLM de Paddle y su llama-server no compitan con TranslateGemma por VRAM.
-        await PaddleOcrResidentControl.ReleaseAsync();
+        if (!recoveringSubset)
+        {
+            await PaddleOcrResidentControl.ReleaseAsync();
+        }
         cancellationToken.ThrowIfCancellationRequested();
 
-        foreach (ComicRegion region in targets)
+        ComicRegion[] activeTargets = recoveringSubset
+            ? targets.Where(region => !IsAcceptableTranslation(region)).ToArray()
+            : targets.ToArray();
+        foreach (ComicRegion region in activeTargets)
         {
-            region.Translation = string.Empty;
+            if (!recoveringSubset)
+            {
+                region.Translation = string.Empty;
+            }
         }
-        InvokeStatic(ApplyKnownSfxLocalizationsMethod, targets);
+        InvokeStatic(ApplyKnownSfxLocalizationsMethod, activeTargets);
 
-        ComicRegion[] translatable = targets
+        ComicRegion[] translatable = activeTargets
             .Where(region => !IsAcceptableTranslation(region))
             .ToArray();
         if (translatable.Length == 0)
@@ -65,9 +76,9 @@ public partial class MainWindow
         int initialCalls = (int)Math.Ceiling(translatable.Length / (double)chunkSize);
         int callNumber = 0;
         var total = Stopwatch.StartNew();
-        var callDurations = new List<double>();
 
-        for (int start = 0; start < translatable.Length; start += chunkSize)
+
+        for (int start = 0; !recoveringSubset && start < translatable.Length; start += chunkSize)
         {
             cancellationToken.ThrowIfCancellationRequested();
             ComicRegion[] chunk = translatable.Skip(start).Take(chunkSize).ToArray();
@@ -85,73 +96,15 @@ public partial class MainWindow
                 model,
                 cancellationToken);
             call.Stop();
-            callDurations.Add(call.Elapsed.TotalMilliseconds);
+
             ReportDenseTranslationProgress(
                 progress,
                 targets,
                 $"Contexto traducido · bloque {callNumber}/{initialCalls} · {call.Elapsed.TotalSeconds:0.#} s");
         }
 
-        // Un único segundo pase por lotes para lo realmente dudoso. Se conserva exactamente
-        // el mismo traductor y validador; solo evitamos repetir de nuevo toda la página en
-        // minilotes de seis.
-        ComicRegion[] unresolved = translatable
-            .Where(region => !IsAcceptableTranslation(region))
-            .ToArray();
-        if (unresolved.Length > 0)
-        {
-            int retrySize = Math.Max(chunkSize, Math.Min(32, unresolved.Length));
-            int retryCalls = (int)Math.Ceiling(unresolved.Length / (double)retrySize);
-            int retryNumber = 0;
-            for (int start = 0; start < unresolved.Length; start += retrySize)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                ComicRegion[] retry = unresolved.Skip(start).Take(retrySize).ToArray();
-                foreach (ComicRegion region in retry)
-                {
-                    region.Translation = string.Empty;
-                }
-
-                retryNumber++;
-                var call = Stopwatch.StartNew();
-                await InvokeOllamaTaskAsync(
-                    TranslateGemmaChunkMethod,
-                    retry,
-                    fullContext,
-                    model,
-                    cancellationToken);
-                call.Stop();
-                callDurations.Add(call.Elapsed.TotalMilliseconds);
-                ReportDenseTranslationProgress(
-                    progress,
-                    targets,
-                    $"Repitiendo líneas dudosas · bloque {retryNumber}/{retryCalls} · {call.Elapsed.TotalSeconds:0.#} s");
-            }
-        }
-
-        // La recuperación individual se mantiene únicamente para las zonas que sigan sin
-        // superar el mismo filtro de calidad después de los dos pases agrupados.
-        ComicRegion[] individuallyUnresolved = translatable
-            .Where(region => !IsAcceptableTranslation(region))
-            .ToArray();
-        foreach (ComicRegion region in individuallyUnresolved)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            region.Translation = string.Empty;
-            var call = Stopwatch.StartNew();
-            await InvokeOllamaTaskAsync(
-                TranslateGemmaChunkMethod,
-                new[] { region },
-                fullContext,
-                model,
-                cancellationToken);
-            call.Stop();
-            callDurations.Add(call.Elapsed.TotalMilliseconds);
-            ReportDenseTranslationProgress(
-                progress,
-                targets,
-                $"Recuperando un bocadillo aislado · {call.Elapsed.TotalSeconds:0.#} s");
-        }
+        await _ollama.RecoverTranslateGemmaRegionsAsync(
+            translatable, fullContext, model, cancellationToken, progress);
 
         // Solo la primera traducción completa de la página necesita estas fases. Si el llamador
         // llega aquí con un subconjunto pendiente, repetir el pulido de textos ya válidos sería
@@ -172,24 +125,14 @@ public partial class MainWindow
                 progress);
         }
 
-        InvokeStatic(ApplyKnownSfxLocalizationsMethod, targets);
-        InvokeStatic(ApplySemanticGuardsMethod, targets);
-        InvokeStatic(NormalizeSignTranslationsMethod, targets);
+        InvokeStatic(ApplyKnownSfxLocalizationsMethod, activeTargets);
+        InvokeStatic(ApplySemanticGuardsMethod, activeTargets);
+        InvokeStatic(NormalizeSignTranslationsMethod, activeTargets);
 
-        ComicRegion[] finalUnresolved = targets
+        ComicRegion[] finalUnresolved = activeTargets
             .Where(region => !IsAcceptableTranslation(region))
             .ToArray();
         total.Stop();
-        AppendTranslateGemmaTiming(
-            model,
-            targets.Count,
-            fullContext.Count,
-            contextCharacters,
-            chunkSize,
-            callDurations,
-            total.Elapsed.TotalMilliseconds,
-            finalUnresolved.Length);
-
         if (finalUnresolved.Length > 0)
         {
             foreach (ComicRegion region in finalUnresolved)
@@ -325,45 +268,4 @@ public partial class MainWindow
             BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static)
         ?? throw new MissingMethodException(typeof(OllamaClient).FullName, name);
 
-    private static void AppendTranslateGemmaTiming(
-        string model,
-        int targetCount,
-        int contextCount,
-        int contextCharacters,
-        int chunkSize,
-        IReadOnlyList<double> calls,
-        double totalMs,
-        int unresolved)
-    {
-        try
-        {
-            string path = Path.Combine(Path.GetTempPath(), "tintaes-translategemma-timing.jsonl");
-            if (File.Exists(path) && new FileInfo(path).Length > 512 * 1024)
-            {
-                File.Delete(path);
-            }
-
-            string line = System.Text.Json.JsonSerializer.Serialize(new
-            {
-                ts = DateTimeOffset.UtcNow,
-                model,
-                target_count = targetCount,
-                context_count = contextCount,
-                context_characters = contextCharacters,
-                chunk_size = chunkSize,
-                inference_calls = calls.Count,
-                call_ms = calls.Select(value => Math.Round(value, 1)).ToArray(),
-                total_ms = Math.Round(totalMs, 1),
-                unresolved
-            });
-            File.AppendAllText(path, line + Environment.NewLine);
-        }
-        catch (IOException)
-        {
-            // La telemetría nunca debe interferir con una traducción válida.
-        }
-        catch (UnauthorizedAccessException)
-        {
-        }
-    }
 }
