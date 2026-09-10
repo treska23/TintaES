@@ -1,22 +1,20 @@
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Input;
 using Microsoft.Win32;
-using TintaES.Core;
 
 namespace TintaES.Wpf;
 
 /// <summary>
-/// Apertura directa de proyectos .tinta y consulta por hover/toque. Está aislado del editor para
-/// que el mismo código pueda compilarse dentro del ejecutable TintaESReader.
+/// Apertura de proyectos .tinta y archivos CBZ desde el Reader. La interacción con bocadillos
+/// vive exclusivamente en ComicReaderWindow.Translations; este archivo no registra gestos ni
+/// rutas alternativas para mostrar la tarjeta.
 /// </summary>
 public sealed partial class ComicReaderWindow
 {
     private static readonly bool ReaderTintaOpeningRegistered = RegisterReaderTintaOpening();
-    private bool _readerTintaOpeningInstalled;
     private bool _readerFileOpening;
-    private TouchDevice? _readerTranslationTouchDevice;
+    private bool _readerFileLifecycleInstalled;
 
     partial void OnStandaloneReaderContentOpened();
 
@@ -43,6 +41,8 @@ public sealed partial class ComicReaderWindow
             return;
         }
 
+        // ComicReaderWindow conserva por compatibilidad un manejador antiguo que solo conoce CBZ.
+        // Esta es la única entrada de apertura para el botón y admite tanto .tinta como .cbz.
         e.Handled = true;
         await reader.OpenReaderFileFromDialogAsync();
     }
@@ -51,34 +51,18 @@ public sealed partial class ComicReaderWindow
     {
         if (sender is ComicReaderWindow reader)
         {
-            reader.EnsureReaderHoverInstalled();
+            reader.EnsureReaderFileLifecycle();
         }
     }
 
-    internal void EnsureReaderHoverInstalled()
+    private void EnsureReaderFileLifecycle()
     {
-        if (_readerTintaOpeningInstalled)
+        if (_readerFileLifecycleInstalled)
         {
             return;
         }
 
-        _readerTintaOpeningInstalled = true;
-        _viewerHost.PreviewMouseMove += ReaderTranslationHover_PreviewMouseMove;
-        _viewerHost.MouseLeave += ReaderTranslationHover_MouseLeave;
-
-        _viewerHost.AddHandler(
-            UIElement.PreviewTouchDownEvent,
-            new EventHandler<TouchEventArgs>(ReaderTranslationTouch_PreviewTouchDown),
-            handledEventsToo: true);
-        _viewerHost.AddHandler(
-            UIElement.PreviewTouchMoveEvent,
-            new EventHandler<TouchEventArgs>(ReaderTranslationTouch_PreviewTouchMove),
-            handledEventsToo: true);
-        _viewerHost.AddHandler(
-            UIElement.PreviewTouchUpEvent,
-            new EventHandler<TouchEventArgs>(ReaderTranslationTouch_PreviewTouchUp),
-            handledEventsToo: true);
-
+        _readerFileLifecycleInstalled = true;
         Closed += ReaderTintaOpening_Closed;
 
         if (_readerDocument is null && _archive is null)
@@ -176,131 +160,8 @@ public sealed partial class ComicReaderWindow
         }
     }
 
-    private void ReaderTranslationHover_PreviewMouseMove(object sender, MouseEventArgs e)
-    {
-        if (_readerDocument is null
-            || _translationMouseHeld
-            || _readerTranslationTouchDevice is not null
-            || DateTime.UtcNow < _ignoreSyntheticMouseUntilUtc)
-        {
-            return;
-        }
-
-        if (_dragging)
-        {
-            HideTranslationCard();
-            return;
-        }
-
-        Point pagePoint = e.GetPosition(_pageStage);
-        ComicRegion? region = ResolveReaderRegionAt(pagePoint);
-        if (region is null)
-        {
-            HideTranslationCard();
-            return;
-        }
-
-        ShowTranslationCard(region);
-        PositionTranslationCard(region, e.GetPosition(_viewerHost), isTouch: false);
-    }
-
-    private void ReaderTranslationHover_MouseLeave(object sender, MouseEventArgs e)
-    {
-        if (!_translationMouseHeld && _readerTranslationTouchDevice is null)
-        {
-            HideTranslationCard();
-        }
-    }
-
-    private ComicRegion? ResolveReaderTouchRegionAt(Point pagePoint)
-    {
-        if (_readerDocument is null
-            || _pageIndex < 0
-            || _pageIndex >= _readerDocument.Pages.Count
-            || _pageStage.ActualWidth <= 1
-            || _pageStage.ActualHeight <= 1
-            || pagePoint.X < 0
-            || pagePoint.Y < 0
-            || pagePoint.X > _pageStage.ActualWidth
-            || pagePoint.Y > _pageStage.ActualHeight)
-        {
-            return null;
-        }
-
-        double x = pagePoint.X / _pageStage.ActualWidth * 1000d;
-        double y = pagePoint.Y / _pageStage.ActualHeight * 1000d;
-        return ComicRegionHitResolver.ResolveForTouch(
-            _readerDocument.Pages[_pageIndex].Regions,
-            x,
-            y);
-    }
-
-    private void ReaderTranslationTouch_PreviewTouchDown(object? sender, TouchEventArgs e)
-    {
-        _ignoreSyntheticMouseUntilUtc = DateTime.UtcNow.AddMilliseconds(750);
-
-        if (_readerTranslationTouchDevice is not null
-            && _readerTranslationTouchDevice != e.TouchDevice)
-        {
-            return;
-        }
-
-        Point pagePoint = e.GetTouchPoint(_pageStage).Position;
-        ComicRegion? region = ResolveReaderTouchRegionAt(pagePoint);
-        if (region is null)
-        {
-            HideTranslationCard();
-            return;
-        }
-
-        _readerTranslationTouchDevice = e.TouchDevice;
-        ShowTranslationCard(region);
-        PositionTranslationCard(region, e.GetTouchPoint(_viewerHost).Position, isTouch: true);
-        e.TouchDevice.Capture(_viewerHost);
-        e.Handled = true;
-    }
-
-    private void ReaderTranslationTouch_PreviewTouchMove(object? sender, TouchEventArgs e)
-    {
-        if (_readerTranslationTouchDevice != e.TouchDevice)
-        {
-            return;
-        }
-
-        _ignoreSyntheticMouseUntilUtc = DateTime.UtcNow.AddMilliseconds(750);
-        Point pagePoint = e.GetTouchPoint(_pageStage).Position;
-        ComicRegion? region = ResolveReaderTouchRegionAt(pagePoint);
-        if (region is null)
-        {
-            HideTranslationCard();
-        }
-        else
-        {
-            ShowTranslationCard(region);
-            PositionTranslationCard(region, e.GetTouchPoint(_viewerHost).Position, isTouch: true);
-        }
-        e.Handled = true;
-    }
-
-    private void ReaderTranslationTouch_PreviewTouchUp(object? sender, TouchEventArgs e)
-    {
-        if (_readerTranslationTouchDevice != e.TouchDevice)
-        {
-            return;
-        }
-
-        _readerTranslationTouchDevice = null;
-        if (e.TouchDevice.Captured is not null)
-        {
-            e.TouchDevice.Capture(null);
-        }
-        HideTranslationCard();
-        e.Handled = true;
-    }
-
     private void ReaderTintaOpening_Closed(object? sender, EventArgs e)
     {
-        _readerTranslationTouchDevice = null;
         _readerDocument?.Dispose();
         _readerDocument = null;
     }
