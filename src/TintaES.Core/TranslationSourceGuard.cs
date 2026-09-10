@@ -109,7 +109,18 @@ public static class TranslationSourceGuard
             return letters.Length <= 80;
         }
 
-        if (LooksLikeLaughterOrVocalisation(compact))
+        string[] words = Regex.Matches(compact, @"[\p{L}]+(?:['’\-][\p{L}]+)*")
+            .Select(match => match.Value)
+            .ToArray();
+        if (words.Length == 0)
+        {
+            return false;
+        }
+
+        // Gritos reales como NOOO!, OOOH! o HA HA HA son válidos. Se reconocen antes de las
+        // reglas de repetición para no confundir una vocalización deliberada con ruido OCR.
+        if (LooksLikeLaughterOrVocalisation(compact)
+            || LooksLikeKnownVocalisationSequence(words))
         {
             return true;
         }
@@ -126,12 +137,35 @@ public static class TranslationSourceGuard
             return false;
         }
 
+        int dominantCount = letters
+            .GroupBy(character => character)
+            .Max(group => group.Count());
+        double dominantRatio = dominantCount / (double)letters.Length;
+
+        // Caso real que provocó la regresión: "nooo jooo ooo". No contiene una frase inglesa;
+        // son varios pseudo-tokens dominados por la misma vocal. El modelo lo convertía en una
+        // reacción plausible aprovechando el contexto de la página. Dos o más tokens de diálogo
+        // con tan poca diversidad no pueden llegar jamás a TranslateGemma.
+        if (words.Length >= 2
+            && letters.Length >= 7
+            && distinct <= 3
+            && dominantRatio >= 0.70)
+        {
+            return false;
+        }
+
+        if (words.Length >= 3)
+        {
+            int repetitiveTokens = words.Count(LooksLikeRepetitiveToken);
+            if (repetitiveTokens >= words.Length - 1
+                && !ContainsPlainLanguageAnchor(words))
+            {
+                return false;
+            }
+        }
+
         if (letters.Length >= 10)
         {
-            int dominantCount = letters
-                .GroupBy(character => character)
-                .Max(group => group.Count());
-            double dominantRatio = dominantCount / (double)letters.Length;
             double entropy = CharacterEntropy(letters);
 
             if (distinct <= 2 && dominantRatio >= 0.62)
@@ -146,14 +180,6 @@ public static class TranslationSourceGuard
             {
                 return false;
             }
-        }
-
-        string[] words = Regex.Matches(compact, @"[\p{L}]+(?:['’\-][\p{L}]+)*")
-            .Select(match => match.Value)
-            .ToArray();
-        if (words.Length == 0)
-        {
-            return false;
         }
 
         if (letters.Length >= 12 && words.All(LooksLikeRepetitiveToken))
@@ -188,13 +214,72 @@ public static class TranslationSourceGuard
             RegexOptions.CultureInvariant);
     }
 
+    private static bool LooksLikeKnownVocalisationSequence(IReadOnlyList<string> words)
+    {
+        if (words.Count == 0 || words.Count > 5)
+        {
+            return false;
+        }
+
+        string[] roots = words
+            .Select(CollapseRepeatedLetters)
+            .Where(value => value.Length > 0)
+            .ToArray();
+        if (roots.Length != words.Count)
+        {
+            return false;
+        }
+
+        string[] known =
+        [
+            "NO", "OH", "AH", "HA", "HE", "HI", "HO", "HU",
+            "JA", "JE", "JI", "JO", "JU", "HM", "MM", "BO"
+        ];
+        return roots.Distinct(StringComparer.OrdinalIgnoreCase).Count() == 1
+               && known.Contains(roots[0], StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static string CollapseRepeatedLetters(string value)
+    {
+        var result = new List<char>();
+        char previous = '\0';
+        foreach (char character in value.Where(char.IsLetter).Select(char.ToUpperInvariant))
+        {
+            if (character == previous)
+            {
+                continue;
+            }
+            result.Add(character);
+            previous = character;
+        }
+        return new string(result.ToArray());
+    }
+
+    private static bool ContainsPlainLanguageAnchor(IEnumerable<string> words)
+    {
+        string[] anchors =
+        [
+            "A", "AN", "AND", "ARE", "AS", "AT", "BE", "BUT", "BY", "CAN", "COME",
+            "DID", "DO", "DON'T", "FOR", "FROM", "GO", "HAD", "HAS", "HAVE", "HE", "HER",
+            "HERE", "HIM", "HIS", "HOW", "I", "IF", "IN", "IS", "IT", "ITS", "LET", "LOOK",
+            "ME", "MY", "NO", "NOT", "NOW", "OF", "OH", "ON", "OR", "OUR", "OUT", "SHE",
+            "SO", "STOP", "THAT", "THE", "THEIR", "THEM", "THERE", "THEY", "THIS", "TO", "UP",
+            "US", "WAIT", "WAS", "WE", "WERE", "WHAT", "WHEN", "WHERE", "WHO", "WHY", "WILL",
+            "WITH", "WOULD", "YES", "YOU", "YOUR"
+        ];
+
+        return words
+            .Select(word => word.Trim('’', '\'' ).ToUpperInvariant())
+            .Any(word => anchors.Contains(word, StringComparer.Ordinal));
+    }
+
     private static bool LooksLikeRepetitiveToken(string token)
     {
         string letters = new(token
             .Where(char.IsLetter)
             .Select(char.ToUpperInvariant)
             .ToArray());
-        if (letters.Length < 4)
+        if (letters.Length < 3)
         {
             return false;
         }
@@ -203,7 +288,7 @@ public static class TranslationSourceGuard
         int dominant = letters
             .GroupBy(character => character)
             .Max(group => group.Count());
-        return distinct <= 2 && dominant / (double)letters.Length >= 0.70;
+        return distinct <= 2 && dominant / (double)letters.Length >= 0.66;
     }
 
     private static int LongestIdenticalRun(string value)
