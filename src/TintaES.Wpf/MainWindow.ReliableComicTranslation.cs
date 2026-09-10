@@ -48,6 +48,7 @@ public partial class MainWindow
         CancellationToken cancellationToken = _analysisCancellation.Token;
 
         var stopwatch = Stopwatch.StartNew();
+        var preparation = new PreparedPageWindow<ComicAnalysis>(pending.Length);
         var failures = new List<ComicPageFailure>();
         var partialPages = new List<ComicPagePartial>();
         bool cancelled = false;
@@ -86,7 +87,9 @@ public partial class MainWindow
                             pending.Length,
                             model,
                             cancellationToken,
-                            attempt);
+                            attempt,
+                            token => TakePreparedComicPageAsync(
+                                preparation, pending, pendingPosition, model, token));
                         completed = true;
                         finalError = null;
                         break;
@@ -248,7 +251,8 @@ public partial class MainWindow
         int pendingCount,
         string model,
         CancellationToken cancellationToken,
-        int attempt)
+        int attempt,
+        Func<CancellationToken, Task<ComicAnalysis>>? takePreparedAnalysis = null)
     {
         BusyTitleText.Text = attempt == 1
             ? $"Página {humanPage}/{_comicPages.Count} · localizando bocadillos…"
@@ -266,28 +270,9 @@ public partial class MainWindow
             FooterStatusText.Text = value.Message;
         });
 
-        if (!await _organicEngine.HasReusableAnalysisAsync(page.SourcePath, cancellationToken))
-        {
-            await _ollama.UnloadModelAsync(model, cancellationToken);
-        }
-
-        OrganicAnalysisResult organic = await AnalyzePageWithWatchdogAsync(
-            page.SourcePath,
-            progress,
-            cancellationToken);
-
-        ComicRegion[] readableCandidates = organic.Analysis.Regions
-            .Where(IsReadableLetteringCandidate)
-            .ToArray();
-
-        if (readableCandidates.Length == 0)
-        {
-            page.Processed = false;
-            page.Error = "No se ha detectado ningún texto pulsable. La página queda pendiente para poder reintentarla.";
-            throw new InvalidOperationException(page.Error);
-        }
-
-        var analysis = new ComicAnalysis(organic.Analysis.SourceLanguage, readableCandidates);
+        ComicAnalysis analysis = takePreparedAnalysis is null
+            ? await PrepareComicPageAnalysisAsync(page.SourcePath, model, progress, cancellationToken)
+            : await takePreparedAnalysis(cancellationToken);
         int totalEnabled = analysis.Regions.Count(region => region.IsEnabled);
         Exception? lastTranslationError = null;
 
