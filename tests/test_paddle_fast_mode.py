@@ -33,13 +33,52 @@ class PaddleFastModeTests(unittest.TestCase):
 
         fake.PaddleOCRVL.assert_called_once_with(
             pipeline_version="v1.6",
-            engine="transformers",
-            device="gpu:0",
             use_doc_orientation_classify=False,
             use_doc_unwarping=False,
             use_layout_detection=False,
             use_queues=True,
+            engine="transformers",
+            device="gpu:0",
         )
+
+    def test_llama_cpp_pipeline_uses_concurrent_requests_for_one_page(self):
+        fake = self.make_fake_paddle()
+        with mock.patch.dict(sys.modules, {"paddleocr": fake}):
+            worker._create_pipeline(
+                crop_mode=True,
+                vlm_server_url="http://127.0.0.1:8123/v1",
+                vlm_max_concurrency=4,
+            )
+
+        fake.PaddleOCRVL.assert_called_once_with(
+            pipeline_version="v1.6",
+            use_doc_orientation_classify=False,
+            use_doc_unwarping=False,
+            use_layout_detection=False,
+            use_queues=True,
+            vl_rec_backend="llama-cpp-server",
+            vl_rec_server_url="http://127.0.0.1:8123/v1",
+            vl_rec_max_concurrency=4,
+        )
+
+    def test_crop_generation_is_bounded_without_reducing_image_quality(self):
+        with mock.patch.dict(worker.os.environ, {}, clear=False):
+            worker.os.environ.pop("TINTAES_PADDLE_MAX_NEW_TOKENS", None)
+            options = worker._crop_predict_options()
+        self.assertEqual(options, {
+            "prompt_label": "ocr",
+            "temperature": 0.0,
+            "max_new_tokens": 768,
+        })
+
+        with mock.patch.dict(worker.os.environ, {"TINTAES_PADDLE_MAX_NEW_TOKENS": "1200"}):
+            self.assertEqual(worker._crop_predict_options()["max_new_tokens"], 1200)
+
+    def test_page_parallelism_is_bounded(self):
+        with mock.patch.dict(worker.os.environ, {"TINTAES_PADDLE_PAGE_PARALLEL": "99"}):
+            self.assertEqual(worker._page_parallelism(), 8)
+        with mock.patch.dict(worker.os.environ, {"TINTAES_PADDLE_PAGE_PARALLEL": "0"}):
+            self.assertEqual(worker._page_parallelism(), 1)
 
     def test_whole_page_pipeline_keeps_historical_quality_path(self):
         fake = self.make_fake_paddle()
@@ -51,23 +90,30 @@ class PaddleFastModeTests(unittest.TestCase):
 
         fake.PaddleOCRVL.assert_called_once_with(
             pipeline_version="v1.6",
-            engine="transformers",
-            device="gpu:0",
             use_doc_orientation_classify=False,
             use_doc_unwarping=False,
             use_layout_detection=True,
             use_queues=False,
+            engine="transformers",
+            device="gpu:0",
         )
 
     def test_resident_protocol_version_prevents_reusing_old_worker(self):
-        self.assertEqual(worker._PROTOCOL, "tintaes-paddle-resident-v2")
+        self.assertEqual(worker._PROTOCOL, "tintaes-paddle-resident-v3")
 
     def test_timing_log_is_bounded_and_does_not_affect_ocr(self):
         with tempfile.TemporaryDirectory(prefix="tintaes-paddle-timing-test-") as root:
             log = Path(root) / "timing.jsonl"
             with mock.patch.object(worker, "_TIMING_LOG", log):
-                worker._append_timing_log({"resident": True, "inference_ms": 123.4})
-            self.assertIn('"inference_ms":123.4', log.read_text(encoding="utf-8"))
+                worker._append_timing_log({
+                    "resident": True,
+                    "backend": "llama.cpp",
+                    "parallelism": 4,
+                    "inference_ms": 123.4,
+                })
+            value = log.read_text(encoding="utf-8")
+            self.assertIn('"backend":"llama.cpp"', value)
+            self.assertIn('"inference_ms":123.4', value)
 
 
 if __name__ == "__main__":
