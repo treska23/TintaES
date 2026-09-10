@@ -8,10 +8,9 @@ namespace TintaES.Wpf;
 
 /// <summary>
 /// Permite consultar una traducción directamente sobre la página principal. El texto
-/// detectado es una zona invisible: la página original nunca se modifica ni se tapa.
-/// Con ratón se muestra al pasar por encima; en pantalla táctil, mientras el dedo está apoyado.
-/// La tarjeta correspondiente del inspector queda seleccionada al entrar en una zona distinta.
-/// Ctrl+clic fija esa selección para poder editarla sin que el hover la cambie; Escape la libera.
+/// detectado es una zona invisible. Con ratón se muestra al pasar por encima y, en el Reader,
+/// permanece visible al mantener pulsado sobre un bocadillo; en pantalla táctil permanece
+/// visible mientras el dedo está apoyado. La tarjeta se coloca junto al punto real de entrada.
 /// </summary>
 public partial class MainWindow
 {
@@ -19,6 +18,7 @@ public partial class MainWindow
     private Border? _mainTranslationCard;
     private TextBlock? _mainTranslationSpanish;
     private ComicRegion? _mainTranslationSelectionLock;
+    private bool _mainTranslationMouseHeld;
 
     private void InstallMainTranslationInteraction()
     {
@@ -240,6 +240,11 @@ public partial class MainWindow
         double baseFontSize = Math.Max(18d, SystemFonts.MessageFontSize * 1.45d);
         double baseLineHeight = Math.Max(24d, SystemFonts.MessageFontSize * 1.9d);
         double maxCardWidth = Math.Min(780d, Math.Max(120d, pageBounds.Width - 24d));
+
+        // DesiredSize incluye Margin. Si se mide conservando la posición anterior, cada movimiento
+        // del dedo hace creer que la tarjeta es gigantesca. Se mide siempre desde origen y después
+        // se aplica la nueva posición calculada.
+        _mainTranslationCard.Margin = new Thickness(0);
         _mainTranslationCard.MaxWidth = maxCardWidth;
         _mainTranslationSpanish.MaxWidth = Math.Max(80d, maxCardWidth - 42d);
         _mainTranslationSpanish.FontSize = baseFontSize;
@@ -376,6 +381,33 @@ public partial class MainWindow
         return best;
     }
 
+    private bool BeginMainTranslationMouseHold(Point imagePoint)
+    {
+        if (!_readerOnlyMode || !TryShowMainTranslationAt(imagePoint, isTouch: false))
+        {
+            return false;
+        }
+
+        _mainTranslationMouseHeld = true;
+        Mouse.Capture(ImageStage, CaptureMode.Element);
+        return true;
+    }
+
+    private void EndMainTranslationMouseHold()
+    {
+        if (!_mainTranslationMouseHeld)
+        {
+            return;
+        }
+
+        _mainTranslationMouseHeld = false;
+        if (Mouse.Captured == ImageStage)
+        {
+            Mouse.Capture(null);
+        }
+        HideMainTranslation();
+    }
+
     private void HideMainTranslation()
     {
         if (_mainTranslationOverlay is not null)
@@ -388,6 +420,21 @@ public partial class MainWindow
     {
         if (e.StylusDevice is not null)
         {
+            return;
+        }
+
+        if (_mainTranslationMouseHeld)
+        {
+            if (e.LeftButton != MouseButtonState.Pressed)
+            {
+                EndMainTranslationMouseHold();
+                return;
+            }
+
+            if (!TryShowMainTranslationAt(e.GetPosition(ImageStage), isTouch: false))
+            {
+                HideMainTranslation();
+            }
             return;
         }
 
@@ -405,7 +452,7 @@ public partial class MainWindow
 
     private void MainImage_MouseLeaveForTranslation(object? sender, MouseEventArgs e)
     {
-        if (!ImageStage.AreAnyTouchesCapturedWithin)
+        if (!_mainTranslationMouseHeld && !ImageStage.AreAnyTouchesCapturedWithin)
         {
             HideMainTranslation();
         }
