@@ -14,7 +14,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-_PROTOCOL = "tintaes-paddle-resident-v3"
+_PROTOCOL = "tintaes-paddle-resident-v4"
 _HOST = "127.0.0.1"
 _TIMING_LOG = Path(tempfile.gettempdir()) / "tintaes-paddle-timing.jsonl"
 
@@ -121,10 +121,67 @@ def _max_new_tokens() -> int:
     return _bounded_int("TINTAES_PADDLE_MAX_NEW_TOKENS", 768, 128, 2048)
 
 
+def _free_gpu_memory_mib() -> int | None:
+    """Best-effort NVIDIA free-memory probe used only to choose page concurrency."""
+    command = shutil.which("nvidia-smi")
+    if not command:
+        return None
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+    try:
+        completed = subprocess.run(
+            [
+                command,
+                "--query-gpu=memory.free",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=3.0,
+            check=False,
+            creationflags=creationflags,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        return None
+    values: list[int] = []
+    for line in completed.stdout.splitlines():
+        try:
+            values.append(int(line.strip()))
+        except ValueError:
+            continue
+    return max(values) if values else None
+
+
 def _page_parallelism() -> int:
-    # One page normally contains several independent crops. Four server slots let
-    # them be recognised concurrently without loading four copies of the model.
-    return _bounded_int("TINTAES_PADDLE_PAGE_PARALLEL", 4, 1, 8)
+    """Use as many simultaneous balloon reads as the machine can reasonably feed.
+
+    PaddleX already creates one asynchronous future per crop when an inference
+    service is used. This value is therefore both the llama.cpp slot count and
+    Paddle's semaphore limit: up to this many balloons from ONE page are read at
+    the same time while sharing a single copy of the OCR model.
+    """
+    configured = os.environ.get("TINTAES_PADDLE_PAGE_PARALLEL")
+    if configured is not None and configured.strip():
+        try:
+            return max(1, min(16, int(configured)))
+        except ValueError:
+            pass
+
+    free_mib = _free_gpu_memory_mib()
+    if free_mib is None:
+        return 8
+    if free_mib >= 18_000:
+        return 16
+    if free_mib >= 12_000:
+        return 12
+    if free_mib >= 8_500:
+        return 10
+    if free_mib >= 6_500:
+        return 8
+    if free_mib >= 5_000:
+        return 6
+    return 4
 
 
 def _crop_inputs(
@@ -249,8 +306,9 @@ def _predict_spots(
                 return spots
 
             infer_started = time.perf_counter()
-            # Force materialisation so timing includes the complete page inference
-            # even if a Paddle version returns a lazy iterable.
+            # PaddleX's server client schedules one future per crop. The semaphore
+            # configured by vl_rec_max_concurrency and llama.cpp --parallel decide
+            # how many speech balloons from this SAME page run simultaneously.
             results = list(pipeline.predict(inputs, **_crop_predict_options()))
             if timings is not None:
                 inference_ms = (time.perf_counter() - infer_started) * 1000.0
@@ -433,6 +491,7 @@ def _start_llama_server() -> tuple[subprocess.Popen[bytes], str, int] | None:
                 "--port", str(port),
                 "--temp", "0",
                 "--parallel", str(parallelism),
+                "--cont-batching",
                 "-ngl", "99",
                 "--no-webui",
             ],
@@ -646,6 +705,7 @@ def _serve(port: int) -> int:
                                 "backend": backend,
                                 "parallelism": parallelism,
                                 "max_new_tokens": _max_new_tokens(),
+                                "free_gpu_mib": _free_gpu_memory_mib(),
                                 "fallback_reason": fallback_reason,
                                 "pid": os.getpid(),
                             }
@@ -758,6 +818,7 @@ def main() -> int:
             "backend": response.get("backend"),
             "parallelism": response.get("parallelism"),
             "max_new_tokens": response.get("max_new_tokens"),
+            "free_gpu_mib": response.get("free_gpu_mib"),
             "fallback_reason": response.get("fallback_reason"),
             "pid": response.get("pid"),
         }
