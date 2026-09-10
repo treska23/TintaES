@@ -68,9 +68,6 @@ public static class TranslationSourceGuard
         return true;
     }
 
-    /// <summary>
-    /// Comprueba la forma lingüística de una lectura sin usar contexto de escena.
-    /// </summary>
     public static bool IsReliableText(string? value, string? type = null)
     {
         if (string.IsNullOrWhiteSpace(value))
@@ -98,9 +95,6 @@ public static class TranslationSourceGuard
                 return false;
             }
 
-            // CTD puede etiquetar como SFX una mancha o trama que Paddle lee como OOOC/CCCC.
-            // Un SFX repetitivo real suele conservar una raíz reconocible (BZ, BR, GR, SH, HM…).
-            // No damos barra libre a cualquier secuencia de dos letras repetidas.
             if (letters.Length is >= 3 and <= 8
                 && distinct <= 2
                 && longestRun >= 3
@@ -137,7 +131,6 @@ public static class TranslationSourceGuard
             .Max(group => group.Count());
         double dominantRatio = dominantCount / (double)letters.Length;
 
-        // Ruido corto típico de tramas y contornos: OOOC, OOOCC, CCCO, AAAB, etc.
         if (words.Length == 1
             && letters.Length is >= 3 and <= 8
             && distinct <= 2
@@ -147,7 +140,15 @@ public static class TranslationSourceGuard
             return false;
         }
 
-        // Caso observado en la página real: "nooo jooo ooo".
+        // También rechazamos mezclas cortas como "muuu no" o "jooo sir": una palabra que
+        // consiste casi por completo en una letra repetida no se convierte en diálogo solo porque
+        // al lado haya una palabra inglesa válida. Si la repetición es intencional (NOOO, YEEES,
+        // SOOO, etc.) su raíz está explícitamente permitida.
+        if (words.Length <= 3 && words.Any(IsSuspiciousPseudoToken))
+        {
+            return false;
+        }
+
         if (words.Length >= 2
             && letters.Length >= 7
             && distinct <= 3
@@ -205,9 +206,6 @@ public static class TranslationSourceGuard
         string[] words = ExtractWords(value);
         int letterCount = value.Count(char.IsLetter);
 
-        // Una detección de diálogo de una sola palabra desconocida necesita evidencia de que
-        // realmente está dentro de un bocadillo. Las interjecciones/palabras inequívocas pueden
-        // sobrevivir aunque el contorno del globo sea difícil de segmentar.
         if (words.Length == 1 && letterCount <= 8)
         {
             string token = words[0];
@@ -320,6 +318,22 @@ public static class TranslationSourceGuard
             "YOU", "YOUR"
         ];
         return known.Contains(token, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static bool IsSuspiciousPseudoToken(string token)
+    {
+        string letters = new(token
+            .Where(char.IsLetter)
+            .Select(char.ToUpperInvariant)
+            .ToArray());
+        if (letters.Length < 3
+            || LongestIdenticalRun(letters) < 3
+            || letters.Distinct().Count() > 2)
+        {
+            return false;
+        }
+
+        return !IsKnownExpressiveRoot(CollapseRepeatedLetters(token));
     }
 
     private static string CollapseRepeatedLetters(string value)
