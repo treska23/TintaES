@@ -10,9 +10,8 @@ using Microsoft.Win32;
 namespace TintaES.Wpf;
 
 /// <summary>
-/// Modo de lectura del ejecutable independiente. No implementa un segundo visor: reutiliza
-/// MainWindow, LoadTintaProjectAsync, ImageStage, _regions y la interacción de traducción de
-/// la aplicación madre. Únicamente retira de la interfaz las herramientas de autoría.
+/// Única experiencia de lectura de TintaES. Tanto el ejecutable TintaES.Reader como el botón
+/// «Leer cómic» de la aplicación madre reutilizan MainWindow en modo de solo lectura.
 /// </summary>
 public partial class MainWindow
 {
@@ -36,18 +35,14 @@ public partial class MainWindow
             return;
         }
 
-        // El Reader no inicia Ollama ni calienta OCR/Python. El resto de la MainWindow se carga
-        // normalmente para conservar exactamente la misma ruta de proyecto y lectura.
+        // El lector no inicia Ollama ni calienta OCR/Python.
         Loaded -= MainWindow_Loaded;
         Loaded += MainWindow_ReaderOnlyLoaded;
     }
 
     public async Task OpenReaderProjectAsync(string projectPath)
     {
-        if (!_readerOnlyMode)
-        {
-            throw new InvalidOperationException("Esta ventana no está en modo Reader.");
-        }
+        EnsureReaderOnlyMode();
         if (string.IsNullOrWhiteSpace(projectPath) || !File.Exists(projectPath))
         {
             throw new FileNotFoundException("No se encuentra el proyecto TintaES.", projectPath);
@@ -57,27 +52,90 @@ public partial class MainWindow
             throw new InvalidOperationException("El Reader abre proyectos .tinta.");
         }
 
-        InstallComicBookHandlers();
-        InstallDirectPageSelector();
-        InstallDirectReaderInput();
-        InstallMainTranslationInteraction();
+        EnsureReaderOnlyInfrastructure();
         ApplyReaderOnlyShell();
-
         await LoadTintaProjectAsync(projectPath);
         ApplyReaderOnlyShell();
         SyncReaderOnlyNavigation(force: true);
     }
 
-    private void MainWindow_ReaderOnlyLoaded(object sender, RoutedEventArgs e)
+    /// <summary>
+    /// Abre en el lector el documento que ya está vivo en el editor. Solo copia el estado de
+    /// páginas y regiones; no crea un segundo formato de documento ni vuelve a cargar OCR/modelos.
+    /// </summary>
+    internal async Task OpenReaderSnapshotAsync(MainWindow source)
+    {
+        EnsureReaderOnlyMode();
+        ArgumentNullException.ThrowIfNull(source);
+        if (ReferenceEquals(source, this))
+        {
+            throw new InvalidOperationException("El lector necesita una ventana de origen distinta.");
+        }
+
+        source.PersistVisibleComicPageRegions();
+        if (source._comicPages.Count == 0)
+        {
+            throw new InvalidOperationException("No hay páginas cargadas para leer.");
+        }
+
+        EnsureReaderOnlyInfrastructure();
+        ApplyReaderOnlyShell();
+
+        _comicPages.Clear();
+        foreach (ComicBookPageState sourcePage in source._comicPages)
+        {
+            var page = new ComicBookPageState(sourcePage.SourcePath, sourcePage.DisplayName)
+            {
+                SourceLanguage = sourcePage.SourceLanguage,
+                Processed = sourcePage.Processed,
+                SuppressBatchProcessing = true,
+                Error = sourcePage.Error
+            };
+
+            // El Reader enseña la página original y la traducción en tarjeta. No necesita cargar
+            // clean.png ni mask.png, así que evitamos duplicar memoria y E/S innecesariamente.
+            page.Regions.AddRange(sourcePage.Regions);
+            _comicPages.Add(page);
+        }
+
+        _comicTitle = source._comicTitle;
+        _comicPageIndex = Math.Clamp(source._comicPageIndex, 0, _comicPages.Count - 1);
+        _visibleComicPageIndex = -1;
+        _sourcePath = null;
+        _originalBitmap = null;
+        _cleanedBaseBitmap = null;
+        _cleanedBitmap = null;
+        _maskBitmap = null;
+        _regions.Clear();
+        ClearComicPageBitmapCache();
+        UpdateComicControls();
+
+        await ShowComicPageFastAsync(_comicPageIndex);
+        ApplyReaderOnlyShell();
+        SyncReaderOnlyNavigation(force: true);
+    }
+
+    private void EnsureReaderOnlyMode()
+    {
+        if (!_readerOnlyMode)
+        {
+            throw new InvalidOperationException("Esta ventana no está en modo Reader.");
+        }
+    }
+
+    private void EnsureReaderOnlyInfrastructure()
     {
         InstallComicBookHandlers();
+        InstallDirectPageSelector();
         InstallDirectReaderInput();
         InstallMainTranslationInteraction();
         InstallReaderOnlyInput();
+    }
 
-        // Los instaladores de la aplicación madre terminan en ApplicationIdle. Aplicamos el
-        // recorte después para que ningún módulo tardío vuelva a enseñar controles de edición.
-        Dispatcher.BeginInvoke(ApplyReaderOnlyShell, DispatcherPriority.SystemIdle);
+    private void MainWindow_ReaderOnlyLoaded(object sender, RoutedEventArgs e)
+    {
+        EnsureReaderOnlyInfrastructure();
+        Dispatcher.BeginInvoke(ApplyReaderOnlyShell, DispatcherPriority.ContextIdle);
     }
 
     private void ApplyReaderOnlyShell()
@@ -91,10 +149,6 @@ public partial class MainWindow
         MinWidth = 420;
         MinHeight = 520;
         WindowState = WindowState.Maximized;
-
-        InstallDirectReaderInput();
-        InstallMainTranslationInteraction();
-        InstallReaderOnlyInput();
 
         // Cabecera de Ollama/modelo fuera. Se mantiene una única barra con Abrir .tinta y zoom.
         if (Content is Grid root && root.RowDefinitions.Count >= 5)
@@ -150,7 +204,6 @@ public partial class MainWindow
         if (_pageSelectionColumn is not null) _pageSelectionColumn.Width = new GridLength(0);
         if (_pageSelectionToggleButton is not null) _pageSelectionToggleButton.Visibility = Visibility.Collapsed;
 
-        // El inspector ya está fuera de layout; la página original y sus regiones son las de la madre.
         OverlayCanvas.Children.Clear();
         ImageScrollViewer.Padding = new Thickness(14);
         SyncReaderOnlyNavigation(force: true);
@@ -187,12 +240,7 @@ public partial class MainWindow
         Border? footer = root.Children
             .OfType<Border>()
             .FirstOrDefault(child => Grid.GetRow(child) == 4);
-        if (footer?.Child is not Grid footerGrid)
-        {
-            return;
-        }
-
-        if (_readerOnlyPageSlider is not null)
+        if (footer?.Child is not Grid footerGrid || _readerOnlyPageSlider is not null)
         {
             return;
         }
@@ -340,18 +388,43 @@ public partial class MainWindow
         _readerOnlySwipeTouch = null;
         Vector gesture = _readerOnlySwipeLast - _readerOnlySwipeStart;
         TimeSpan elapsed = DateTime.UtcNow - _readerOnlySwipeStartedUtc;
-
-        double horizontal = Math.Abs(gesture.X);
-        double required = Math.Max(90d, ImageScrollViewer.ViewportWidth * 0.12d);
-        if (elapsed.TotalMilliseconds > 1_500
-            || horizontal < required
-            || Math.Abs(gesture.Y) > horizontal * 0.62d)
+        int delta = ResolveReaderOnlySwipePageDelta(
+            gesture,
+            elapsed,
+            _comicPageIndex,
+            _comicPages.Count,
+            ImageScrollViewer.ViewportWidth);
+        if (delta == 0)
         {
             return;
         }
 
         e.Handled = true;
-        await NavigateReaderOnlyAsync(gesture.X < 0 ? 1 : -1);
+        await NavigateReaderOnlyAsync(delta);
+    }
+
+    internal static int ResolveReaderOnlySwipePageDelta(
+        Vector gesture,
+        TimeSpan elapsed,
+        int pageIndex,
+        int pageCount,
+        double viewportWidth)
+    {
+        if (pageCount < 2 || elapsed.TotalMilliseconds > 1_500)
+        {
+            return 0;
+        }
+
+        double horizontal = Math.Abs(gesture.X);
+        double required = Math.Max(90d, viewportWidth * 0.12d);
+        if (horizontal < required || Math.Abs(gesture.Y) > horizontal * 0.62d)
+        {
+            return 0;
+        }
+
+        int delta = gesture.X < 0 ? 1 : -1;
+        int target = pageIndex + delta;
+        return target >= 0 && target < pageCount ? delta : 0;
     }
 
     private static bool IsReaderOnlyNavigationElement(DependencyObject? source)
