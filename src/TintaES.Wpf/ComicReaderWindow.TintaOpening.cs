@@ -18,8 +18,6 @@ public sealed partial class ComicReaderWindow
     private bool _readerFileOpening;
     private TouchDevice? _readerTranslationTouchDevice;
 
-    // El ejecutable Reader implementa este hook; dentro de TintaES.Wpf puede quedar sin
-    // implementación. Así el visor compartido no adquiere ninguna dependencia del proyecto ligero.
     partial void OnStandaloneReaderContentOpened();
 
     private static bool RegisterReaderTintaOpening()
@@ -45,8 +43,6 @@ public sealed partial class ComicReaderWindow
             return;
         }
 
-        // El handler de clase se ejecuta antes que el handler antiguo de instancia. Al marcarlo
-        // como atendido evitamos que se abra después un segundo selector exclusivo de CBZ.
         e.Handled = true;
         await reader.OpenReaderFileFromDialogAsync();
     }
@@ -59,10 +55,6 @@ public sealed partial class ComicReaderWindow
         }
     }
 
-    /// <summary>
-    /// Instala la interacción vigente del lector: con ratón la traducción aparece al pasar por
-    /// encima y con pantalla táctil aparece mientras el dedo permanece sobre el bocadillo.
-    /// </summary>
     internal void EnsureReaderHoverInstalled()
     {
         if (_readerTintaOpeningInstalled)
@@ -74,9 +66,6 @@ public sealed partial class ComicReaderWindow
         _viewerHost.PreviewMouseMove += ReaderTranslationHover_PreviewMouseMove;
         _viewerHost.MouseLeave += ReaderTranslationHover_MouseLeave;
 
-        // ScrollViewer y el sistema de manipulaciones de WPF pueden marcar un evento táctil
-        // como manejado antes de que llegue a una suscripción normal. handledEventsToo hace que
-        // el Reader siga recibiéndolo y pueda dar prioridad a un toque sobre un bocadillo.
         _viewerHost.AddHandler(
             UIElement.PreviewTouchDownEvent,
             new EventHandler<TouchEventArgs>(ReaderTranslationTouch_PreviewTouchDown),
@@ -122,7 +111,7 @@ public sealed partial class ComicReaderWindow
         }
     }
 
-    internal async Task OpenReaderPathAsync(string path)
+    public async Task OpenReaderPathAsync(string path)
     {
         if (_readerFileOpening || string.IsNullOrWhiteSpace(path))
         {
@@ -211,8 +200,6 @@ public sealed partial class ComicReaderWindow
             return;
         }
 
-        // En escritorio no hace falta hacer clic: basta con colocar el puntero sobre el
-        // bocadillo. La colocación se calcula aquí mismo, en la ruta real del hover.
         ShowTranslationCard(region);
         PositionTranslationCard(region, e.GetPosition(_viewerHost), isTouch: false);
     }
