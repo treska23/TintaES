@@ -1,3 +1,4 @@
+using System.IO;
 using System.IO.Compression;
 using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
@@ -77,7 +78,7 @@ internal static class TintaProjectTaskAutosaveRegression
         ZipArchiveEntry source = archive.CreateEntry("source/0001.png", CompressionLevel.NoCompression);
         using (Stream output = source.Open())
         {
-            output.Write([1, 2, 3, 4]);
+            output.Write(new byte[] { 1, 2, 3, 4 });
         }
 
         ZipArchiveEntry manifest = archive.CreateEntry("project.json", CompressionLevel.Fastest);
