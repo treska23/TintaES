@@ -3,6 +3,10 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              StartupUri="MainWindow.xaml">
     <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="Styles/ScrollBarStyles.xaml" />
+            </ResourceDictionary.MergedDictionaries>
         <SolidColorBrush x:Key="WindowBrush" Color="#111315" />
         <SolidColorBrush x:Key="PanelBrush" Color="#191C1F" />
         <SolidColorBrush x:Key="PanelRaisedBrush" Color="#22262A" />
@@ -89,5 +93,6 @@
             <Setter Property="FontWeight" Value="Bold" />
             <Setter Property="TextOptions.TextFormattingMode" Value="Display" />
         </Style>
+        </ResourceDictionary>
     </Application.Resources>
 </Application>

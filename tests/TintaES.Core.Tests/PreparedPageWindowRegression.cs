@@ -12,6 +12,9 @@ internal static class PreparedPageWindowRegression
         VerifyCancellationStopsPreparationAsync().GetAwaiter().GetResult();
         VerifyCancellationKeepsUnconsumedResultsAsync().GetAwaiter().GetResult();
         VerifyModelLoadsAndResultsAsync().GetAwaiter().GetResult();
+        VerifyCostOrderedWindowsAsync().GetAwaiter().GetResult();
+        VerifyScheduledErrorsAreIsolatedAsync().GetAwaiter().GetResult();
+        VerifyScheduledCancellationKeepsPreparedItemsAsync().GetAwaiter().GetResult();
         VerifyArgumentsAndPageOrderAsync().GetAwaiter().GetResult();
     }
 
@@ -224,6 +227,114 @@ internal static class PreparedPageWindowRegression
             "Agrupar las preparaciones debe conservar todos los textos y resultados, en el mismo orden.");
     }
 
+    private static async Task VerifyCostOrderedWindowsAsync()
+    {
+        long[] costs = [1_000, 70, 20, 20, 50, 90, 10, 10];
+        var pages = costs.Select((cost, position) => new Page($"source{position}") { Cost = cost }).ToArray();
+        var calls = new List<int>();
+        var window = new PreparedPageWindow<Page>(pages.Length, windowSize: 4);
+        Task<Page> Prepare(int position, CancellationToken token)
+        {
+            calls.Add(position);
+            return Task.FromResult(pages[position]);
+        }
+
+        Require(window.HasRemaining && window.RemainingCount == 8,
+            "El planificador debe exponer cuántas páginas quedan antes de empezar.");
+        IReadOnlyList<PreparedPageWindowItem<Page>> first =
+            await window.TakeNextWindowAsync(Prepare, page => page.Cost);
+        Require(first.Count == 1 && first[0].Position == 0 && ReferenceEquals(first[0].Result, pages[0])
+                && first[0].Error is null && first[0].Cost == 1_000,
+            "La primera página debe entregarse sola e inmediatamente, aunque sea la más costosa.");
+        Require(calls.SequenceEqual([0]) && window.RemainingCount == 7,
+            "La primera entrega no debe preparar por adelantado el resto de la selección.");
+
+        IReadOnlyList<PreparedPageWindowItem<Page>> second =
+            await window.TakeNextWindowAsync(Prepare, page => page.Cost);
+        Require(second.Select(item => item.Position).SequenceEqual([2, 3, 4, 1]),
+            "Cada ventana posterior debe ordenarse por coste y desempatar por posición original.");
+        Require(second.All(item => item.Result is not null && item.Error is null)
+                && calls.SequenceEqual([0, 1, 2, 3, 4]) && window.RemainingCount == 3,
+            "Ordenar no debe perder resultados preparados ni cruzar los límites de ventana.");
+
+        IReadOnlyList<PreparedPageWindowItem<Page>> third =
+            await window.TakeNextWindowAsync(Prepare, page => page.Cost);
+        Require(third.Select(item => item.Position).SequenceEqual([6, 7, 5]),
+            "La última ventana incompleta también debe aplicar el orden estable por coste.");
+        Require(!window.HasRemaining && window.RemainingCount == 0
+                && (await window.TakeNextWindowAsync(Prepare, page => page.Cost)).Count == 0,
+            "Al terminar, el planificador debe devolver una ventana vacía sin preparar más páginas.");
+    }
+
+    private static async Task VerifyScheduledErrorsAreIsolatedAsync()
+    {
+        var window = new PreparedPageWindow<Page>(5);
+        var preparationError = new IOException("unreadable page two");
+        var costError = new InvalidDataException("unknown page cost");
+        var calls = new List<int>();
+        Task<Page> Prepare(int position, CancellationToken token)
+        {
+            calls.Add(position);
+            if (position == 2)
+            {
+                throw preparationError;
+            }
+            return Task.FromResult(new Page($"source{position}") { Cost = 10 - position });
+        }
+        long Cost(Page page)
+        {
+            if (page.Source == "source3")
+            {
+                throw costError;
+            }
+            return page.Cost;
+        }
+
+        await window.TakeNextWindowAsync(Prepare, Cost);
+        IReadOnlyList<PreparedPageWindowItem<Page>> scheduled =
+            await window.TakeNextWindowAsync(Prepare, Cost);
+
+        Require(calls.SequenceEqual([0, 1, 2, 3, 4]),
+            "Un fallo individual no debe impedir preparar las páginas vecinas.");
+        Require(scheduled.Select(item => item.Position).SequenceEqual([4, 1, 2, 3]),
+            "Las páginas válidas deben ordenarse primero y todos los errores quedar al final por posición.");
+        Require(ReferenceEquals(scheduled[2].Error, preparationError)
+                && ReferenceEquals(scheduled[3].Error, costError)
+                && scheduled[2].Result is null && scheduled[3].Result is null
+                && scheduled[2].Cost == long.MaxValue && scheduled[3].Cost == long.MaxValue,
+            "Cada error debe conservarse en su propio item sin inventar resultado ni coste.");
+    }
+
+    private static async Task VerifyScheduledCancellationKeepsPreparedItemsAsync()
+    {
+        var window = new PreparedPageWindow<Page>(5);
+        var calls = new List<int>();
+        using var cancellation = new CancellationTokenSource();
+        bool cancelSecondPosition = true;
+        Task<Page> Prepare(int position, CancellationToken token)
+        {
+            calls.Add(position);
+            if (position == 2 && cancelSecondPosition)
+            {
+                cancelSecondPosition = false;
+                cancellation.Cancel();
+            }
+            return Task.FromResult(new Page($"source{position}") { Cost = position });
+        }
+
+        await window.TakeNextWindowAsync(Prepare, page => page.Cost);
+        await ExpectAsync<OperationCanceledException>(() =>
+            window.TakeNextWindowAsync(Prepare, page => page.Cost, cancellation.Token));
+        Require(window.RemainingCount == 4 && calls.SequenceEqual([0, 1, 2]),
+            "Cancelar una ventana debe mantenerla pendiente y detener nuevas preparaciones.");
+
+        IReadOnlyList<PreparedPageWindowItem<Page>> resumed =
+            await window.TakeNextWindowAsync(Prepare, page => page.Cost);
+        Require(resumed.Select(item => item.Position).SequenceEqual([1, 2, 3, 4])
+                && calls.SequenceEqual([0, 1, 2, 2, 3, 4]),
+            "Al reanudar debe reutilizar preparaciones completas y repetir solo la interrumpida.");
+    }
+
     private static async Task VerifyArgumentsAndPageOrderAsync()
     {
         await ExpectAsync<ArgumentOutOfRangeException>(() => Task.FromResult(new PreparedPageWindow<Page>(-1)));
@@ -246,6 +357,12 @@ internal static class PreparedPageWindowRegression
         Require(calls == 1, "Una ventana unitaria debe preparar solo la página solicitada.");
         await window.TakeAsync(1, Prepare);
         Require(calls == 2, "Rechazar un salto no debe impedir consumir después todas las páginas en orden.");
+
+        var scheduled = new PreparedPageWindow<Page>(1);
+        await ExpectAsync<ArgumentNullException>(() => scheduled.TakeNextWindowAsync(null!, page => page.Cost));
+        await ExpectAsync<ArgumentNullException>(() => scheduled.TakeNextWindowAsync(Prepare, null!));
+        Require(scheduled.RemainingCount == 1,
+            "Los argumentos inválidos no deben avanzar el planificador de ventanas.");
     }
 
     private static async Task<TException> ExpectAsync<TException>(Func<Task> action) where TException : Exception
@@ -273,5 +390,6 @@ internal static class PreparedPageWindowRegression
     {
         public string Source { get; } = source;
         public string Translation { get; set; } = string.Empty;
+        public long Cost { get; init; }
     }
 }

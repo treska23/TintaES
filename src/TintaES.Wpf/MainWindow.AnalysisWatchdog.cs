@@ -7,11 +7,12 @@ namespace TintaES.Wpf;
 
 /// <summary>
 /// Mantiene informada la interfaz durante operaciones largas. Ninguna fase se cancela por
-/// alcanzar un tiempo fijo: cada dos minutos el usuario decide si continúa o cancela.
+/// alcanzar un tiempo fijo: cuando vence su intervalo, el usuario decide si continúa o cancela.
 /// </summary>
 public partial class MainWindow
 {
-    private static readonly TimeSpan LongOperationReviewInterval = TimeSpan.FromMinutes(2);
+    private static readonly TimeSpan AnalysisReviewInterval = TimeSpan.FromMinutes(2);
+    private static readonly TimeSpan PageTranslationReviewInterval = TimeSpan.FromMinutes(15);
     private static readonly TimeSpan OperationCancellationGrace = TimeSpan.FromSeconds(8);
     private static readonly TimeSpan AnalysisHeartbeatInterval = TimeSpan.FromSeconds(12);
 
@@ -25,7 +26,7 @@ public partial class MainWindow
 
         long startedAt = Stopwatch.GetTimestamp();
         long lastHeartbeatAt = startedAt;
-        long nextReviewAt = startedAt + ToStopwatchTicks(LongOperationReviewInterval);
+        long nextReviewAt = startedAt + ToStopwatchTicks(AnalysisReviewInterval);
         double lastPercentage = 0;
         string lastMessage = "Iniciando el motor local";
         object stateLock = new();
@@ -90,7 +91,7 @@ public partial class MainWindow
                 }
 
                 nextReviewAt = Stopwatch.GetTimestamp()
-                               + ToStopwatchTicks(LongOperationReviewInterval);
+                               + ToStopwatchTicks(AnalysisReviewInterval);
             }
 
             if (Stopwatch.GetElapsedTime(lastHeartbeatAt, now) >= AnalysisHeartbeatInterval)
@@ -138,7 +139,7 @@ public partial class MainWindow
 
         Task operationTask = operationFactory(linkedCancellation.Token);
         var elapsed = Stopwatch.StartNew();
-        TimeSpan nextReview = LongOperationReviewInterval;
+        TimeSpan nextReview = PageTranslationReviewInterval;
 
         while (!operationTask.IsCompleted)
         {
@@ -175,7 +176,7 @@ public partial class MainWindow
                 throw new OperationCanceledException(linkedCancellation.Token);
             }
 
-            nextReview = elapsed.Elapsed + LongOperationReviewInterval;
+            nextReview = elapsed.Elapsed + PageTranslationReviewInterval;
         }
 
         await operationTask;

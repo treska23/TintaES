@@ -3,6 +3,10 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              ShutdownMode="OnMainWindowClose">
     <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="/TintaES;component/Styles/ScrollBarStyles.xaml" />
+            </ResourceDictionary.MergedDictionaries>
         <!-- Misma paleta y estilos que TintaES.Wpf/App.xaml. MainWindow se instancia directamente
              desde el ensamblado madre y necesita estas claves en Application.Resources. -->
         <SolidColorBrush x:Key="WindowBrush" Color="#111315" />
@@ -91,5 +95,6 @@
             <Setter Property="FontWeight" Value="Bold" />
             <Setter Property="TextOptions.TextFormattingMode" Value="Display" />
         </Style>
+        </ResourceDictionary>
     </Application.Resources>
 </Application>

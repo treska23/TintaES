@@ -5,7 +5,7 @@ using System.Windows.Media;
 namespace TintaES.Wpf;
 
 /// <summary>
-/// Informa de que una fase lleva más de dos minutos. Cerrar la ventana o pulsar
+/// Informa de que una fase lleva más tiempo del intervalo configurado. Cerrar la ventana o pulsar
 /// «Seguir esperando» conserva la tarea; solo «Cancelar tarea» la detiene.
 /// </summary>
 internal sealed class SlowOperationPromptWindow : Window
