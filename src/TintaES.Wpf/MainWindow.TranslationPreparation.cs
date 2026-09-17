@@ -10,55 +10,120 @@ public partial class MainWindow
     private readonly object _preparedPageArtifactsLock = new();
     private readonly Dictionary<int, PreparedPageArtifacts> _preparedPageArtifacts = [];
 
-    private async Task<ComicAnalysis> TakePreparedComicPageAsync(
+    private async Task<IReadOnlyList<PreparedComicPageWorkItem>> TakePreparedComicPageWindowAsync(
         PreparedPageWindow<ComicAnalysis> preparation,
         IReadOnlyList<int> pageIndices,
-        int position,
+        int completedPages,
         string model,
         CancellationToken cancellationToken)
     {
         try
         {
-            return await preparation.TakeAsync(position, async (preparationPosition, token) =>
-            {
-                int pageIndex = pageIndices[preparationPosition];
-                int humanPage = pageIndex + 1;
-                // La barra cuenta páginas terminadas. Preparar páginas futuras no debe
-                // adelantarla hasta ellas y hacerla retroceder al empezar su traducción.
-                BusyProgressBar.Value = position / (double)pageIndices.Count * 100;
-                FooterProgressBar.Value = BusyProgressBar.Value;
-                BusyTitleText.Text = $"Página {humanPage}/{_comicPages.Count} · preparando el texto…";
-                FooterStatusText.Text = $"{position}/{pageIndices.Count} páginas terminadas · preparando página {humanPage}";
-                await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Render);
-
-                // Inmediato: ningún callback pendiente de una página preparada puede
-                // sobrescribir el estado de la página que ya se está traduciendo.
-                var progress = new ImmediateProgress<AnalysisProgress>(value =>
-                    Dispatcher.Invoke(() =>
+            IReadOnlyList<PreparedPageWindowItem<ComicAnalysis>> scheduled =
+                await preparation.TakeNextWindowAsync(
+                    async (preparationPosition, token) =>
                     {
-                        BusyTitleText.Text = $"Página {humanPage}/{_comicPages.Count} · {value.Message}";
+                        int pageIndex = pageIndices[preparationPosition];
+                        int humanPage = pageIndex + 1;
+                        // Preparar páginas futuras no cuenta como finalizarlas ni puede hacer
+                        // retroceder una barra que ya avanzó por otra página de la ventana.
+                        double floor = completedPages / (double)pageIndices.Count * 100;
+                        BusyProgressBar.Value = Math.Max(BusyProgressBar.Value, floor);
+                        FooterProgressBar.Value = Math.Max(FooterProgressBar.Value, floor);
+                        BusyTitleText.Text =
+                            $"Página {humanPage}/{_comicPages.Count} · preparando el texto…";
                         FooterStatusText.Text =
-                            $"{position}/{pageIndices.Count} páginas terminadas · página {humanPage}: {value.Message}";
-                    }));
-                return await PrepareComicPageAnalysisAsync(
-                    _comicPages[pageIndex].SourcePath, model, progress, token);
-            }, cancellationToken);
+                            $"{completedPages}/{pageIndices.Count} páginas terminadas · " +
+                            $"preparando página {humanPage}";
+                        await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Render);
+
+                        var progress = new ImmediateProgress<AnalysisProgress>(value =>
+                            Dispatcher.Invoke(() =>
+                            {
+                                BusyTitleText.Text =
+                                    $"Página {humanPage}/{_comicPages.Count} · {value.Message}";
+                                FooterStatusText.Text =
+                                    $"{completedPages}/{pageIndices.Count} páginas terminadas · " +
+                                    $"página {humanPage}: {value.Message}";
+                            }));
+                        return await PrepareComicPageAnalysisAsync(
+                            pageIndex, model, progress, token);
+                    },
+                    EstimateComicTranslationCost,
+                    cancellationToken);
+
+            return scheduled
+                .Select(item => new PreparedComicPageWorkItem(
+                    item.Position,
+                    pageIndices[item.Position],
+                    item.Result,
+                    item.Error,
+                    item.Cost))
+                .ToArray();
         }
         finally
         {
-            // Una ventana puede haber preparado varias páginas con una sola instancia de
-            // PaddleOCR. Al devolver la primera página de esa ventana, la liberamos antes
-            // de cargar TranslateGemma para no hacer competir ambos modelos por la VRAM.
+            // Toda la ventana comparte PaddleOCR. Se libera una sola vez antes de cargar
+            // TranslateGemma y consumir sus páginas por prioridad.
             await PaddleOcrResidentControl.ReleaseAsync();
         }
     }
 
+    private static long EstimateComicTranslationCost(ComicAnalysis analysis)
+    {
+        ComicRegion[] regions = analysis.Regions
+            .Where(region => region.IsEnabled)
+            .ToArray();
+        long contextCharacters = regions.Sum(region =>
+            (long)(region.Original?.Trim().Length ?? 0)
+            + region.StoredOcrAlternatives
+                .Take(3)
+                .Sum(alternative => (long)(alternative?.Trim().Length ?? 0))
+            + 32L);
+        int chunkSize = contextCharacters switch
+        {
+            <= 6_500 => 30,
+            <= 9_000 => 24,
+            <= 12_500 => 18,
+            <= 17_000 => 12,
+            _ => 8
+        };
+        long chunks = Math.Max(1, (regions.Length + chunkSize - 1L) / chunkSize);
+        long uncertainRegions = regions.Count(region => region.Confidence < 0.70);
+        long alternatives = regions.Sum(region => (long)Math.Min(3, region.StoredOcrAlternatives.Count));
+        long layoutComplexity = regions.Count(region => region.Vertical || Math.Abs(region.Rotation) >= 8);
+
+        // Los bloques dominan el coste; caracteres, incertidumbre y geometría solo ordenan
+        // páginas comparables. Saturar evita que datos corruptos desborden la puntuación.
+        const long MaximumCost = long.MaxValue - 1;
+        try
+        {
+            return checked(
+                chunks * 1_000_000L
+                + contextCharacters * 100L
+                + regions.Length * 10_000L
+                + uncertainRegions * 2_000L
+                + alternatives * 1_000L
+                + layoutComplexity * 500L);
+        }
+        catch (OverflowException)
+        {
+            return MaximumCost;
+        }
+    }
+
     private async Task<ComicAnalysis> PrepareComicPageAnalysisAsync(
-        string sourcePath,
+        int pageIndex,
         string model,
         IProgress<AnalysisProgress> progress,
         CancellationToken cancellationToken)
     {
+        if (pageIndex < 0 || pageIndex >= _comicPages.Count)
+        {
+            throw new ArgumentOutOfRangeException(nameof(pageIndex));
+        }
+
+        string sourcePath = _comicPages[pageIndex].SourcePath;
         if (!await _organicEngine.HasReusableAnalysisAsync(sourcePath, cancellationToken))
         {
             await _ollama.UnloadModelAsync(model, cancellationToken);
@@ -97,35 +162,16 @@ public partial class MainWindow
                 "No se ha detectado ningún texto legible. Las lecturas OCR dudosas se descartan en vez de inventar diálogo.");
         }
 
-        int pageIndex = ResolveComicPageIndex(sourcePath);
-        if (pageIndex >= 0)
-        {
-            await StagePreparedPageArtifactsAsync(
-                pageIndex,
-                organic.CleanedBitmap,
-                organic.MaskBitmap,
-                cancellationToken);
-        }
+        await StagePreparedPageArtifactsAsync(
+            pageIndex,
+            organic.CleanedBitmap,
+            organic.MaskBitmap,
+            cancellationToken);
 
         // El análisis textual sigue siendo ligero. El fondo limpio y la máscara quedan en
         // ficheros temporales hasta que la página completa termina; así no se conserva una
         // colección de bitmaps enormes mientras TranslateGemma procesa varias páginas.
         return new ComicAnalysis(organic.Analysis.SourceLanguage, readableCandidates);
-    }
-
-    private int ResolveComicPageIndex(string sourcePath)
-    {
-        for (int index = 0; index < _comicPages.Count; index++)
-        {
-            if (string.Equals(
-                    _comicPages[index].SourcePath,
-                    sourcePath,
-                    StringComparison.OrdinalIgnoreCase))
-            {
-                return index;
-            }
-        }
-        return -1;
     }
 
     private async Task StagePreparedPageArtifactsAsync(
@@ -173,6 +219,11 @@ public partial class MainWindow
 
     private void CommitPreparedComicPageArtifacts(int pageIndex)
     {
+        if (pageIndex < 0 || pageIndex >= _comicPages.Count)
+        {
+            throw new ArgumentOutOfRangeException(nameof(pageIndex));
+        }
+
         PreparedPageArtifacts? artifacts;
         lock (_preparedPageArtifactsLock)
         {
@@ -182,22 +233,64 @@ public partial class MainWindow
             }
         }
 
-        if (!File.Exists(artifacts.CleanedPath))
+        try
         {
-            throw new FileNotFoundException(
-                "El fondo limpio preparado para la página ha desaparecido.",
-                artifacts.CleanedPath);
+            if (!File.Exists(artifacts.CleanedPath))
+            {
+                throw new FileNotFoundException(
+                    "El fondo limpio preparado para la página ha desaparecido.",
+                    artifacts.CleanedPath);
+            }
+            if (!File.Exists(artifacts.MaskPath))
+            {
+                throw new FileNotFoundException(
+                    "La máscara preparada para la página ha desaparecido.",
+                    artifacts.MaskPath);
+            }
         }
-        if (!File.Exists(artifacts.MaskPath))
+        catch
         {
-            throw new FileNotFoundException(
-                "La máscara preparada para la página ha desaparecido.",
-                artifacts.MaskPath);
+            DeleteFileQuietly(artifacts.CleanedPath);
+            DeleteFileQuietly(artifacts.MaskPath);
+            throw;
         }
 
         ComicBookPageState page = _comicPages[pageIndex];
         page.CleanedPath = artifacts.CleanedPath;
         page.MaskPath = artifacts.MaskPath;
+    }
+
+    private void DiscardPreparedComicPageArtifacts(int pageIndex)
+    {
+        PreparedPageArtifacts? artifacts;
+        lock (_preparedPageArtifactsLock)
+        {
+            _preparedPageArtifacts.Remove(pageIndex, out artifacts);
+        }
+
+        if (artifacts is null)
+        {
+            return;
+        }
+
+        DeleteFileQuietly(artifacts.CleanedPath);
+        DeleteFileQuietly(artifacts.MaskPath);
+    }
+
+    private void DiscardAllPreparedComicPageArtifacts()
+    {
+        PreparedPageArtifacts[] artifacts;
+        lock (_preparedPageArtifactsLock)
+        {
+            artifacts = _preparedPageArtifacts.Values.ToArray();
+            _preparedPageArtifacts.Clear();
+        }
+
+        foreach (PreparedPageArtifacts prepared in artifacts)
+        {
+            DeleteFileQuietly(prepared.CleanedPath);
+            DeleteFileQuietly(prepared.MaskPath);
+        }
     }
 
     private sealed record PreparedPageArtifacts(string CleanedPath, string MaskPath);

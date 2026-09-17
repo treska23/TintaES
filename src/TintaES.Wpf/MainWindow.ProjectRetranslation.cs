@@ -203,7 +203,13 @@ public partial class MainWindow
         var stopwatch = Stopwatch.StartNew();
         var preparation = new PreparedPageWindow<ComicAnalysis>(selected.Length);
         var failures = new List<ComicPageRetranslationFailure>();
-        int completedPages = 0;
+        var deferredPages = new List<DeferredComicPageRetranslation>();
+        Dictionary<int, ComicPageRetranslationSnapshot> originalSnapshots = selected
+            .ToDictionary(
+                pageIndex => pageIndex,
+                pageIndex => CaptureRetranslationSnapshot(_comicPages[pageIndex]));
+        int finalizedPages = 0;
+        int updatedPages = 0;
         int partialPages = 0;
         bool cancelled = false;
         ComicPageRetranslationSnapshot? activeSnapshot = null;
@@ -221,87 +227,203 @@ public partial class MainWindow
 
         try
         {
-            for (int position = 0; position < selected.Length; position++)
+            // Primera fase: prepara ventanas completas y consume cada una de menor a mayor
+            // coste. Un fallo no bloquea las páginas siguientes: se conserva su estado
+            // original y se aplaza su único reintento hasta terminar esta primera pasada.
+            while (preparation.HasRemaining)
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
-                int pageIndex = selected[position];
-                ComicBookPageState page = _comicPages[pageIndex];
-                int humanPage = pageIndex + 1;
-                activePageIndex = pageIndex;
-                activeSnapshot = CaptureRetranslationSnapshot(page);
+                IReadOnlyList<PreparedComicPageWorkItem> window =
+                    await TakePreparedComicPageWindowAsync(
+                        preparation,
+                        selected,
+                        finalizedPages,
+                        model,
+                        cancellationToken);
 
-                Exception? finalError = null;
-                bool completed = false;
-                for (int attempt = 1; attempt <= ComicPageAutomaticAttempts; attempt++)
+                foreach (PreparedComicPageWorkItem workItem in window)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
+
+                    int pageIndex = workItem.PageIndex;
+                    ComicBookPageState page = _comicPages[pageIndex];
+                    int humanPage = pageIndex + 1;
+                    ComicPageRetranslationSnapshot originalSnapshot =
+                        originalSnapshots[pageIndex];
+
+                    if (workItem.Error is not null || workItem.Analysis is null)
+                    {
+                        Exception preparationError = workItem.Error
+                            ?? new InvalidOperationException(
+                                "La preparación de la página no devolvió un análisis.");
+                        RestoreRetranslationSnapshot(page, originalSnapshot);
+                        DiscardPreparedComicPageArtifacts(pageIndex);
+                        deferredPages.Add(new DeferredComicPageRetranslation(
+                            workItem.PreparationPosition,
+                            pageIndex,
+                            preparationError));
+                        FooterStatusText.Text =
+                            $"Página {humanPage}: preparación aplazada; continúa el resto del lote";
+                        await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Render);
+                        continue;
+                    }
+
+                    activePageIndex = pageIndex;
+                    activeSnapshot = originalSnapshot;
                     try
                     {
+                        ComicAnalysis preparedAnalysis = workItem.Analysis;
                         await ProcessComicPageReliablyAsync(
                             page,
                             pageIndex,
                             humanPage,
-                            position,
+                            finalizedPages,
                             selected.Length,
                             model,
                             cancellationToken,
-                            attempt,
-                            token => TakePreparedComicPageAsync(
-                                preparation, selected, position, model, token));
-                        completed = true;
-                        finalError = null;
-                        break;
+                            attempt: 1,
+                            token =>
+                            {
+                                token.ThrowIfCancellationRequested();
+                                return Task.FromResult(preparedAnalysis);
+                            });
+
+                        finalizedPages++;
+                        updatedPages++;
+                        if (!string.IsNullOrWhiteSpace(page.Error))
+                        {
+                            partialPages++;
+                        }
+
+                        double completedPercent =
+                            finalizedPages / (double)selected.Length * 100;
+                        BusyProgressBar.Value = Math.Max(
+                            BusyProgressBar.Value,
+                            completedPercent);
+                        FooterProgressBar.Value = Math.Max(
+                            FooterProgressBar.Value,
+                            completedPercent);
+                        FooterStatusText.Text =
+                            $"Página {humanPage} detectada y traducida desde cero";
                     }
                     catch (OperationCanceledException)
                     {
+                        RestoreRetranslationSnapshot(page, originalSnapshot);
+                        DiscardPreparedComicPageArtifacts(pageIndex);
                         throw;
                     }
                     catch (Exception exception)
                     {
-                        finalError = exception;
-                        if (attempt < ComicPageAutomaticAttempts)
-                        {
-                            RestoreRetranslationSnapshot(page, activeSnapshot);
-                            BusyTitleText.Text =
-                                $"Página {humanPage}/{_comicPages.Count} · reintentando desde cero…";
-                            FooterStatusText.Text =
-                                $"El nuevo análisis de la página {humanPage} falló; reintentando sin perder el anterior…";
-                            await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Render);
-                            await Task.Delay(700, cancellationToken);
-                        }
+                        RestoreRetranslationSnapshot(page, originalSnapshot);
+                        DiscardPreparedComicPageArtifacts(pageIndex);
+                        deferredPages.Add(new DeferredComicPageRetranslation(
+                            workItem.PreparationPosition,
+                            pageIndex,
+                            exception));
+                        FooterStatusText.Text =
+                            $"Página {humanPage}: primer intento aplazado; continúa el resto del lote";
                     }
-                }
+                    finally
+                    {
+                        activeSnapshot = null;
+                        activePageIndex = -1;
+                    }
 
-                if (!completed)
-                {
-                    RestoreRetranslationSnapshot(page, activeSnapshot);
-                    failures.Add(new ComicPageRetranslationFailure(
-                        humanPage,
-                        page.DisplayName,
-                        finalError?.Message ?? "Error desconocido."));
+                    SyncPageSelectionCheckBoxes();
+                    RefreshPageSelectionVisuals();
+                    UpdatePageSelectionSummary();
+                    await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Render);
                 }
-                else
+            }
+
+            // Segunda fase: solo ahora se reintentan las páginas aplazadas. Se fuerza una
+            // preparación fresca (takePreparedAnalysis = null) y no se reutiliza ningún
+            // análisis que pudiera haber quedado mutado por el primer intento.
+            foreach (DeferredComicPageRetranslation deferred in deferredPages)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                int pageIndex = deferred.PageIndex;
+                ComicBookPageState page = _comicPages[pageIndex];
+                int humanPage = pageIndex + 1;
+                ComicPageRetranslationSnapshot originalSnapshot =
+                    originalSnapshots[pageIndex];
+                RestoreRetranslationSnapshot(page, originalSnapshot);
+                DiscardPreparedComicPageArtifacts(pageIndex);
+
+                activePageIndex = pageIndex;
+                activeSnapshot = originalSnapshot;
+                bool completed = false;
+                Exception finalError = deferred.FirstError;
+                try
                 {
-                    completedPages++;
+                    BusyTitleText.Text =
+                        $"Página {humanPage}/{_comicPages.Count} · reintento final desde cero…";
+                    FooterStatusText.Text =
+                        $"Reintentando la página {humanPage} después de completar la primera pasada…";
+                    await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Render);
+
+                    await ProcessComicPageReliablyAsync(
+                        page,
+                        pageIndex,
+                        humanPage,
+                        finalizedPages,
+                        selected.Length,
+                        model,
+                        cancellationToken,
+                        attempt: ComicPageAutomaticAttempts,
+                        takePreparedAnalysis: null);
+                    completed = true;
+                    updatedPages++;
                     if (!string.IsNullOrWhiteSpace(page.Error))
                     {
                         partialPages++;
                     }
                 }
+                catch (OperationCanceledException)
+                {
+                    RestoreRetranslationSnapshot(page, originalSnapshot);
+                    DiscardPreparedComicPageArtifacts(pageIndex);
+                    throw;
+                }
+                catch (Exception exception)
+                {
+                    finalError = exception;
+                    RestoreRetranslationSnapshot(page, originalSnapshot);
+                    DiscardPreparedComicPageArtifacts(pageIndex);
+                    failures.Add(new ComicPageRetranslationFailure(
+                        humanPage,
+                        page.DisplayName,
+                        finalError.Message));
+                }
+                finally
+                {
+                    if (!completed)
+                    {
+                        RestoreRetranslationSnapshot(page, originalSnapshot);
+                    }
 
-                activeSnapshot = null;
-                activePageIndex = -1;
-                SyncPageSelectionCheckBoxes();
-                RefreshPageSelectionVisuals();
-                UpdatePageSelectionSummary();
+                    activeSnapshot = null;
+                    activePageIndex = -1;
+                }
 
-                double completedPercent = (position + 1d) / selected.Length * 100;
-                BusyProgressBar.Value = completedPercent;
-                FooterProgressBar.Value = completedPercent;
+                finalizedPages++;
+                double completedPercent =
+                    finalizedPages / (double)selected.Length * 100;
+                BusyProgressBar.Value = Math.Max(
+                    BusyProgressBar.Value,
+                    completedPercent);
+                FooterProgressBar.Value = Math.Max(
+                    FooterProgressBar.Value,
+                    completedPercent);
                 FooterStatusText.Text = completed
                     ? $"Página {humanPage} detectada y traducida desde cero"
                     : $"Página {humanPage}: se conserva la traducción anterior";
+
+                SyncPageSelectionCheckBoxes();
+                RefreshPageSelectionVisuals();
+                UpdatePageSelectionSummary();
                 await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Render);
             }
         }
@@ -315,10 +437,12 @@ public partial class MainWindow
                 RestoreRetranslationSnapshot(
                     _comicPages[activePageIndex],
                     activeSnapshot);
+                DiscardPreparedComicPageArtifacts(activePageIndex);
             }
         }
         finally
         {
+            DiscardAllPreparedComicPageArtifacts();
             stopwatch.Stop();
             _comicBatchBusy = false;
             SetBusy(false);
@@ -339,7 +463,7 @@ public partial class MainWindow
         if (cancelled)
         {
             SetFooterStatus(
-                $"Detección y traducción canceladas · {completedPages} página(s) actualizada(s); " +
+                $"Detección y traducción canceladas · {updatedPages} página(s) actualizada(s); " +
                 "la página en curso conserva su versión anterior.",
                 "#C99A35");
             return;
@@ -351,14 +475,14 @@ public partial class MainWindow
                 ? $" · {partialPages} parcial(es)"
                 : string.Empty;
             SetFooterStatus(
-                $"Detección y traducción completas · {completedPages} página(s){partialText} · " +
+                $"Detección y traducción completas · {updatedPages} página(s){partialText} · " +
                 FormatDuration(stopwatch.Elapsed.TotalSeconds),
                 partialPages == 0 ? "#58A77D" : "#C99A35");
             return;
         }
 
         SetFooterStatus(
-            $"Detección y traducción terminadas · {completedPages} página(s) actualizada(s) · " +
+            $"Detección y traducción terminadas · {updatedPages} página(s) actualizada(s) · " +
             $"{failures.Count} conservaron su versión anterior",
             "#C99A35");
 
@@ -391,6 +515,8 @@ public partial class MainWindow
         ComicBookPageState page,
         ComicPageRetranslationSnapshot snapshot)
     {
+        DeleteReplacedPreparedArtifact(page.CleanedPath, snapshot.CleanedPath);
+        DeleteReplacedPreparedArtifact(page.MaskPath, snapshot.MaskPath);
         page.SourceLanguage = snapshot.SourceLanguage;
         page.CleanedPath = snapshot.CleanedPath;
         page.MaskPath = snapshot.MaskPath;
@@ -399,6 +525,23 @@ public partial class MainWindow
         page.Error = snapshot.Error;
         page.Regions.Clear();
         page.Regions.AddRange(snapshot.Regions);
+    }
+
+    private static void DeleteReplacedPreparedArtifact(string? currentPath, string? restoredPath)
+    {
+        if (string.IsNullOrWhiteSpace(currentPath)
+            || string.Equals(currentPath, restoredPath, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        string preparedSegment =
+            $"{Path.DirectorySeparatorChar}processed{Path.DirectorySeparatorChar}.prepared" +
+            Path.DirectorySeparatorChar;
+        if (currentPath.Contains(preparedSegment, StringComparison.OrdinalIgnoreCase))
+        {
+            DeleteFileQuietly(currentPath);
+        }
     }
 
     private sealed record ComicPageRetranslationSnapshot(
@@ -414,4 +557,9 @@ public partial class MainWindow
         int PageNumber,
         string DisplayName,
         string Message);
+
+    private sealed record DeferredComicPageRetranslation(
+        int PreparationPosition,
+        int PageIndex,
+        Exception FirstError);
 }

@@ -69,7 +69,7 @@ public partial class MainWindow
 
         string projectPath = _currentProjectPath;
         ComicBookPageState page = _comicPages[pageIndex];
-        TintaProjectManifest manifest = BuildIncrementalProjectManifest(pageIndex);
+        TintaProjectManifest manifest = BuildIncrementalProjectManifest(_comicPageIndex);
         byte[] manifestJson = JsonSerializer.SerializeToUtf8Bytes(manifest, ProjectJsonOptions);
 
         await _taskAutoSaveGate.WaitAsync(CancellationToken.None);
