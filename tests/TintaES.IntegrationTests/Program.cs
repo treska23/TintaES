@@ -63,6 +63,10 @@ try
     {
         return RunReaderHitTestSelfTest();
     }
+    if (args is ["--reader-project-self-test"])
+    {
+        return await ReaderProjectLoaderRegression.RunAsync();
+    }
     if (args is ["--reader-window-self-test", var readerImage, var readerOutput])
     {
         return await RunOnStaThreadAsync(() => RunReaderWindowSelfTestAsync(readerImage, readerOutput));
