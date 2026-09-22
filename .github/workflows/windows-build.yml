@@ -98,6 +98,9 @@ jobs:
       - name: Build integration regressions
         run: dotnet build tests/TintaES.IntegrationTests/TintaES.IntegrationTests.csproj --configuration Release
 
+      - name: Verify standalone reader project integrity
+        run: dotnet run --project tests/TintaES.IntegrationTests/TintaES.IntegrationTests.csproj --configuration Release --no-build -- --reader-project-self-test
+
       - name: Verify lossless Windows OCR pixels
         run: dotnet run --project tests/TintaES.IntegrationTests/TintaES.IntegrationTests.csproj --configuration Release --no-build -- --windows-ocr-pixels-self-test
 

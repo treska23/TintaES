@@ -255,6 +255,7 @@ public sealed partial class ComicReaderWindow : Window
         root.Children.Add(_statusText);
 
         InstallTranslationReaderExperience(root, toolbar, _statusText);
+        EnsureReaderFileLifecycle();
 
         PreviewKeyDown += ComicReaderWindow_PreviewKeyDown;
         SizeChanged += (_, _) =>
@@ -297,17 +298,7 @@ public sealed partial class ComicReaderWindow : Window
 
     private async void OpenButton_Click(object sender, RoutedEventArgs e)
     {
-        var dialog = new OpenFileDialog
-        {
-            Title = "Abrir cómic CBZ",
-            Filter = "Comic Book ZIP|*.cbz|Todos los archivos|*.*",
-            Multiselect = false,
-            CheckFileExists = true
-        };
-        if (dialog.ShowDialog(this) == true)
-        {
-            await OpenArchiveAsync(dialog.FileName);
-        }
+        await OpenReaderFileFromDialogAsync();
     }
 
     private async Task OpenArchiveAsync(string path)

@@ -90,7 +90,10 @@ internal static class ReaderTintaProjectLoader
                     RegionMerger.Sanitize(region);
                 }
 
-                IReadOnlyList<ComicRegion> regions = BalloonRegionGrouper.Group(storedRegions);
+                // Las regiones ya están agrupadas y guardadas en el proyecto. Volver a
+                // agruparlas durante la lectura puede unir bocadillos con letreros y
+                // descartar traducciones válidas. El lector nunca modifica esa información.
+                IReadOnlyList<ComicRegion> regions = storedRegions;
                 pages.Add(new ReaderComicPage(
                     targetPath,
                     string.IsNullOrWhiteSpace(storedPage.DisplayName)
