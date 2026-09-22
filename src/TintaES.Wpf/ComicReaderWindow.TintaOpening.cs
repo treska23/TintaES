@@ -1,6 +1,5 @@
 using System.IO;
 using System.Windows;
-using System.Windows.Controls;
 using Microsoft.Win32;
 
 namespace TintaES.Wpf;
@@ -12,48 +11,10 @@ namespace TintaES.Wpf;
 /// </summary>
 public sealed partial class ComicReaderWindow
 {
-    private static readonly bool ReaderTintaOpeningRegistered = RegisterReaderTintaOpening();
     private bool _readerFileOpening;
     private bool _readerFileLifecycleInstalled;
 
     partial void OnStandaloneReaderContentOpened();
-
-    private static bool RegisterReaderTintaOpening()
-    {
-        EventManager.RegisterClassHandler(
-            typeof(Button),
-            Button.ClickEvent,
-            new RoutedEventHandler(ReaderOpenButton_ClassClick));
-        EventManager.RegisterClassHandler(
-            typeof(ComicReaderWindow),
-            LoadedEvent,
-            new RoutedEventHandler(ComicReaderWindow_TintaOpeningLoaded),
-            handledEventsToo: true);
-        return true;
-    }
-
-    private static async void ReaderOpenButton_ClassClick(object sender, RoutedEventArgs e)
-    {
-        if (sender is not Button button
-            || Window.GetWindow(button) is not ComicReaderWindow reader
-            || !string.Equals(button.Content?.ToString(), "Abrir…", StringComparison.Ordinal))
-        {
-            return;
-        }
-
-        // ComicReaderWindow conserva por compatibilidad un manejador antiguo que solo conoce CBZ.
-        // Esta es la única entrada de apertura para el botón y admite tanto .tinta como .cbz.
-        e.Handled = true;
-        await reader.OpenReaderFileFromDialogAsync();
-    }
-
-    private static void ComicReaderWindow_TintaOpeningLoaded(object sender, RoutedEventArgs e)
-    {
-        if (sender is ComicReaderWindow reader)
-        {
-            reader.EnsureReaderFileLifecycle();
-        }
-    }
 
     private void EnsureReaderFileLifecycle()
     {
